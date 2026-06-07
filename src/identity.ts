@@ -47,7 +47,30 @@ function proofUrlAllowed(u: string, kind: string): boolean {
   return !isPrivateHost(url.hostname);
 }
 
+// DNS-rebinding guard: a PUBLIC hostname whose A/AAAA record resolves to a private/loopback IP would
+// pass the string-level `isPrivateHost` check, then connect inward. Resolve the host and reject if
+// ANY resolved address is private. Only applied on the real-network path (a test-injected fetch is
+// itself the network boundary, so we don't hit DNS there — keeps the suite offline). A small TOCTOU
+// window remains (DNS could flip after the check); acceptable for a blind GET-only 1-bit oracle.
+async function resolvesToPrivate(hostname: string): Promise<boolean> {
+  const bare = hostname.replace(/^\[|\]$/g, "");
+  if (/^[0-9.]+$/.test(bare) || bare.includes(":")) return isPrivateHost(bare); // IP literal — already checked upstream
+  try {
+    const { lookup } = await import("node:dns/promises");
+    const addrs = await lookup(hostname, { all: true });
+    return addrs.length === 0 || addrs.some((a) => isPrivateHost(a.address));
+  } catch {
+    return true; // can't resolve → treat as unsafe
+  }
+}
+
 async function safeFetch(url: string, f: typeof fetch): Promise<{ ok: boolean; body: string }> {
+  // real network path only: re-check the RESOLVED IP (DNS-rebinding defense)
+  if (f === fetch) {
+    try {
+      if (await resolvesToPrivate(new URL(url).hostname)) return { ok: false, body: "" };
+    } catch { return { ok: false, body: "" }; }
+  }
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
   try {

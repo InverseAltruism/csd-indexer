@@ -144,7 +144,10 @@ export function buildApp() {
       try {
         const r = await fetch(`${CFG.swarmGateway}/content/${hash}`, { signal: ctrl.signal });
         if (!r.ok) return res.status(r.status).json({ error: "content unavailable via swarm gateway" });
-        buf = Buffer.from(await r.arrayBuffer());
+        const ab = await r.arrayBuffer();
+        // explicit byte cap (don't rely on the gateway's object limit for our own memory safety)
+        if (ab.byteLength > 4 * 1024 * 1024) return res.status(502).json({ error: "content exceeds size cap" });
+        buf = Buffer.from(ab);
       } finally { clearTimeout(to); }
       // SELF-CERTIFY before serving: the swarm gateway is an untrusted transport, and a buggy/
       // hostile one (or a cache in front) could hand back wrong bytes. We assert integrity

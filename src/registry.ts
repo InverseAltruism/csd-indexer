@@ -11,6 +11,7 @@ import { CFG } from "./config.js";
 import { proofStatuses } from "./identity.js";
 
 const REG_DOMAINS = [DOMAINS.peers, DOMAINS.peersLegacy, DOMAINS.gateways, DOMAINS.identity];
+const MAX_CONTENT_BYTES = 4 * 1024 * 1024; // hard cap on a fetched content body (defense-in-depth)
 
 // payload_hash → parsed JSON content (or null if unresolved). Cached: registry records
 // are immutable by hash, so once fetched they never change.
@@ -25,12 +26,17 @@ async function fetchContent(hash: string): Promise<any> {
   try {
     const r = await fetch(`${CFG.swarmGateway}/content/${key}`, { signal: ctrl.signal });
     if (r.ok) {
-      const obj = JSON.parse(await r.text());
-      // self-certify: only accept content that actually hashes to the on-chain
-      // payload_hash — the indexer trusts neither the origin nor the gateway for bytes.
-      if (payloadHash(obj).toLowerCase() === key) parsed = obj;
+      // Explicit byte cap: don't depend on the gateway's object limit for our own memory safety
+      // (a misconfigured/hostile gateway could otherwise hand back an unbounded body to JSON.parse).
+      const buf = await r.arrayBuffer();
+      if (buf.byteLength <= MAX_CONTENT_BYTES) {
+        const obj = JSON.parse(new TextDecoder().decode(buf));
+        // self-certify: only accept content that actually hashes to the on-chain
+        // payload_hash — the indexer trusts neither the origin nor the gateway for bytes.
+        if (payloadHash(obj).toLowerCase() === key) parsed = obj;
+      }
     }
-  } catch { /* unresolved / late-published — leave null, never counted as present */ }
+  } catch { /* unresolved / late-published / oversized / unparseable — leave null */ }
   finally { clearTimeout(to); }
   // Content is immutable (content-addressed), so a SUCCESS is safe to cache forever. But a
   // failure (gateway down / not-yet-replicated / hash-mismatch) must NOT be cached: otherwise a

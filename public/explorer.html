@@ -218,7 +218,7 @@ async function addrPage(v,a){
   const s=info.chain_stats;
   v.innerHTML='';
   v.appendChild(el(`<div class="panel"><h2>address</h2><div class="kv">
-    <div>address</div><div class="v mono green">${a}</div>
+    <div>address</div><div class="v mono green">${esc(a)}</div>
     <div>balance</div><div class="v amber">${fmtCSD(s.balance)}</div>
     <div>received</div><div class="v">${fmtCSD(s.funded)}</div>
     <div>spent</div><div class="v">${fmtCSD(s.spent)}</div>
