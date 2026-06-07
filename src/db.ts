@@ -16,6 +16,7 @@ export function db(): DatabaseSync {
   const d = new DatabaseSync(CFG.db);
   d.exec(`
     PRAGMA journal_mode = WAL;
+    PRAGMA busy_timeout = 5000;
     PRAGMA foreign_keys = OFF;
 
     -- One row per canonical block. prev links the chain (reorg detection); merkle
