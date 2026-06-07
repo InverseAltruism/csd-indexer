@@ -83,6 +83,16 @@ Anyone running one against the same node gets byte-identical data — that repro
 - `GET /address/:a/reputation` → attester-history rollup.
 - `GET /content/0x<payload_hash>` → canonical bytes, proxied + cached from the [L1 swarm](../csd-swarm) (self-certifying).
 
+**L3 registry resolvers** (deterministic; clients can recompute the same answers locally with
+[`@inversealtruism/csd-registry`](https://www.npmjs.com/package/@inversealtruism/csd-registry)):
+- `GET /registry/peers` → ranked, signature-verified bootstrap peers (`csd:peers`).
+- `GET /registry/gateways` → fresh, uptime-attested content gateways (`csd:gateways`).
+- `GET /identity/:handle` → name → address (commit-reveal, first-anchored-verified-wins).
+- `GET /address/:a/identity` → address → primary name (reverse resolution).
+
+Registry content is fetched via the swarm gateway and **self-certified** (only counted if it hashes
+to the on-chain `payload_hash`), so a lying origin can't inject records.
+
 ## Tests
 
 `npm test` (offline, deterministic — no node needed):

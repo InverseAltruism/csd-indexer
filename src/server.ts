@@ -11,6 +11,7 @@ import * as q from "./queries.js";
 import { merkleProof } from "./merkle.js";
 import { indexedHeight } from "./indexer.js";
 import { sseHandler, attachWs } from "./stream.js";
+import * as registry from "./registry.js";
 
 const TXID = /^0x[0-9a-f]{64}$/;
 const ADDR = /^0x[0-9a-f]{40}$/;
@@ -115,6 +116,19 @@ export function buildApp() {
     const avgConf = n ? atts.reduce((s, a) => s + Number(a.confidence || 0), 0) / n : 0;
     const feesPaid = atts.reduce((s, a) => s + Number(a.fee || 0), 0);
     res.json({ address: req.params.a.toLowerCase(), attestations: n, avg_score: avgScore, avg_confidence: avgConf, fees_paid: feesPaid });
+  });
+
+  // ── L3 registry resolvers (deterministic; clients can recompute via csd-registry) ──
+  app.get("/registry/peers", async (_req, res) => { try { res.json(await registry.peers()); } catch (e) { res.status(500).json({ error: String((e as Error).message) }); } });
+  app.get("/registry/gateways", async (_req, res) => { try { res.json(await registry.gateways()); } catch (e) { res.status(500).json({ error: String((e as Error).message) }); } });
+  app.get("/identity/:handle", async (req, res) => {
+    try { const r = await registry.identity(req.params.handle); return r ? res.json(r) : nf(res, "no verified binding for handle"); }
+    catch (e) { res.status(500).json({ error: String((e as Error).message) }); }
+  });
+  app.get("/address/:a/identity", async (req, res) => {
+    if (!ADDR.test(req.params.a.toLowerCase())) return bad(res, "want /address/0x<40-hex>/identity");
+    try { const r = await registry.reverse(req.params.a); return r ? res.json(r) : nf(res, "no primary name for address"); }
+    catch (e) { res.status(500).json({ error: String((e as Error).message) }); }
   });
 
   // Content join: resolve canonical bytes by payload_hash via the L1 swarm gateway
