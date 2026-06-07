@@ -8,6 +8,7 @@ import { payloadHash } from "@inversealtruism/csd-codec";
 import { db } from "./db.js";
 import { tipHeight } from "./queries.js";
 import { CFG } from "./config.js";
+import { proofStatuses } from "./identity.js";
 
 const REG_DOMAINS = [DOMAINS.peers, DOMAINS.peersLegacy, DOMAINS.gateways, DOMAINS.identity];
 
@@ -59,5 +60,14 @@ function opts(): ResolveOpts { return { nowEpoch: epochOf(Math.max(0, tipHeight(
 // workers will supply a liveness predicate once they're wired.
 export async function peers() { return resolvePeers(await buildRegistryRecords(), opts()); }
 export async function gateways() { return resolveGateways(await buildRegistryRecords(), opts()); }
-export async function identity(handle: string) { return resolveIdentity(await buildRegistryRecords(), handle, opts()); }
 export async function reverse(addr: string) { return reverseIdentity(await buildRegistryRecords(), addr, opts()); }
+
+// name → address, enriched with live external-proof status (NIP-05 liveness on read).
+export async function identity(handle: string) {
+  const records = await buildRegistryRecords();
+  const res = resolveIdentity(records, handle, opts());
+  if (!res) return null;
+  const winner = records.find((r) => r.proposalId === res.proposalId);
+  const proofs = winner ? await proofStatuses(winner) : [];
+  return { ...res, proofs, externally_live: proofs.some((p) => p.ok) };
+}
