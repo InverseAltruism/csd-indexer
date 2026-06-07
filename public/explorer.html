@@ -106,7 +106,7 @@ async function route(){
     else if(h.startsWith('/domain/'))   await domainPage(v,decodeURIComponent(h.slice(8)));
     else if(h.startsWith('/proposal/')) await proposalPage(v,h.slice(10));
     else v.innerHTML='<div class="panel">unknown route</div>';
-  }catch(e){v.innerHTML='<div class="panel red">error: '+e.message+'</div>';}
+  }catch(e){v.innerHTML='<div class="panel red">error: '+esc(e.message)+'</div>';}
 }
 
 function doSearch(e){e.preventDefault();let q=$('#q').value.trim();if(!q)return false;
@@ -232,7 +232,7 @@ async function addrPage(v,a){
 async function domainPage(v,d){
   const props=await j('/domain/'+encodeURIComponent(d)+'/proposals');
   v.innerHTML='';
-  v.appendChild(el(`<div class="panel"><h2>domain <span class="amber">${d}</span></h2>
+  v.appendChild(el(`<div class="panel"><h2>domain <span class="amber">${esc(d)}</span></h2>
     <div class="muted">${props.length} proposal(s). Rankings are a derived, recomputable view — not consensus-signed.</div>
     <table style="margin-top:10px"><thead><tr><th>proposal</th><th>proposer</th><th>fee</th><th>height</th></tr></thead>
     <tbody>${props.map(p=>`<tr><td>${link('/proposal/'+p.txid,short(p.txid,10),'mono')}</td><td>${addrLink(p.proposer)}</td><td>${fmtCSD(p.fee)}</td><td>${link('/block/'+p.height,p.height)}</td></tr>`).join('')}</tbody></table></div>`));
