@@ -93,4 +93,17 @@ test("a TAMPERED content origin cannot poison resolution (indexer self-certifies
   tamper = false;
 });
 
+test("a transient content-gateway failure does NOT permanently hide a record (self-heals)", async () => {
+  // F6 regression: the previous fetchContent cached negative results forever, so a momentary
+  // gateway blip permanently dropped a legitimate registry record until process restart. With
+  // only-cache-successes, the record must reappear on the next resolve once content is served.
+  // The preceding test already anchored "PeerTamper" and resolved it under tamper=true (a failed
+  // self-cert → not present). tamper is now false, so its bytes verify on the next fetch.
+  const peers = await registry.peers();
+  assert.ok(
+    peers.find((p: any) => p.peer_id === "PeerTamper"),
+    "PeerTamper recovers after the gateway serves valid bytes (no permanent negative cache)",
+  );
+});
+
 test.after(() => origin.close());

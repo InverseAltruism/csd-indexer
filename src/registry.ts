@@ -29,7 +29,11 @@ async function fetchContent(hash: string): Promise<any> {
       if (payloadHash(obj).toLowerCase() === key) parsed = obj;
     }
   } catch { /* unresolved / late-published — leave null, never counted as present */ }
-  contentCache.set(key, parsed);
+  // Content is immutable (content-addressed), so a SUCCESS is safe to cache forever. But a
+  // failure (gateway down / not-yet-replicated / hash-mismatch) must NOT be cached: otherwise a
+  // transient swarm-gateway blip permanently hides a legitimate registry record until restart,
+  // breaking the self-healing "recovers when content returns" design. Only memoize successes.
+  if (parsed !== null) contentCache.set(key, parsed);
   return parsed;
 }
 
