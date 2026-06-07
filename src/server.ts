@@ -4,6 +4,8 @@
 // derived view; trust comes from the light client re-verifying the merkle proofs.
 import express, { type Request, type Response } from "express";
 import { createServer, type Server } from "node:http";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { CFG, host, port } from "./config.js";
 import * as q from "./queries.js";
 import { merkleProof } from "./merkle.js";
@@ -21,6 +23,11 @@ export function buildApp() {
 
   const bad = (res: Response, msg: string) => res.status(400).json({ error: msg });
   const nf = (res: Response, msg = "not found") => res.status(404).json({ error: msg });
+
+  // ── public explorer UI (single self-contained SPA; verifies inclusion in-browser) ──
+  const PUBLIC = join(dirname(fileURLToPath(import.meta.url)), "..", "public");
+  app.get("/", (_req, res) => res.sendFile(join(PUBLIC, "explorer.html")));
+  app.use("/static", express.static(PUBLIC));
 
   // ── health / status ──
   app.get("/health", (_req, res) => res.json({ ok: true, indexed_height: indexedHeight(), ...q.counts() }));

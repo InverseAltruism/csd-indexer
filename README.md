@@ -51,6 +51,21 @@ npm run serve                                        # serve the API over the ex
 | `CSD_INDEX_BATCH` | `200` | blocks per persisted chunk |
 | `CSD_INDEX_POLL` | `15` | continuous-loop poll interval (s) |
 
+### Run your own (Docker)
+
+```
+docker build -t csd-indexer .
+docker run -p 8793:8793 -v csd-index:/data \
+  -e CSD_RPC=http://host.docker.internal:8790 \
+  csd-indexer
+# explorer + API on http://localhost:8793
+```
+
+Anyone running one against the same node gets byte-identical data — that reproducibility
+*is* the audit. The explorer at `/` re-verifies every merkle proof **in your browser**
+(SubtleCrypto, no trust in the indexer) and checks served content against its on-chain
+`payload_hash`.
+
 ## API
 
 **Esplora-compatible core** (existing clients + the light client work unchanged):
@@ -77,11 +92,21 @@ npm run serve                                        # serve the API over the ex
   **reorg that unwinds orphaned blocks to EXACTLY the canonical state** (spends rolled back, rows
   removed, balances restored) followed by an **idempotent replay**.
 
-Verified **live** against the running node (`test/_live_check.mjs`, `test/_reconcile.mjs`):
+Verified **live** against the running node (`test/_live_check.mjs`, `_reconcile.mjs`, `_browser_verify.mjs`):
 - block hashes + `merkle` roots match the node exactly;
 - **every served merkle proof verifies under the published L0 light-client convention** (and a
   tampered txid fails);
-- a from-genesis re-sync reproduces the node's own per-domain proposal/attestation aggregates.
+- the explorer's **in-browser SubtleCrypto verifier is byte-identical** to `csd-codec` on real blocks;
+- per-attester rows served via HTTP reconcile to the node's aggregate for every domain;
+- a from-genesis re-sync reproduces the node's own per-domain proposal/attestation aggregates exactly.
+
+## Explorer
+
+A self-contained SPA at `/` (phosphor-terminal aesthetic, no build step): home (live block feed via
+SSE + network stats + top domains), block, tx (**in-browser merkle inclusion verification** against
+the PoW header root), address (balance/UTXO/history), domain (proposals), and proposal (per-attester
+breakdown + **in-browser content-integrity check** — served bytes hashed to the on-chain
+`payload_hash`). The whole point: the page trusts the indexer for *nothing* it can re-verify itself.
 
 ## Honest limits
 

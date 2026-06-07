@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>CSD Explorer</title>
+<style>
+  :root{--bg:#050505;--panel:#0a0a0a;--panel2:#0d0d0d;--line:#1a1a1a;--green:#57d977;--amber:#ffd24a;--fg:#f2f2f2;--dim:#6f6f6f;--dim2:#a6a6a6;--red:#ff6b6b}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  a{color:var(--green);text-decoration:none}a:hover{text-decoration:underline}
+  header{position:sticky;top:0;background:linear-gradient(#050505,#050505ee);border-bottom:1px solid var(--line);padding:14px 18px;display:flex;gap:16px;align-items:center;flex-wrap:wrap;z-index:5}
+  .brand{font-weight:700;letter-spacing:.5px;color:var(--green);display:flex;gap:8px;align-items:center}
+  .brand b{color:var(--amber)}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green);animation:pulse 2s infinite}
+  @keyframes pulse{50%{opacity:.4}}
+  form.search{flex:1;min-width:220px;display:flex}
+  form.search input{flex:1;background:var(--panel);border:1px solid var(--line);color:var(--fg);padding:8px 10px;border-radius:6px 0 0 6px;font-family:inherit}
+  form.search button{background:var(--panel2);border:1px solid var(--line);border-left:0;color:var(--green);padding:0 14px;border-radius:0 6px 6px 0;cursor:pointer;font-family:inherit}
+  .stats{display:flex;gap:14px;color:var(--dim2);font-size:12px;flex-wrap:wrap}
+  .stats b{color:var(--fg)}
+  main{max-width:1080px;margin:0 auto;padding:18px}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:16px}
+  h2{margin:.2em 0 .6em;font-size:15px;color:var(--amber);font-weight:600}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:280px}
+  th{color:var(--dim);font-weight:500}
+  tr:hover td{background:#0d0d0d}
+  .mono{font-family:inherit}.dim{color:var(--dim)}.amber{color:var(--amber)}.green{color:var(--green)}.red{color:var(--red)}
+  .badge{display:inline-block;padding:2px 8px;border-radius:20px;font-size:11px;border:1px solid}
+  .badge.ok{color:var(--green);border-color:#1f4d2e;background:#0b1a10}
+  .badge.bad{color:var(--red);border-color:#4d1f1f;background:#1a0b0b}
+  .badge.pend{color:var(--amber);border-color:#4d421f;background:#1a160b}
+  .kv{display:grid;grid-template-columns:160px 1fr;gap:6px 14px;font-size:13px}
+  .kv div:nth-child(odd){color:var(--dim)}
+  .kv .v{word-break:break-all;white-space:normal}
+  .pill{font-size:11px;padding:1px 7px;border:1px solid var(--line);border-radius:5px;color:var(--dim2)}
+  .feed-row{animation:flash 1.2s ease-out}
+  @keyframes flash{from{background:#13241a}to{background:transparent}}
+  code{background:#0d0d0d;border:1px solid var(--line);padding:1px 5px;border-radius:4px;color:var(--dim2);word-break:break-all}
+  .muted{color:var(--dim);font-size:12px;margin-top:10px}
+  .row{display:flex;gap:16px;flex-wrap:wrap}.row>.panel{flex:1;min-width:280px}
+  .loading{color:var(--dim);padding:20px;text-align:center}
+  footer{color:var(--dim);font-size:11px;text-align:center;padding:24px;border-top:1px solid var(--line);margin-top:20px}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><span class="dot"></span>CSD&nbsp;<b>Explorer</b></div>
+  <form class="search" onsubmit="return doSearch(event)">
+    <input id="q" placeholder="search: block height · 0x<txid> · 0x<address> · domain" autocomplete="off"/>
+    <button>↵</button>
+  </form>
+  <div class="stats" id="stats"><span class="dim">connecting…</span></div>
+</header>
+<main id="view"><div class="loading">loading…</div></main>
+<footer>
+  CSD Explorer · a <b>derived, untrusted view</b> — inclusion is re-verified in your browser against the PoW header.
+  <a href="https://github.com/InverseAltruism/csd-indexer" target="_blank">source</a>
+</footer>
+<script>
+const API = location.origin; // served by the indexer
+const $ = (s,r=document)=>r.querySelector(s);
+const el = (h)=>{const t=document.createElement('template');t.innerHTML=h.trim();return t.content.firstChild;};
+const short = (s,n=10)=> s? (s.length>2*n? s.slice(0,n)+'…'+s.slice(-6): s):'';
+const fmtCSD = (v)=> (Number(v)/1e8).toLocaleString(undefined,{maximumFractionDigits:8})+' CSD';
+const ago = (t)=>{const s=Math.max(0,Math.floor(Date.now()/1000-t));if(s<60)return s+'s ago';if(s<3600)return (s/60|0)+'m ago';if(s<86400)return (s/3600|0)+'h ago';return (s/86400|0)+'d ago';};
+const j = async(p)=>{const r=await fetch(API+p);if(!r.ok)throw new Error(p+' → '+r.status);return r.json();};
+const txt = async(p)=>{const r=await fetch(API+p);if(!r.ok)throw new Error(p+' → '+r.status);return r.text();};
+
+// ── client-side trustless verification (SubtleCrypto, no deps) ──
+const hexToBytes = (h)=>{h=h.replace(/^0x/,'');const a=new Uint8Array(h.length/2);for(let i=0;i<a.length;i++)a[i]=parseInt(h.substr(i*2,2),16);return a;};
+const bytesToHex = (b)=>'0x'+[...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,'0')).join('');
+async function sha256(b){return new Uint8Array(await crypto.subtle.digest('SHA-256',b));}
+async function sha256d(b){return await sha256(await sha256(b));}
+// fold a txid up its merkle branch exactly like csd-codec verifyMerkleProof / the light client
+async function verifyInclusion(txid,pos,branch,root){
+  let cur=hexToBytes(txid),idx=pos;
+  for(const sibHex of branch){const sib=hexToBytes(sibHex);const buf=new Uint8Array(64);
+    if(idx&1){buf.set(sib,0);buf.set(cur,32);}else{buf.set(cur,0);buf.set(sib,32);}
+    cur=await sha256d(buf);idx>>=1;}
+  return bytesToHex(cur).toLowerCase()===root.toLowerCase();
+}
+
+// ── router ──
+window.addEventListener('hashchange',route);
+async function route(){
+  const h=location.hash.slice(1)||'/';
+  const v=$('#view');v.innerHTML='<div class="loading">loading…</div>';
+  try{
+    if(h==='/'||h==='')          await home(v);
+    else if(h.startsWith('/block/'))    await blockPage(v,h.slice(7));
+    else if(h.startsWith('/tx/'))       await txPage(v,h.slice(4));
+    else if(h.startsWith('/address/'))  await addrPage(v,h.slice(9));
+    else if(h.startsWith('/domain/'))   await domainPage(v,decodeURIComponent(h.slice(8)));
+    else if(h.startsWith('/proposal/')) await proposalPage(v,h.slice(10));
+    else v.innerHTML='<div class="panel">unknown route</div>';
+  }catch(e){v.innerHTML='<div class="panel red">error: '+e.message+'</div>';}
+}
+
+function doSearch(e){e.preventDefault();let q=$('#q').value.trim();if(!q)return false;
+  if(/^[0-9]+$/.test(q))location.hash='/block/'+q;            // height
+  else if(/^0x[0-9a-f]{64}$/i.test(q))location.hash='/tx/'+q.toLowerCase();
+  else if(/^0x[0-9a-f]{40}$/i.test(q))location.hash='/address/'+q.toLowerCase();
+  else location.hash='/domain/'+encodeURIComponent(q);
+  $('#q').value='';return false;}
+
+const link=(href,label,cls='')=>`<a class="${cls}" href="#${href}">${label}</a>`;
+const txidLink=(t)=>link('/tx/'+t,short(t,10),'mono');
+const addrLink=(a)=>a&&a!=='0x?'?link('/address/'+a,short(a,8),'mono'):'<span class="dim">—</span>';
+
+// ── pages ──
+async function home(v){
+  const [health,blocks,domains]=await Promise.all([j('/health'),j('/blocks/tip/height').then(()=>j('/block/'+ '' )).catch(()=>null),j('/domains')]);
+  const recent=await recentBlocks();
+  v.innerHTML='';
+  v.appendChild(el(`<div class="row">
+    <div class="panel"><h2>network</h2><div class="kv">
+      <div>indexed height</div><div class="v amber">${health.indexed_height.toLocaleString()}</div>
+      <div>blocks</div><div class="v">${health.blocks.toLocaleString()}</div>
+      <div>transactions</div><div class="v">${health.txs.toLocaleString()}</div>
+      <div>proposals</div><div class="v">${health.proposals.toLocaleString()}</div>
+      <div>attestations</div><div class="v">${health.attestations.toLocaleString()}</div>
+    </div></div>
+    <div class="panel"><h2>top domains</h2><table><thead><tr><th>domain</th><th>proposals</th></tr></thead>
+      <tbody>${domains.slice(0,8).map(d=>`<tr><td>${link('/domain/'+encodeURIComponent(d.domain),d.domain)}</td><td>${d.proposals}</td></tr>`).join('')}</tbody></table></div>
+  </div>`));
+  const feed=el(`<div class="panel"><h2>latest blocks <span class="pill" id="livepill">● live</span></h2>
+    <table><thead><tr><th>height</th><th>hash</th><th>txs</th><th>time</th></tr></thead><tbody id="blkfeed"></tbody></table></div>`);
+  v.appendChild(feed);
+  const tb=$('#blkfeed',feed);
+  recent.forEach(b=>tb.appendChild(blockRow(b)));
+  subscribeBlocks(tb);
+}
+function blockRow(b,live){
+  return el(`<tr class="${live?'feed-row':''}"><td>${link('/block/'+b.height,b.height)}</td>
+    <td>${link('/block/'+b.hash,short(b.hash,12),'mono')}</td><td>${b.tx_count}</td><td class="dim">${b.time?ago(b.time):''}</td></tr>`);
+}
+async function recentBlocks(){
+  const tip=await j('/blocks/tip/height');const out=[];
+  for(let h=tip;h>tip-12&&h>=0;h--){const hash=await j('/block-height/'+h).catch(()=>null);if(!hash)continue;out.push(await j('/block/'+hash));}
+  return out;
+}
+function subscribeBlocks(tb){
+  try{const es=new EventSource(API+'/stream/blocks');
+    es.addEventListener('block',ev=>{const b=JSON.parse(ev.data);const r=blockRow({height:b.height,hash:b.hash,tx_count:b.tx_count,time:Math.floor(Date.now()/1000)},true);tb.prepend(r);while(tb.children.length>14)tb.lastChild.remove();});
+    es.addEventListener('reorg',ev=>{const d=JSON.parse(ev.data);const p=$('#livepill');if(p){p.textContent='⟲ reorg @'+d.ancestor;p.classList.add('red');}});
+  }catch{}
+}
+
+async function blockPage(v,id){
+  const b = /^[0-9]+$/.test(id) ? await j('/block/'+await j('/block-height/'+id)) : await j('/block/'+id);
+  const txids=await j('/block/'+b.hash+'/txids');
+  v.innerHTML='';
+  v.appendChild(el(`<div class="panel"><h2>block ${b.height}</h2><div class="kv">
+    <div>hash</div><div class="v mono green">${b.hash}</div>
+    <div>prev</div><div class="v">${b.prev?link('/block/'+b.prev,b.prev,'mono'):'—'}</div>
+    <div>merkle root</div><div class="v mono dim">${b.merkle}</div>
+    <div>time</div><div class="v">${new Date(b.time*1000).toISOString()} <span class="dim">(${ago(b.time)})</span></div>
+    <div>bits</div><div class="v">0x${(b.bits>>>0).toString(16)}</div>
+    <div>nonce</div><div class="v">${b.nonce}</div>
+    <div>transactions</div><div class="v">${b.tx_count}</div>
+    <div>chainwork</div><div class="v dim">${b.chainwork}</div>
+  </div></div>`));
+  v.appendChild(el(`<div class="panel"><h2>transactions (${txids.length})</h2><table><thead><tr><th>#</th><th>txid</th></tr></thead>
+    <tbody>${txids.map((t,i)=>`<tr><td class="dim">${i}</td><td>${txidLink(t)}</td></tr>`).join('')}</tbody></table></div>`));
+}
+
+async function txPage(v,id){
+  const [tx,status,proof]=await Promise.all([j('/tx/'+id),j('/tx/'+id+'/status').catch(()=>null),j('/tx/'+id+'/merkle-proof').catch(()=>null)]);
+  v.innerHTML='';
+  const typeBadge = tx.app_type==='Propose'?'<span class="badge ok">Propose</span>':tx.app_type==='Attest'?'<span class="badge pend">Attest</span>':tx.coinbase?'<span class="pill">coinbase</span>':'<span class="pill">transfer</span>';
+  v.appendChild(el(`<div class="panel"><h2>transaction ${typeBadge} <span id="inclbadge" class="badge pend">verifying inclusion…</span></h2>
+    <div class="kv">
+      <div>txid</div><div class="v mono green">${tx.txid}</div>
+      <div>block</div><div class="v">${link('/block/'+tx.height,tx.height)} ${status?`· ${status.confirmations} confs ${status.final?'<span class="badge ok">final</span>':'<span class="badge pend">maturing</span>'}`:''}</div>
+      <div>position</div><div class="v">${tx.pos}</div>
+      <div>signer</div><div class="v">${addrLink(tx.signer)}</div>
+      <div>fee</div><div class="v">${fmtCSD(tx.fee)}</div>
+      <div>inputs / outputs</div><div class="v">${tx.n_in} / ${tx.n_out}</div>
+    </div></div>`));
+  v.appendChild(el(`<div class="panel"><h2>outputs</h2><table><thead><tr><th>#</th><th>address</th><th>value</th><th>status</th></tr></thead>
+    <tbody>${(tx.outputs||[]).map(o=>`<tr><td class="dim">${o.vout}</td><td>${addrLink(o.addr)}</td><td>${fmtCSD(o.value)}</td>
+      <td>${o.spent_txid?`<span class="dim">spent by ${txidLink(o.spent_txid)}</span>`:'<span class="badge ok">unspent</span>'}</td></tr>`).join('')}</tbody></table></div>`));
+  if(proof){
+    v.appendChild(el(`<div class="panel"><h2>merkle inclusion proof</h2>
+      <div class="muted">This proof is served by an <i>untrusted</i> indexer. Your browser folds it to the block's merkle root below — that root lives in the PoW-verified header, so a correct fold is trustless proof of inclusion.</div>
+      <div class="kv" style="margin-top:10px">
+        <div>block height</div><div class="v">${proof.block_height}</div>
+        <div>position</div><div class="v">${proof.pos}</div>
+        <div>merkle root</div><div class="v mono dim">${proof.merkle_root}</div>
+        <div>branch (${proof.merkle.length})</div><div class="v mono dim">${proof.merkle.map(short).join(' · ')||'<i>single-tx block</i>'}</div>
+      </div></div>`));
+    // verify in-browser against the block header's merkle root (the node's, not the indexer's claim)
+    try{
+      const blk=await j('/block/'+await j('/block-height/'+proof.block_height));
+      const ok=await verifyInclusion(tx.txid,proof.pos,proof.merkle,blk.merkle);
+      const b=$('#inclbadge');b.textContent=ok?'✓ inclusion verified in-browser':'✗ inclusion FAILED';b.className='badge '+(ok?'ok':'bad');
+    }catch(e){const b=$('#inclbadge');b.textContent='inclusion: '+e.message;b.className='badge bad';}
+  } else {$('#inclbadge').textContent='no proof';$('#inclbadge').className='badge pend';}
+}
+
+async function addrPage(v,a){
+  const [info,utxos,txs]=await Promise.all([j('/address/'+a),j('/address/'+a+'/utxo'),j('/address/'+a+'/txs')]);
+  const s=info.chain_stats;
+  v.innerHTML='';
+  v.appendChild(el(`<div class="panel"><h2>address</h2><div class="kv">
+    <div>address</div><div class="v mono green">${a}</div>
+    <div>balance</div><div class="v amber">${fmtCSD(s.balance)}</div>
+    <div>received</div><div class="v">${fmtCSD(s.funded)}</div>
+    <div>spent</div><div class="v">${fmtCSD(s.spent)}</div>
+    <div>tx count</div><div class="v">${s.tx_count}</div>
+    <div>UTXOs</div><div class="v">${utxos.length}</div>
+  </div></div>`));
+  v.appendChild(el(`<div class="panel"><h2>transactions (${txs.length})</h2><table><thead><tr><th>txid</th><th>type</th><th>block</th><th>fee</th></tr></thead>
+    <tbody>${txs.map(t=>`<tr><td>${txidLink(t.txid)}</td><td class="dim">${t.app_type}</td><td>${link('/block/'+t.height,t.height)}</td><td>${fmtCSD(t.fee)}</td></tr>`).join('')}</tbody></table></div>`));
+}
+
+async function domainPage(v,d){
+  const props=await j('/domain/'+encodeURIComponent(d)+'/proposals');
+  v.innerHTML='';
+  v.appendChild(el(`<div class="panel"><h2>domain <span class="amber">${d}</span></h2>
+    <div class="muted">${props.length} proposal(s). Rankings are a derived, recomputable view — not consensus-signed.</div>
+    <table style="margin-top:10px"><thead><tr><th>proposal</th><th>proposer</th><th>fee</th><th>height</th></tr></thead>
+    <tbody>${props.map(p=>`<tr><td>${link('/proposal/'+p.txid,short(p.txid,10),'mono')}</td><td>${addrLink(p.proposer)}</td><td>${fmtCSD(p.fee)}</td><td>${link('/block/'+p.height,p.height)}</td></tr>`).join('')}</tbody></table></div>`));
+}
+
+async function proposalPage(v,id){
+  const p=await j('/proposal/'+id);
+  v.innerHTML='';
+  v.appendChild(el(`<div class="panel"><h2>proposal <span id="cibadge" class="badge pend">checking content…</span></h2><div class="kv">
+    <div>txid</div><div class="v mono green">${p.txid}</div>
+    <div>domain</div><div class="v">${link('/domain/'+encodeURIComponent(p.domain),p.domain)}</div>
+    <div>payload hash</div><div class="v mono dim">${p.payload_hash}</div>
+    <div>uri</div><div class="v dim">${p.uri||'—'}</div>
+    <div>proposer</div><div class="v">${addrLink(p.proposer)}</div>
+    <div>fee</div><div class="v">${fmtCSD(p.fee)}</div>
+    <div>expires epoch</div><div class="v">${p.expires_epoch}</div>
+    <div>attestations</div><div class="v">${p.attestation_count}</div>
+  </div></div>`));
+  v.appendChild(el(`<div class="panel"><h2>attestations (${(p.attestations||[]).length}) <span class="pill">per-attester — not on-chain aggregate</span></h2>
+    <table><thead><tr><th>attester</th><th>score</th><th>confidence</th><th>fee</th><th>tx</th></tr></thead>
+    <tbody>${(p.attestations||[]).map(a=>`<tr><td>${addrLink(a.attester)}</td><td class="amber">${a.score}</td><td>${a.confidence}</td><td>${fmtCSD(a.fee)}</td><td>${txidLink(a.txid)}</td></tr>`).join('')||'<tr><td colspan=5 class="dim">none yet</td></tr>'}</tbody></table></div>`));
+  // dogfood self-certification: fetch content, hash it in-browser, compare to the on-chain payload_hash
+  try{
+    const bytes=new TextEncoder().encode(await txt('/content/'+p.payload_hash));
+    const got=bytesToHex(await sha256(bytes));
+    const ok=got.toLowerCase()===p.payload_hash.toLowerCase();
+    const b=$('#cibadge');b.textContent=ok?'✓ content integrity verified':'✗ content MISMATCH';b.className='badge '+(ok?'ok':'bad');
+  }catch(e){const b=$('#cibadge');b.textContent='content unavailable';b.className='badge pend';}
+}
+
+// ── header stats + live ──
+async function refreshStats(){
+  try{const h=await j('/health');
+    $('#stats').innerHTML=`<span>height <b>${h.indexed_height.toLocaleString()}</b></span><span>txs <b>${h.txs.toLocaleString()}</b></span><span>proposals <b>${h.proposals}</b></span><span class="green">● indexing</span>`;
+  }catch{$('#stats').innerHTML='<span class="red">● indexer offline</span>';}
+}
+refreshStats();setInterval(refreshStats,15000);route();
+</script>
+</body>
+</html>
