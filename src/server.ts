@@ -7,6 +7,7 @@ import { createServer, type Server } from "node:http";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { CFG, host, port } from "./config.js";
+import { verifyContentBytes } from "@inversealtruism/csd-codec";
 import * as q from "./queries.js";
 import { merkleProof } from "./merkle.js";
 import { indexedHeight } from "./indexer.js";
@@ -137,10 +138,23 @@ export function buildApp() {
     const hash = String(req.params.hash || "").toLowerCase();
     if (!HASH.test(hash)) return bad(res, "want /content/0x<64-hex payload_hash>");
     try {
-      const r = await fetch(`${CFG.swarmGateway}/content/${hash}`);
-      if (!r.ok) return res.status(r.status).json({ error: "content unavailable via swarm gateway" });
-      const buf = Buffer.from(await r.arrayBuffer());
-      res.setHeader("Content-Type", r.headers.get("content-type") || "application/json; charset=utf-8");
+      const ctrl = new AbortController();
+      const to = setTimeout(() => ctrl.abort(), 5000);
+      let buf: Buffer;
+      try {
+        const r = await fetch(`${CFG.swarmGateway}/content/${hash}`, { signal: ctrl.signal });
+        if (!r.ok) return res.status(r.status).json({ error: "content unavailable via swarm gateway" });
+        buf = Buffer.from(await r.arrayBuffer());
+      } finally { clearTimeout(to); }
+      // SELF-CERTIFY before serving: the swarm gateway is an untrusted transport, and a buggy/
+      // hostile one (or a cache in front) could hand back wrong bytes. We assert integrity
+      // headers (ETag/immutable/X-CSD-Payload-Hash), so we must prove sha256(bytes)==hash here
+      // rather than trust the gateway — else we'd pin wrong bytes under a content-address forever.
+      if (!verifyContentBytes(new Uint8Array(buf), hash)) {
+        return res.status(502).json({ error: "content failed self-verification (gateway returned bytes that do not hash to the payload_hash)" });
+      }
+      res.setHeader("Content-Type", "application/json; charset=utf-8");
+      res.setHeader("X-Content-Type-Options", "nosniff");
       res.setHeader("ETag", `"${hash}"`);
       res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
       res.setHeader("X-CSD-Payload-Hash", hash);

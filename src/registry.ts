@@ -20,8 +20,10 @@ async function fetchContent(hash: string): Promise<any> {
   const key = hash.toLowerCase();
   if (contentCache.has(key)) return contentCache.get(key);
   let parsed: any = null;
+  const ctrl = new AbortController();
+  const to = setTimeout(() => ctrl.abort(), 5000); // hard timeout so a hung gateway can't stall request handlers
   try {
-    const r = await fetch(`${CFG.swarmGateway}/content/${key}`);
+    const r = await fetch(`${CFG.swarmGateway}/content/${key}`, { signal: ctrl.signal });
     if (r.ok) {
       const obj = JSON.parse(await r.text());
       // self-certify: only accept content that actually hashes to the on-chain
@@ -29,6 +31,7 @@ async function fetchContent(hash: string): Promise<any> {
       if (payloadHash(obj).toLowerCase() === key) parsed = obj;
     }
   } catch { /* unresolved / late-published — leave null, never counted as present */ }
+  finally { clearTimeout(to); }
   // Content is immutable (content-addressed), so a SUCCESS is safe to cache forever. But a
   // failure (gateway down / not-yet-replicated / hash-mismatch) must NOT be cached: otherwise a
   // transient swarm-gateway blip permanently hides a legitimate registry record until restart,

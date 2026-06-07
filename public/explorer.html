@@ -62,7 +62,12 @@
 const API = location.origin; // served by the indexer
 const $ = (s,r=document)=>r.querySelector(s);
 const el = (h)=>{const t=document.createElement('template');t.innerHTML=h.trim();return t.content.firstChild;};
-const short = (s,n=10)=> s? (s.length>2*n? s.slice(0,n)+'…'+s.slice(-6): s):'';
+// HTML-escape ALL chain-derived text before it touches innerHTML. domain/uri (and any free-form
+// field) are attacker-controlled on-chain — without this they are a stored-XSS sink.
+const esc = (s)=> String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const short = (s,n=10)=> { s=esc(s); return s? (s.length>2*n? s.slice(0,n)+'…'+s.slice(-6): s):''; };
+// short() is only ever called on hex (txid/hash/addr) so escaping is a no-op there, but it keeps
+// the helper safe-by-default if ever pointed at free-form text.
 const fmtCSD = (v)=> (Number(v)/1e8).toLocaleString(undefined,{maximumFractionDigits:8})+' CSD';
 const ago = (t)=>{const s=Math.max(0,Math.floor(Date.now()/1000-t));if(s<60)return s+'s ago';if(s<3600)return (s/60|0)+'m ago';if(s<86400)return (s/3600|0)+'h ago';return (s/86400|0)+'d ago';};
 const j = async(p)=>{const r=await fetch(API+p);if(!r.ok)throw new Error(p+' → '+r.status);return r.json();};
@@ -105,7 +110,9 @@ function doSearch(e){e.preventDefault();let q=$('#q').value.trim();if(!q)return 
   else location.hash='/domain/'+encodeURIComponent(q);
   $('#q').value='';return false;}
 
-const link=(href,label,cls='')=>`<a class="${cls}" href="#${href}">${label}</a>`;
+// href is built from validated hex / encodeURIComponent; label is escaped (it may be a free-form
+// chain string like a domain). Both go through esc to block attribute/markup breakout.
+const link=(href,label,cls='')=>`<a class="${esc(cls)}" href="#${esc(href)}">${esc(label)}</a>`;
 const txidLink=(t)=>link('/tx/'+t,short(t,10),'mono');
 const addrLink=(a)=>a&&a!=='0x?'?link('/address/'+a,short(a,8),'mono'):'<span class="dim">—</span>';
 
@@ -153,14 +160,14 @@ async function blockPage(v,id){
   const txids=await j('/block/'+b.hash+'/txids');
   v.innerHTML='';
   v.appendChild(el(`<div class="panel"><h2>block ${b.height}</h2><div class="kv">
-    <div>hash</div><div class="v mono green">${b.hash}</div>
+    <div>hash</div><div class="v mono green">${esc(b.hash)}</div>
     <div>prev</div><div class="v">${b.prev?link('/block/'+b.prev,b.prev,'mono'):'—'}</div>
-    <div>merkle root</div><div class="v mono dim">${b.merkle}</div>
+    <div>merkle root</div><div class="v mono dim">${esc(b.merkle)}</div>
     <div>time</div><div class="v">${new Date(b.time*1000).toISOString()} <span class="dim">(${ago(b.time)})</span></div>
     <div>bits</div><div class="v">0x${(b.bits>>>0).toString(16)}</div>
     <div>nonce</div><div class="v">${b.nonce}</div>
     <div>transactions</div><div class="v">${b.tx_count}</div>
-    <div>chainwork</div><div class="v dim">${b.chainwork}</div>
+    <div>chainwork</div><div class="v dim">${esc(b.chainwork)}</div>
   </div></div>`));
   v.appendChild(el(`<div class="panel"><h2>transactions (${txids.length})</h2><table><thead><tr><th>#</th><th>txid</th></tr></thead>
     <tbody>${txids.map((t,i)=>`<tr><td class="dim">${i}</td><td>${txidLink(t)}</td></tr>`).join('')}</tbody></table></div>`));
@@ -172,7 +179,7 @@ async function txPage(v,id){
   const typeBadge = tx.app_type==='Propose'?'<span class="badge ok">Propose</span>':tx.app_type==='Attest'?'<span class="badge pend">Attest</span>':tx.coinbase?'<span class="pill">coinbase</span>':'<span class="pill">transfer</span>';
   v.appendChild(el(`<div class="panel"><h2>transaction ${typeBadge} <span id="inclbadge" class="badge pend">verifying inclusion…</span></h2>
     <div class="kv">
-      <div>txid</div><div class="v mono green">${tx.txid}</div>
+      <div>txid</div><div class="v mono green">${esc(tx.txid)}</div>
       <div>block</div><div class="v">${link('/block/'+tx.height,tx.height)} ${status?`· ${status.confirmations} confs ${status.final?'<span class="badge ok">final</span>':'<span class="badge pend">maturing</span>'}`:''}</div>
       <div>position</div><div class="v">${tx.pos}</div>
       <div>signer</div><div class="v">${addrLink(tx.signer)}</div>
@@ -188,7 +195,7 @@ async function txPage(v,id){
       <div class="kv" style="margin-top:10px">
         <div>block height</div><div class="v">${proof.block_height}</div>
         <div>position</div><div class="v">${proof.pos}</div>
-        <div>merkle root</div><div class="v mono dim">${proof.merkle_root}</div>
+        <div>merkle root</div><div class="v mono dim">${esc(proof.merkle_root)}</div>
         <div>branch (${proof.merkle.length})</div><div class="v mono dim">${proof.merkle.map(short).join(' · ')||'<i>single-tx block</i>'}</div>
       </div></div>`));
     // verify in-browser against the block header's merkle root (the node's, not the indexer's claim)
@@ -229,10 +236,10 @@ async function proposalPage(v,id){
   const p=await j('/proposal/'+id);
   v.innerHTML='';
   v.appendChild(el(`<div class="panel"><h2>proposal <span id="cibadge" class="badge pend">checking content…</span></h2><div class="kv">
-    <div>txid</div><div class="v mono green">${p.txid}</div>
+    <div>txid</div><div class="v mono green">${esc(p.txid)}</div>
     <div>domain</div><div class="v">${link('/domain/'+encodeURIComponent(p.domain),p.domain)}</div>
-    <div>payload hash</div><div class="v mono dim">${p.payload_hash}</div>
-    <div>uri</div><div class="v dim">${p.uri||'—'}</div>
+    <div>payload hash</div><div class="v mono dim">${esc(p.payload_hash)}</div>
+    <div>uri</div><div class="v dim">${p.uri?esc(p.uri):'—'}</div>
     <div>proposer</div><div class="v">${addrLink(p.proposer)}</div>
     <div>fee</div><div class="v">${fmtCSD(p.fee)}</div>
     <div>expires epoch</div><div class="v">${p.expires_epoch}</div>

@@ -38,14 +38,37 @@ export function addressTxids(addr: string, beforeHeight: number | null, limit = 
   return db().prepare("SELECT DISTINCT txid, height FROM address_history WHERE addr=? AND height<? ORDER BY height DESC, txid LIMIT ?").all(a, beforeHeight, limit) as any;
 }
 export function addressUtxos(addr: string): OutRow[] {
-  return db().prepare("SELECT * FROM outputs WHERE addr=? AND spent_txid IS NULL ORDER BY height").all(addr.toLowerCase()) as unknown as OutRow[];
+  // bounded result + BigInt-safe value read (a single >2^53-sat output must not throw)
+  const st = db().prepare("SELECT * FROM outputs WHERE addr=? AND spent_txid IS NULL ORDER BY height LIMIT 100000");
+  st.setReadBigInts(true);
+  const rows = st.all(addr.toLowerCase()) as any[];
+  // setReadBigInts makes ALL integer columns BigInt → convert small ones back to Number (vout/
+  // height) and keep value BigInt-safe via amt(); a stray BigInt would crash JSON.stringify.
+  return rows.map((r) => ({
+    ...r,
+    vout: Number(r.vout),
+    value: amt(r.value as bigint),
+    height: Number(r.height),
+    spent_height: r.spent_height == null ? null : Number(r.spent_height),
+  })) as unknown as OutRow[];
 }
-export function addressStats(addr: string): { funded: number; spent: number; balance: number; tx_count: number } {
+// Serialize a sats amount: a JS number when it fits exactly, else a decimal string. CSD max supply
+// (~1e17 sats) exceeds 2^53, and node:sqlite THROWS ERR_OUT_OF_RANGE reading an integer past
+// MAX_SAFE_INTEGER — so we read these as BigInt and never let a high-value address 500 the API.
+function amt(v: bigint): number | string {
+  return v <= BigInt(Number.MAX_SAFE_INTEGER) && v >= BigInt(Number.MIN_SAFE_INTEGER) ? Number(v) : v.toString();
+}
+export function addressStats(addr: string): { funded: number | string; spent: number | string; balance: number | string; tx_count: number } {
   const a = addr.toLowerCase();
-  const funded = (db().prepare("SELECT COALESCE(SUM(value),0) v FROM outputs WHERE addr=?").get(a) as { v: number }).v;
-  const spent = (db().prepare("SELECT COALESCE(SUM(value),0) v FROM outputs WHERE addr=? AND spent_txid IS NOT NULL").get(a) as { v: number }).v;
+  const sumBig = (sql: string): bigint => {
+    const st = db().prepare(sql);
+    st.setReadBigInts(true);
+    return (st.get(a) as { v: bigint }).v;
+  };
+  const funded = sumBig("SELECT COALESCE(SUM(value),0) v FROM outputs WHERE addr=?");
+  const spent = sumBig("SELECT COALESCE(SUM(value),0) v FROM outputs WHERE addr=? AND spent_txid IS NOT NULL");
   const txc = (db().prepare("SELECT COUNT(DISTINCT txid) n FROM address_history WHERE addr=?").get(a) as { n: number }).n;
-  return { funded, spent, balance: funded - spent, tx_count: txc };
+  return { funded: amt(funded), spent: amt(spent), balance: amt(funded - spent), tx_count: txc };
 }
 
 // ── CSD-specific (the reason this exists) ──
