@@ -1,0 +1,28 @@
+{
+  "name": "csd-indexer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Standalone, reorg-safe indexer + explorer for Compute Substrate (CSD) — L2 of the no-fork ecosystem. Serves the Esplora REST contract plus merkle inclusion proofs for the L0 light client, per-attester data, address history, and content joins.",
+  "license": "MIT",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "index": "tsx src/cli.ts index",
+    "serve": "tsx src/server.ts",
+    "run-all": "tsx src/cli.ts run",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test test/*.test.ts"
+  },
+  "dependencies": {
+    "@inversealtruism/csd-codec": "^0.1.2",
+    "express": "^4.21.2",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.13",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

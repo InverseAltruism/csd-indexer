@@ -1,0 +1,187 @@
+// The stateful sync engine: forward-only scan with reorg-safe unwind/replay.
+//
+// Each block is written in a single sqlite transaction. Inputs are resolved against
+// our OWN outputs table (every prior block is already indexed, in order), so fees,
+// spends, and address deltas need zero extra RPC. The last `finalDepth` blocks stay
+// re-checkable; if a new block's `prev` doesn't link our stored tip, we walk back to
+// the common ancestor, unwind every row above it (DELETE WHERE height > ancestor +
+// un-spend orphaned spends), and replay the canonical branch — the electrs/Subsquid
+// roll-back-then-replay pattern. Blocks deeper than finalDepth are never touched.
+import * as rpc from "./rpc.js";
+import { db, getMeta, setMeta, tx as dbTx } from "./db.js";
+import { deriveAddr, addrFromScriptPubkey, appType } from "./decode.js";
+import { CFG } from "./config.js";
+import { bus } from "./events.js";
+
+const TIP_KEY = "indexed_height";
+
+export interface IndexResult { from: number; to: number; tip: number; blocks: number; reorgs: number; reorgDepth: number; }
+
+/** Height we've indexed up to (canonical), or scanFrom-1 if fresh. */
+export function indexedHeight(): number {
+  const v = getMeta(TIP_KEY);
+  return v == null ? CFG.scanFrom - 1 : Number(v);
+}
+
+/** Write one block + all its txs/outputs/spends/events in a single transaction. */
+export function writeBlock(b: rpc.RpcBlock): void {
+  const d = db();
+  dbTx(() => {
+    const blk = b;
+    const time = Number(blk.header.time ?? 0);
+    d.prepare(`INSERT INTO blocks(height,hash,prev,merkle,time,bits,nonce,version,tx_count,chainwork,orphaned)
+      VALUES(?,?,?,?,?,?,?,?,?,?,0)
+      ON CONFLICT(height) DO UPDATE SET hash=excluded.hash, prev=excluded.prev, merkle=excluded.merkle,
+        time=excluded.time, bits=excluded.bits, nonce=excluded.nonce, version=excluded.version,
+        tx_count=excluded.tx_count, chainwork=excluded.chainwork, orphaned=0`)
+      .run(blk.height, blk.hash, blk.header.prev ?? null, blk.header.merkle ?? null, time,
+        Number(blk.header.bits ?? 0), Number(blk.header.nonce ?? 0), Number(blk.header.version ?? 0),
+        blk.txs.length, String(blk.chainwork ?? "0"));
+
+    const insTx = d.prepare(`INSERT INTO txs(txid,height,pos,app_type,signer,fee,time,n_in,n_out,coinbase)
+      VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(txid) DO UPDATE SET
+      height=excluded.height, pos=excluded.pos, app_type=excluded.app_type, signer=excluded.signer,
+      fee=excluded.fee, time=excluded.time, n_in=excluded.n_in, n_out=excluded.n_out, coinbase=excluded.coinbase`);
+    const insOut = d.prepare(`INSERT INTO outputs(txid,vout,addr,value,height,spent_txid,spent_height)
+      VALUES(?,?,?,?,?,NULL,NULL) ON CONFLICT(txid,vout) DO UPDATE SET addr=excluded.addr, value=excluded.value, height=excluded.height`);
+    const spend = d.prepare(`UPDATE outputs SET spent_txid=?, spent_height=? WHERE txid=? AND vout=?`);
+    const lookupOut = d.prepare(`SELECT addr,value FROM outputs WHERE txid=? AND vout=?`);
+    const insHist = d.prepare(`INSERT OR IGNORE INTO address_history(addr,txid,height,pos,direction,delta) VALUES(?,?,?,?,?,?)`);
+    const insProp = d.prepare(`INSERT INTO proposals(txid,domain,payload_hash,uri,expires_epoch,proposer,fee,height,time)
+      VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(txid) DO UPDATE SET domain=excluded.domain, payload_hash=excluded.payload_hash,
+      uri=excluded.uri, expires_epoch=excluded.expires_epoch, proposer=excluded.proposer, fee=excluded.fee, height=excluded.height, time=excluded.time`);
+    const insAtt = d.prepare(`INSERT INTO attestations(txid,proposal_id,attester,score,confidence,fee,height,time)
+      VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(txid) DO UPDATE SET proposal_id=excluded.proposal_id, attester=excluded.attester,
+      score=excluded.score, confidence=excluded.confidence, fee=excluded.fee, height=excluded.height, time=excluded.time`);
+
+    blk.txs.forEach((t, pos) => {
+      const isCoinbase = pos === 0;
+      const signer = deriveAddr(t.inputs?.[0]?.script_sig) ?? addrFromScriptPubkey(t.outputs?.[0]?.script_pubkey) ?? null;
+      // resolve inputs against our own outputs → spends + input sum (skip coinbase)
+      let sumIn = 0;
+      const ins = t.inputs ?? [];
+      for (const inp of ins) {
+        const prev = inp.prev_txid ?? inp.prevTxid;
+        if (!prev) continue; // coinbase input
+        const vout = Number(inp.vout ?? 0);
+        const prevOut = lookupOut.get(prev, vout) as { addr: string | null; value: number } | undefined;
+        if (prevOut) {
+          sumIn += Number(prevOut.value ?? 0);
+          spend.run(t.txid, blk.height, prev, vout);
+          if (prevOut.addr) insHist.run(prevOut.addr, t.txid, blk.height, pos, "out", -Number(prevOut.value ?? 0));
+        }
+      }
+      // outputs
+      let sumOut = 0;
+      (t.outputs ?? []).forEach((o, vout) => {
+        const addr = addrFromScriptPubkey(o.script_pubkey);
+        const val = Number(o.value ?? 0);
+        sumOut += val;
+        insOut.run(t.txid, vout, addr, val, blk.height);
+        if (addr) insHist.run(addr, t.txid, blk.height, pos, "in", val);
+      });
+      const fee = isCoinbase ? 0 : Math.max(0, sumIn - sumOut);
+      const kind = appType(t, isCoinbase);
+      insTx.run(t.txid, blk.height, pos, kind, signer, fee, time, ins.length, (t.outputs ?? []).length, isCoinbase ? 1 : 0);
+
+      if (kind === "Propose" && t.app) {
+        insProp.run(t.txid, String(t.app.domain ?? ""), String(t.app.payload_hash ?? ""), String(t.app.uri ?? ""),
+          Number(t.app.expires_epoch ?? 0), signer, fee, blk.height, time);
+      } else if (kind === "Attest" && t.app) {
+        insAtt.run(t.txid, String(t.app.proposal_id ?? ""), signer, Number(t.app.score ?? 0),
+          Number(t.app.confidence ?? 0), fee, blk.height, time);
+      }
+    });
+  });
+}
+
+/** Hard-delete every row strictly above `ancestor`, un-spending outputs orphaned by it. */
+export function unwindAbove(ancestor: number): void {
+  const d = db();
+  dbTx(() => {
+    const h = ancestor;
+    // un-spend outputs whose spender was orphaned (those spends no longer happened)
+    d.prepare(`UPDATE outputs SET spent_txid=NULL, spent_height=NULL WHERE spent_height>?`).run(h);
+    d.prepare(`DELETE FROM address_history WHERE height>?`).run(h);
+    d.prepare(`DELETE FROM proposals WHERE height>?`).run(h);
+    d.prepare(`DELETE FROM attestations WHERE height>?`).run(h);
+    d.prepare(`DELETE FROM outputs WHERE height>?`).run(h);
+    d.prepare(`DELETE FROM txs WHERE height>?`).run(h);
+    d.prepare(`DELETE FROM blocks WHERE height>?`).run(h);
+  });
+}
+
+/** Stored canonical block hash at height, or null. */
+function storedHash(height: number): string | null {
+  const r = db().prepare("SELECT hash FROM blocks WHERE height=? AND orphaned=0").get(height) as { hash: string } | undefined;
+  return r?.hash ?? null;
+}
+
+/**
+ * Detect a reorg by checking the new block's prev against our stored hash at h-1.
+ * If it links, no reorg. If not, walk back (bounded by finalDepth) to the last height
+ * where node hash == stored hash; that's the common ancestor. Returns it, or -1 if no
+ * reorg, or throws if the fork is deeper than finalDepth (should be impossible).
+ */
+async function findReorgAncestor(newBlock: rpc.RpcBlock): Promise<number> {
+  const prevH = newBlock.height - 1;
+  const storedPrev = storedHash(prevH);
+  if (storedPrev == null) return -1;                       // nothing to link against (fresh / gap)
+  if (storedPrev === (newBlock.header.prev ?? "")) return -1; // links cleanly — no reorg
+  // diverged: walk back until node's hash matches what we stored
+  for (let depth = 1; depth <= CFG.finalDepth + 1; depth++) {
+    const h = prevH - depth;
+    if (h < CFG.scanFrom) return CFG.scanFrom - 1;
+    const nodeBlk = await rpc.blockByHeight(h);
+    const ours = storedHash(h);
+    if (nodeBlk && ours && nodeBlk.hash === ours) return h;  // common ancestor
+  }
+  throw new Error(`reorg deeper than finalDepth(${CFG.finalDepth}) at height ${newBlock.height} — refusing to unwind final history`);
+}
+
+/**
+ * Index forward from where we left off up to (tip - 0); reorgs handled inline.
+ * Returns a summary. Idempotent: re-running with no new blocks is a no-op.
+ */
+export async function syncOnce(): Promise<IndexResult> {
+  if (!(await rpc.reachable())) throw new Error("node RPC unreachable");
+  const { height: tip } = await rpc.tip();
+  let from = indexedHeight() + 1;
+  if (from < CFG.scanFrom) from = CFG.scanFrom;
+  let blocks = 0, reorgs = 0, reorgDepth = 0;
+  if (tip < from) return { from, to: indexedHeight(), tip, blocks, reorgs, reorgDepth };
+
+  for (let h = from; h <= tip; h++) {
+    const blk = await rpc.blockByHeight(h);
+    if (!blk) break; // gap — stop; next poll retries
+    // reorg check (only matters once we have a stored predecessor)
+    const ancestor = await findReorgAncestor(blk);
+    if (ancestor >= 0) {
+      const prevIndexed = indexedHeight();
+      unwindAbove(ancestor);
+      setMeta(TIP_KEY, String(ancestor));
+      reorgs++; reorgDepth = Math.max(reorgDepth, prevIndexed - ancestor);
+      bus.emitEvent({ kind: "reorg", ancestor, depth: prevIndexed - ancestor });
+      h = ancestor; // resume scanning from ancestor+1
+      continue;
+    }
+    writeBlock(blk);
+    setMeta(TIP_KEY, String(h));
+    blocks++;
+    emitBlockEvents(blk, tip);
+  }
+  return { from, to: indexedHeight(), tip, blocks, reorgs, reorgDepth };
+}
+
+// Emit streaming events only for blocks near the tip (don't flood the firehose during
+// a from-genesis backfill). status deepens to "confirmed" past finalDepth.
+function emitBlockEvents(blk: rpc.RpcBlock, tip: number): void {
+  if (tip - blk.height > CFG.finalDepth + 5) return;
+  const status: "tentative" | "confirmed" = tip - blk.height >= CFG.finalDepth ? "confirmed" : "tentative";
+  bus.emitEvent({ kind: "block", height: blk.height, hash: blk.hash, tx_count: blk.txs.length, status });
+  blk.txs.forEach((t, pos) => {
+    const ty = appType(t, pos === 0);
+    if (ty === "Propose" && t.app) bus.emitEvent({ kind: "proposal", txid: t.txid, domain: String(t.app.domain ?? ""), height: blk.height, status });
+    else if (ty === "Attest" && t.app) bus.emitEvent({ kind: "attestation", txid: t.txid, proposal_id: String(t.app.proposal_id ?? ""), attester: deriveAddr(t.inputs?.[0]?.script_sig) ?? "0x?", height: blk.height, status });
+  });
+}
