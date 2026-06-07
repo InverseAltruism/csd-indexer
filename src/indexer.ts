@@ -143,12 +143,50 @@ async function findReorgAncestor(newBlock: rpc.RpcBlock): Promise<number> {
  * Index forward from where we left off up to (tip - 0); reorgs handled inline.
  * Returns a summary. Idempotent: re-running with no new blocks is a no-op.
  */
+/**
+ * Reconcile the re-checkable tip window against the node BEFORE the forward scan. The forward scan
+ * only ever detects a reorg when a TALLER block arrives whose prev mismatches — so a reorg that
+ * lands on an equal-or-LOWER tip height (more chainwork, same/fewer blocks — possible under LWMA,
+ * and an equal-height tip-swap is common on any PoW chain) would otherwise be missed entirely,
+ * leaving orphaned blocks/txs/outputs/proposals at heights (nodeTip..ourTip] served as canonical
+ * (inflated tip, ghost proposals, double-counted balances, L3 resolving an orphaned mapping).
+ * This walks the window [floor..min(ourTip,nodeTip)] and, if the node disagrees, unwinds to the
+ * highest converged height. Returns the reorg depth (0 = nothing to do).
+ */
+async function reconcileTipWindow(tip: number): Promise<number> {
+  const top = indexedHeight();
+  if (top < CFG.scanFrom) return 0;
+  const ceil = Math.min(top, tip);
+  const floor = Math.max(CFG.scanFrom, ceil - CFG.finalDepth);
+  let converged = -1;
+  for (let h = ceil; h >= floor; h--) {
+    const nb = await rpc.blockByHeight(h);
+    const ours = storedHash(h);
+    if (nb && ours && nb.hash === ours) { converged = h; break; }
+  }
+  // unwind target: the highest height we can still trust. If nothing in the window matched, the
+  // divergence is deeper than finalDepth at the tip — fall back to floor-1 (re-scan the window).
+  let target: number;
+  if (converged >= 0) target = converged;                 // window agrees up to `converged`
+  else if (tip < top) target = Math.max(CFG.scanFrom - 1, floor - 1); // node shorter + no match
+  else return 0;                                           // node ≥ us and window agrees → nothing
+  if (target >= top) return 0;                             // already consistent
+  const depth = top - target;
+  unwindAbove(target);
+  setMeta(TIP_KEY, String(target));
+  bus.emitEvent({ kind: "reorg", ancestor: target, depth });
+  return depth;
+}
+
 export async function syncOnce(): Promise<IndexResult> {
   if (!(await rpc.reachable())) throw new Error("node RPC unreachable");
   const { height: tip } = await rpc.tip();
+  let blocks = 0, reorgs = 0, reorgDepth = 0;
+  // FIRST reconcile the tip window (catches an equal/lower-height reorg the forward scan can't).
+  const reconciled = await reconcileTipWindow(tip);
+  if (reconciled > 0) { reorgs++; reorgDepth = reconciled; }
   let from = indexedHeight() + 1;
   if (from < CFG.scanFrom) from = CFG.scanFrom;
-  let blocks = 0, reorgs = 0, reorgDepth = 0;
   if (tip < from) return { from, to: indexedHeight(), tip, blocks, reorgs, reorgDepth };
 
   for (let h = from; h <= tip; h++) {
