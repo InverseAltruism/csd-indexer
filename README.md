@@ -1,129 +1,78 @@
-# csd-indexer — Compute Substrate Indexer + Explorer (L2)
+# csd-indexer — a block explorer & data API for Compute Substrate
 
-> A standalone, reorg-safe indexer that serves what the deliberately-thin CSD node RPC omits —
-> **merkle inclusion proofs, per-attester data, address history, content joins** — behind the
-> well-trodden **Esplora REST contract**.
-> **L2** of the [no-fork ecosystem roadmap](../cairn/docs/ecosystem/03-indexer-explorer.md). No fork, no token, no new on-chain data.
+The Compute Substrate (CSD) node keeps its built-in API deliberately minimal. It can't tell you
+"every transaction that touched this address", "who attested to this proposal", or give you a
+**proof** that a transaction is in a block. csd-indexer fills that gap.
 
-The node RPC is thin on purpose. It gives aggregates (`/oracle`, `/domains`), current UTXOs, and
-raw blocks — but not *who* attested what, not "every tx touching this address," and **no merkle
-proof endpoint** (the one thing the [L0 light client](../csd-sdk) needs to verify inclusion). So we
-read consensus directly into a relational store and re-serve it. **Every claim is a derived view —
-trust comes from the light client re-verifying the merkle proofs, and from anyone re-running the
-indexer and getting byte-identical data** (determinism is the audit).
+It reads the blockchain into a regular database and serves it back as:
 
-## How it works
+- **A friendly web block explorer** — browse blocks, transactions, addresses, and proposals, with
+  a live feed of new blocks. Open it and look around; no account needed.
+- **A developer data API** — address history, balances and unspent coins, per-attester data, and
+  **merkle inclusion proofs** that let a light client (or your browser) prove a transaction is
+  really in the chain.
 
-```
-CSD node (RPC)  ──/block/height/:h──▶  SCAN    (forward-only; one tx-list per block, in order)
-                                       RESOLVE  (inputs ↔ our OWN outputs table → fees, spends, UTXO)
-                                       STORE    (relational, height-tagged: blocks/txs/outputs/
-                                                 address_history/proposals/attestations)
-                                       REORG    (broken prev-link → unwind WHERE height>ancestor → replay)
-client / light  ◀── REST + proofs ──   SERVE    (Esplora contract + merkle-proof + CSD extras)
-```
+It's safe to trust because **you don't have to**: the explorer re-checks every proof *in your own
+browser* against the proof-of-work block headers, and anyone who runs their own indexer against the
+same node gets byte-for-byte identical data. There's nothing to take on faith.
 
-The scan resolves each input against the indexer's **own** `outputs` table (every prior block is
-already indexed, in order), so fees, spend-tracking, address deltas and UTXO sets need **zero extra
-RPC** — the electrs/Esplora UTXO model. Everything carries `height`, so a reorg is
-`DELETE … WHERE height > ancestor` + un-spending outputs orphaned by the rolled-back branch, then a
-clean idempotent replay (the electrs/Subsquid pattern). Blocks deeper than `CONFIRMATIONS_FINAL` are
-treated as final and never unwound.
-
-## Run
+## Run your own
 
 ```
 npm install
-CSD_RPC=http://127.0.0.1:8790 npm run run-all      # continuous indexer + API in one process
-# or, separately:
-npm run index                                       # one sync pass to the tip, then exit
-npm run serve                                        # serve the API over the existing DB
-```
-
-| env | default | meaning |
-|---|---|---|
-| `CSD_RPC` | `http://127.0.0.1:8790` | node RPC (the data source) |
-| `CSD_INDEX_DB` | `./csd-index.db` | sqlite file (node:sqlite — no native dep) |
-| `CSD_INDEX_LISTEN` | `127.0.0.1:8793` | REST/streaming bind |
-| `CSD_SWARM_GATEWAY` | `http://127.0.0.1:8791` | L1 swarm gateway for `/content` joins |
-| `CSD_INDEX_FROM` | `0` | first height to index (raise to skip pre-CSD history) |
-| `CSD_CONFIRMATIONS_FINAL` | `6` | reorg-immutable depth |
-| `CSD_INDEX_BATCH` | `200` | blocks per persisted chunk |
-| `CSD_INDEX_POLL` | `15` | continuous-loop poll interval (s) |
-
-### Run your own (Docker)
-
-```
-docker build -t csd-indexer .
-docker run -p 8793:8793 -v csd-index:/data \
-  -e CSD_RPC=http://host.docker.internal:8790 \
-  csd-indexer
+CSD_RPC=http://127.0.0.1:8790 npm run run-all     # index the chain + serve the explorer/API
 # explorer + API on http://localhost:8793
 ```
 
-Anyone running one against the same node gets byte-identical data — that reproducibility
-*is* the audit. The explorer at `/` re-verifies every merkle proof **in your browser**
-(SubtleCrypto, no trust in the indexer) and checks served content against its on-chain
-`payload_hash`.
+Or with Docker:
 
-## API
+```
+docker build -t csd-indexer .
+docker run -p 8793:8793 -v csd-index:/data -e CSD_RPC=http://host.docker.internal:8790 csd-indexer
+```
 
-**Esplora-compatible core** (existing clients + the light client work unchanged):
-- `GET /blocks/tip/height`, `/blocks/tip/hash`
-- `GET /block-height/:h` → hash · `GET /block/:hash[/txids|/txs]`
+| Setting | Default | Meaning |
+|---|---|---|
+| `CSD_RPC` | `http://127.0.0.1:8790` | the CSD node to read from |
+| `CSD_INDEX_DB` | `./csd-index.db` | the database file (SQLite; no native build needed) |
+| `CSD_INDEX_LISTEN` | `127.0.0.1:8793` | where the explorer + API listen |
+| `CSD_SWARM_GATEWAY` | `http://127.0.0.1:8791` | a content server, for showing post contents (optional) |
+| `CSD_INDEX_FROM` | `0` | first block to index |
+| `CSD_CONFIRMATIONS_FINAL` | `6` | depth after which blocks are treated as final |
+
+It tracks the chain continuously and handles reorgs safely — if the network reorganizes, the
+indexer rewinds the affected blocks and replays the correct ones, so the data always matches the
+real chain.
+
+## The API
+
+**Standard explorer endpoints** (the widely-used Esplora shape, so existing tools work):
+- `GET /blocks/tip/height`, `/block/:hash[/txids|/txs]`, `/block-height/:h`
 - `GET /tx/:id[/status]`
-- `GET /address/:a[/txs[/chain/:last_seen]|/utxo]`
+- `GET /address/:a[/txs|/utxo]`
 
-**CSD-specific extras (the reason this exists):**
-- `GET /tx/:id/merkle-proof` → `{ block_height, pos, merkle:[…], merkle_root }` (Electrum format).
-  Built from the stored ordered tx list via the **same** `merkleBranch` the L0 light client folds
-  with `verifyMerkleProof` — prover and verifier share one convention by construction.
-- `GET /proposal/:id[/attestations]` → the **per-attester** rows the node omits (aggregate-only on-chain).
-- `GET /domains`, `/domain/:d/proposals`.
-- `GET /address/:a/reputation` → attester-history rollup.
-- `GET /content/0x<payload_hash>` → canonical bytes, proxied + cached from the [L1 swarm](../csd-swarm) (self-certifying).
+**The extras that make it useful:**
+- `GET /tx/:id/merkle-proof` — a proof you can fold yourself to confirm the transaction is in its
+  block (this is what light clients and the in-browser verifier use).
+- `GET /proposal/:id/attestations` — the individual attestations behind a proposal (the node only
+  gives totals).
+- `GET /domains`, `/domain/:d/proposals` — browse posts by category.
+- `GET /content/0x<hash>` — the off-chain content for a post, re-verified against its on-chain hash.
+- `GET /registry/peers`, `/registry/gateways`, `/identity/:handle` — name → address lookups and
+  network directories that anyone can recompute and get the same answer.
 
-**L3 registry resolvers** (deterministic; clients can recompute the same answers locally with
-[`@inversealtruism/csd-registry`](https://www.npmjs.com/package/@inversealtruism/csd-registry)):
-- `GET /registry/peers` → ranked, signature-verified bootstrap peers (`csd:peers`).
-- `GET /registry/gateways` → fresh, uptime-attested content gateways (`csd:gateways`).
-- `GET /identity/:handle` → name → address (commit-reveal, first-anchored-verified-wins).
-- `GET /address/:a/identity` → address → primary name (reverse resolution).
+## The explorer
 
-Registry content is fetched via the swarm gateway and **self-certified** (only counted if it hashes
-to the on-chain `payload_hash`), so a lying origin can't inject records.
-
-## Tests
-
-`npm test` (offline, deterministic — no node needed):
-- **decode** — address recovery from a real on-chain `CSD_SIG_V1` script_sig + p2pkh script; app classification.
-- **indexer** — a synthetic chain proves: coinbase/output indexing, spend→UTXO tracking, per-row
-  Propose/Attest capture, merkle proofs folding to the stored header root, and — the core — a
-  **reorg that unwinds orphaned blocks to EXACTLY the canonical state** (spends rolled back, rows
-  removed, balances restored) followed by an **idempotent replay**.
-
-Verified **live** against the running node (`test/_live_check.mjs`, `_reconcile.mjs`, `_browser_verify.mjs`):
-- block hashes + `merkle` roots match the node exactly;
-- **every served merkle proof verifies under the published L0 light-client convention** (and a
-  tampered txid fails);
-- the explorer's **in-browser SubtleCrypto verifier is byte-identical** to `csd-codec` on real blocks;
-- per-attester rows served via HTTP reconcile to the node's aggregate for every domain;
-- a from-genesis re-sync reproduces the node's own per-domain proposal/attestation aggregates exactly.
-
-## Explorer
-
-A self-contained SPA at `/` (phosphor-terminal aesthetic, no build step): home (live block feed via
-SSE + network stats + top domains), block, tx (**in-browser merkle inclusion verification** against
-the PoW header root), address (balance/UTXO/history), domain (proposals), and proposal (per-attester
-breakdown + **in-browser content-integrity check** — served bytes hashed to the on-chain
-`payload_hash`). The whole point: the page trusts the indexer for *nothing* it can re-verify itself.
+A single self-contained page (no build step) with a live block feed, and pages for blocks,
+transactions, addresses, proposals, and categories. The key feature: on a transaction page it
+**re-verifies the merkle proof in your browser** against the proof-of-work header, and on a proposal
+page it **re-hashes the content** to confirm it matches the chain — so the page trusts the indexer
+for nothing it can check itself.
 
 ## Honest limits
 
-The indexer is a **derived, untrusted view**, not a consensus authority. Inclusion is trustless
-(the light client re-verifies the merkle proof against a PoW-checked header); per-attester data and
-rankings are **recomputable, not consensus-signed** — their integrity is "re-run it and diff." It
-can't surface data the chain doesn't have (e.g. off-chain identity, until the L3 registries).
-Content is resolved through the L1 swarm gateway, which self-certifies `sha256(bytes)==payload_hash`.
-sqlite (single-writer) is plenty for one indexer + many readers; promote to Postgres only if
-concurrent writers / `LISTEN`-NOTIFY streaming demand it. MIT.
+The indexer is a **convenient view of the chain, not an authority**. Inclusion proofs are trustless
+(your browser/light client re-checks them against proof-of-work). The derived data — per-attester
+breakdowns, rankings, address history — is **reproducible rather than signed**: the way you audit it
+is to run your own indexer and confirm you get the same numbers. SQLite comfortably handles one
+indexer with many readers. MIT licensed.
