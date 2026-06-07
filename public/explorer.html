@@ -59,7 +59,13 @@
   <a href="https://github.com/InverseAltruism/csd-indexer" target="_blank">source</a>
 </footer>
 <script>
-const API = location.origin; // served by the indexer
+// API base. Standalone (the indexer at :8793, page at "/") → the origin. When mounted under a
+// path prefix (e.g. proxied at https://cairn-substrate.com/explorer) → call the API under that
+// same prefix (".../explorer/api/..."), so a single HTML works both standalone and embedded.
+const API = (() => {
+  const m = location.pathname.match(/(.*)\/explorer\/?$/);
+  return location.origin + (m ? m[1] + "/explorer/api" : "");
+})();
 const $ = (s,r=document)=>r.querySelector(s);
 const el = (h)=>{const t=document.createElement('template');t.innerHTML=h.trim();return t.content.firstChild;};
 // HTML-escape ALL chain-derived text before it touches innerHTML. domain/uri (and any free-form
