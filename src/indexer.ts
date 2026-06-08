@@ -119,24 +119,27 @@ function storedHash(height: number): string | null {
 
 /**
  * Detect a reorg by checking the new block's prev against our stored hash at h-1.
- * If it links, no reorg. If not, walk back (bounded by finalDepth) to the last height
- * where node hash == stored hash; that's the common ancestor. Returns it, or -1 if no
- * reorg, or throws if the fork is deeper than finalDepth (should be impossible).
+ * If it links, no reorg. If not, walk back to the last height where node hash == stored hash;
+ * that's the common ancestor. Returns it, or -1 if no reorg, or scanFrom-1 if the divergence
+ * runs below our scan floor (→ re-scan from the floor).
+ *
+ * We follow the reorg as DEEP as the scan floor — not just finalDepth. A reorg deeper than
+ * finalDepth is rare but REAL (consensus moved; our "final" rows are genuinely orphaned), so
+ * following it is correct AND keeps the loop making forward progress. The old code threw here,
+ * which wedged syncOnce on every poll for any deep reorg at/above the tip (finding D-I1).
  */
 async function findReorgAncestor(newBlock: rpc.RpcBlock): Promise<number> {
   const prevH = newBlock.height - 1;
   const storedPrev = storedHash(prevH);
   if (storedPrev == null) return -1;                       // nothing to link against (fresh / gap)
   if (storedPrev === (newBlock.header.prev ?? "")) return -1; // links cleanly — no reorg
-  // diverged: walk back until node's hash matches what we stored
-  for (let depth = 1; depth <= CFG.finalDepth + 1; depth++) {
-    const h = prevH - depth;
-    if (h < CFG.scanFrom) return CFG.scanFrom - 1;
+  // diverged: walk back until node's hash matches what we stored (bounded by the scan floor)
+  for (let h = prevH - 1; h >= CFG.scanFrom; h--) {
     const nodeBlk = await rpc.blockByHeight(h);
     const ours = storedHash(h);
     if (nodeBlk && ours && nodeBlk.hash === ours) return h;  // common ancestor
   }
-  throw new Error(`reorg deeper than finalDepth(${CFG.finalDepth}) at height ${newBlock.height} — refusing to unwind final history`);
+  return CFG.scanFrom - 1;                                  // diverged below the floor → re-scan from scanFrom
 }
 
 /**
@@ -157,24 +160,32 @@ async function reconcileTipWindow(tip: number): Promise<number> {
   const top = indexedHeight();
   if (top < CFG.scanFrom) return 0;
   const ceil = Math.min(top, tip);
-  const floor = Math.max(CFG.scanFrom, ceil - CFG.finalDepth);
+  // Highest height ≤ ceil where our stored hash still matches the node. Fast path scans the
+  // finalDepth window (the common, shallow case); if NOTHING converges there — a reorg deeper than
+  // finalDepth, or a node tip at/below ours that diverged across the whole window — extend the search
+  // down to the scan floor so we ALWAYS find the true ancestor and make forward progress. The old code
+  // returned 0 here when the node tip was ≥ ours, leaving the forward scan to throw every poll and
+  // wedge the loop on a deep taller/equal-height reorg (finding D-I1).
   let converged = -1;
-  for (let h = ceil; h >= floor; h--) {
+  const fastFloor = Math.max(CFG.scanFrom, ceil - CFG.finalDepth);
+  for (let h = ceil; h >= fastFloor; h--) {
     const nb = await rpc.blockByHeight(h);
     const ours = storedHash(h);
     if (nb && ours && nb.hash === ours) { converged = h; break; }
   }
-  // unwind target: the highest height we can still trust. If nothing in the window matched, the
-  // divergence is deeper than finalDepth at the tip — fall back to floor-1 (re-scan the window).
-  let target: number;
-  if (converged >= 0) target = converged;                 // window agrees up to `converged`
-  else if (tip < top) target = Math.max(CFG.scanFrom - 1, floor - 1); // node shorter + no match
-  else return 0;                                           // node ≥ us and window agrees → nothing
-  if (target >= top) return 0;                             // already consistent
-  const depth = top - target;
-  unwindAbove(target);
-  setMeta(TIP_KEY, String(target));
-  bus.emitEvent({ kind: "reorg", ancestor: target, depth });
+  if (converged < 0) {                                     // deep divergence — walk on to the floor
+    for (let h = fastFloor - 1; h >= CFG.scanFrom; h--) {
+      const nb = await rpc.blockByHeight(h);
+      const ours = storedHash(h);
+      if (nb && ours && nb.hash === ours) { converged = h; break; }
+    }
+    if (converged < 0) converged = CFG.scanFrom - 1;       // no match even at the floor → full re-scan
+  }
+  if (converged >= top) return 0;                          // consistent up to our tip — nothing to unwind
+  const depth = top - converged;
+  unwindAbove(converged);
+  setMeta(TIP_KEY, String(converged));
+  bus.emitEvent({ kind: "reorg", ancestor: converged, depth });
   return depth;
 }
 

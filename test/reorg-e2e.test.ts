@@ -93,4 +93,36 @@ test("HIGH-1 SHORTER-higher-work reorg: node tip BELOW ours → unwind to node t
   assert.equal(danglingUtxos, 0, "no unspent outputs above the new tip height");
 });
 
+// ── D-I1 regression: a reorg DEEPER than finalDepth at/above the tip must NOT wedge the loop ──
+// (Old code threw in findReorgAncestor / returned 0 in reconcileTipWindow → syncOnce wedged forever.)
+test("D-I1 DEEP TALLER reorg (> finalDepth) at the tip: converges, does not wedge", async () => {
+  // 0..11 (12 blocks); divergence will be at height 3 → depth 9, well beyond finalDepth=6
+  CHAIN = buildChain(["g", "Pa", "Pb", "Pc", "Pd", "Pe", "Pf", "Pg", "Ph", "Pi", "Pj", "Pk"]);
+  await syncOnce();
+  assert.equal(indexedHeight(), 11);
+  // node reorgs from height 3 upward to a TALLER branch (now 0..12). node tip (12) ≥ ours (11),
+  // and the fork point (h3) is deeper than finalDepth — the exact case the old code wedged on.
+  CHAIN = buildChain(["g", "Pa", "Pb", "Pr", "Ps", "Pt", "Pu", "Pv", "Pw", "Px", "Py", "Pz", "P1"]);
+  await syncOnce();
+  assert.equal(indexedHeight(), 12, "adopted the deeper taller branch (no wedge, no throw)");
+  assert.equal(storedHash(2), h32("blk-Pb"), "common ancestor at height 2 preserved");
+  assert.equal(storedHash(3), h32("blk-Pr"), "height 3 unwound + replayed onto the new branch");
+  assert.equal(propCount("dom-Pe"), 0, "orphaned deep proposal (old height 4) removed");
+  assert.equal(propCount("dom-Ps"), 1, "new branch proposal (height 4) indexed");
+});
+
+test("D-I1 DEEP EQUAL-height reorg (> finalDepth, node tip == ours): converges, does not wedge", async () => {
+  CHAIN = buildChain(["g", "Pa", "Pb", "Pc", "Pd", "Pe", "Pf", "Pg", "Ph", "Pi", "Pj", "Pk"]); // 0..11
+  await syncOnce();
+  assert.equal(indexedHeight(), 11);
+  // same-length branch diverging at height 3 (tip stays 11) — forward scan can't see it AND the old
+  // reconcile returned 0 for node-tip≥ours, so the loop never made progress (stuck on the orphan).
+  CHAIN = buildChain(["g", "Pa", "Pb", "Pm", "Pn", "Po", "Pp", "Pq", "Pr2", "Ps2", "Pt2", "Pu2"]); // 0..11
+  await syncOnce();
+  assert.equal(liveTip(), 11, "tip height unchanged");
+  assert.equal(storedHash(11), h32("blk-Pu2"), "tip block swapped to the canonical deep branch");
+  assert.equal(propCount("dom-Pf"), 0, "orphaned deep proposal (old height 5) gone — no ghost");
+  assert.equal(propCount("dom-Po"), 1, "new branch proposal (height 5) indexed");
+});
+
 test.after(() => server.close());
