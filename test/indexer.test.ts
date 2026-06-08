@@ -172,3 +172,26 @@ test("REPLAY after reorg is idempotent and reaches a clean new tip", () => {
   const nTx2 = (db().prepare("SELECT COUNT(*) n FROM txs WHERE height=2").get() as any).n;
   assert.equal(nTx2, 2, "exactly two txs at height 2 (no duplication from re-write)");
 });
+
+test("D-I2: re-writing a height with FEWER txs leaves no stale rows (writeBlock self-guard)", () => {
+  const H = 50;
+  const pub = "02" + "cd".repeat(32);
+  const propTxid = txid("di2-prop");
+  const propose = {
+    txid: propTxid, version: 1, locktime: 0,
+    inputs: [{ prev_txid: txid("cb1"), vout: 0, script_sig: sigFor(pub) }],
+    outputs: [{ script_pubkey: spk(ADDR_B), value: 1_000_000 }],
+    app: { type: "Propose", domain: "di2:domain", payload_hash: "0x" + "22".repeat(32), uri: "csd:v1:di2", expires_epoch: 123 },
+  };
+  // v1: height H = coinbase + a Propose
+  writeBlock(mkBlock(H, "0x" + "00".repeat(32), [coinbase("di2-cb", ADDR_A), propose]));
+  assert.equal((db().prepare("SELECT COUNT(*) n FROM txs WHERE height=?").get(H) as any).n, 2, "v1: 2 txs at height");
+  assert.equal((db().prepare("SELECT COUNT(*) n FROM proposals WHERE txid=?").get(propTxid) as any).n, 1, "v1: proposal present");
+
+  // v2: SAME height, tx set SHRANK to just the coinbase — WITHOUT unwindAbove first (the D-I2 case)
+  writeBlock(mkBlock(H, "0x" + "00".repeat(32), [coinbase("di2-cb", ADDR_A)]));
+  assert.equal((db().prepare("SELECT COUNT(*) n FROM txs WHERE height=?").get(H) as any).n, 1, "stale tx removed → 1 tx");
+  assert.equal((db().prepare("SELECT COUNT(*) n FROM proposals WHERE txid=?").get(propTxid) as any).n, 0, "stale proposal removed");
+  assert.equal((db().prepare("SELECT COUNT(*) n FROM outputs WHERE txid=?").get(propTxid) as any).n, 0, "stale output removed");
+  assert.equal((db().prepare("SELECT COUNT(*) n FROM address_history WHERE txid=?").get(propTxid) as any).n, 0, "stale address_history removed");
+});

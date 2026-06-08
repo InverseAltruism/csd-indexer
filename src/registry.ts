@@ -46,9 +46,22 @@ async function fetchContent(hash: string): Promise<any> {
   return parsed;
 }
 
+// Memo of the assembled record set (E5). Registry data only changes when a registry-domain
+// proposal/attestation is added/removed (which advances the tip in production) — so we key on a cheap
+// fingerprint: tipHeight + the registry proposal & attestation counts. Any of those changing
+// invalidates the memo. We store ONLY when every record's content has resolved; if any is still null
+// (swarm not yet pinned) we leave it uncached so the next request retries — preserving self-healing.
+let recordsCache: { key: string; records: ChainRecord[] } | null = null;
+
 /** Build the ChainRecord set for the registry domains from indexed rows + fetched content. */
 export async function buildRegistryRecords(): Promise<ChainRecord[]> {
   const ph = REG_DOMAINS.map(() => "?").join(",");
+  const fp = db().prepare(
+    `SELECT (SELECT COUNT(*) FROM proposals WHERE domain IN (${ph})) AS p,
+            (SELECT COUNT(*) FROM attestations WHERE proposal_id IN (SELECT txid FROM proposals WHERE domain IN (${ph}))) AS a`,
+  ).get(...REG_DOMAINS, ...REG_DOMAINS) as { p: number; a: number };
+  const key = `${tipHeight()}:${fp.p}:${fp.a}`;
+  if (recordsCache && recordsCache.key === key) return recordsCache.records;
   const props = db().prepare(
     `SELECT txid, domain, payload_hash, proposer, fee, height, expires_epoch FROM proposals WHERE domain IN (${ph})`,
   ).all(...REG_DOMAINS) as any[];
@@ -64,6 +77,8 @@ export async function buildRegistryRecords(): Promise<ChainRecord[]> {
       expiresEpoch: Number(p.expires_epoch || 0), content, attestations,
     });
   }
+  // memoize only if every record's content resolved (else retry next call → self-heal)
+  if (out.every((r) => r.content !== null && r.content !== undefined)) recordsCache = { key, records: out };
   return out;
 }
 

@@ -23,12 +23,28 @@ export function indexedHeight(): number {
   return v == null ? CFG.scanFrom - 1 : Number(v);
 }
 
-/** Write one block + all its txs/outputs/spends/events in a single transaction. */
+/**
+ * Write one block + all its txs/outputs/spends/events in a single transaction.
+ *
+ * Self-guarding (D-I2): before inserting, it CLEARS any prior version of this exact height
+ * (un-spends outputs spent by this height + deletes this height's txs/outputs/proposals/
+ * attestations/address_history), so re-writing a height whose tx set SHRANK leaves no stale rows
+ * even if the caller didn't unwindAbove first. Precondition for a BURIED height (later blocks still
+ * present): call unwindAbove(height-1) first — in the production reorg path that always happens, and
+ * forward writes are always at the tip, so this clear is correct there (no later spends to lose).
+ */
 export function writeBlock(b: rpc.RpcBlock): void {
   const d = db();
   dbTx(() => {
     const blk = b;
     const time = Number(blk.header.time ?? 0);
+    // clear any prior contents of THIS height (keeps a same-height re-write internally consistent)
+    d.prepare(`UPDATE outputs SET spent_txid=NULL, spent_height=NULL WHERE spent_height=?`).run(blk.height);
+    d.prepare(`DELETE FROM address_history WHERE height=?`).run(blk.height);
+    d.prepare(`DELETE FROM proposals WHERE height=?`).run(blk.height);
+    d.prepare(`DELETE FROM attestations WHERE height=?`).run(blk.height);
+    d.prepare(`DELETE FROM outputs WHERE height=?`).run(blk.height);
+    d.prepare(`DELETE FROM txs WHERE height=?`).run(blk.height);
     d.prepare(`INSERT INTO blocks(height,hash,prev,merkle,time,bits,nonce,version,tx_count,chainwork,orphaned)
       VALUES(?,?,?,?,?,?,?,?,?,?,0)
       ON CONFLICT(height) DO UPDATE SET hash=excluded.hash, prev=excluded.prev, merkle=excluded.merkle,
