@@ -1,4 +1,4 @@
-# csd-indexer — a block explorer & data API for Compute Substrate
+# csd-indexer - a block explorer & data API for Compute Substrate
 
 The Compute Substrate (CSD) node keeps its built-in API deliberately minimal. It can't tell you
 "every transaction that touched this address", "who attested to this proposal", or give you a
@@ -6,9 +6,9 @@ The Compute Substrate (CSD) node keeps its built-in API deliberately minimal. It
 
 It reads the blockchain into a regular database and serves it back as:
 
-- **A friendly web block explorer** — browse blocks, transactions, addresses, and proposals, with
+- **A friendly web block explorer** - browse blocks, transactions, addresses, and proposals, with
   a live feed of new blocks. Open it and look around; no account needed.
-- **A developer data API** — address history, balances and unspent coins, per-attester data, and
+- **A developer data API** - address history, balances and unspent coins, per-attester data, and
   **merkle inclusion proofs** that let a light client (or your browser) prove a transaction is
   really in the chain.
 
@@ -40,7 +40,7 @@ docker run -p 8793:8793 -v csd-index:/data -e CSD_RPC=http://host.docker.interna
 | `CSD_INDEX_FROM` | `0` | first block to index |
 | `CSD_CONFIRMATIONS_FINAL` | `6` | depth after which blocks are treated as final |
 
-It tracks the chain continuously and handles reorgs safely — if the network reorganizes, the
+It tracks the chain continuously and handles reorgs safely - if the network reorganizes, the
 indexer rewinds the affected blocks and replays the correct ones, so the data always matches the
 real chain.
 
@@ -52,13 +52,13 @@ real chain.
 - `GET /address/:a[/txs|/utxo]`
 
 **The extras that make it useful:**
-- `GET /tx/:id/merkle-proof` — a proof you can fold yourself to confirm the transaction is in its
+- `GET /tx/:id/merkle-proof` - a proof you can fold yourself to confirm the transaction is in its
   block (this is what light clients and the in-browser verifier use).
-- `GET /proposal/:id/attestations` — the individual attestations behind a proposal (the node only
+- `GET /proposal/:id/attestations` - the individual attestations behind a proposal (the node only
   gives totals).
-- `GET /domains`, `/domain/:d/proposals` — browse posts by category.
-- `GET /content/0x<hash>` — the off-chain content for a post, re-verified against its on-chain hash.
-- `GET /registry/peers`, `/registry/gateways`, `/identity/:handle` — name → address lookups and
+- `GET /domains`, `/domain/:d/proposals` - browse posts by category.
+- `GET /content/0x<hash>` - the off-chain content for a post, re-verified against its on-chain hash.
+- `GET /registry/peers`, `/registry/gateways`, `/identity/:handle` - name → address lookups and
   network directories that anyone can recompute and get the same answer.
 
 ## The explorer
@@ -66,13 +66,13 @@ real chain.
 A single self-contained page (no build step) with a live block feed, and pages for blocks,
 transactions, addresses, proposals, and categories. The key feature: on a transaction page it
 **re-verifies the merkle proof in your browser** against the proof-of-work header, and on a proposal
-page it **re-hashes the content** to confirm it matches the chain — so the page trusts the indexer
+page it **re-hashes the content** to confirm it matches the chain - so the page trusts the indexer
 for nothing it can check itself.
 
 ## Honest limits
 
 The indexer is a **convenient view of the chain, not an authority**. Inclusion proofs are trustless
-(your browser/light client re-checks them against proof-of-work). The derived data — per-attester
-breakdowns, rankings, address history — is **reproducible rather than signed**: the way you audit it
+(your browser/light client re-checks them against proof-of-work). The derived data - per-attester
+breakdowns, rankings, address history - is **reproducible rather than signed**: the way you audit it
 is to run your own indexer and confirm you get the same numbers. SQLite comfortably handles one
 indexer with many readers. MIT licensed.
