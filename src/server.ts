@@ -9,6 +9,7 @@ import { dirname, join } from "node:path";
 import { CFG, host, port } from "./config.js";
 import { verifyContentBytes } from "@inversealtruism/csd-codec";
 import * as q from "./queries.js";
+import * as analytics from "./analytics.js";
 import { merkleProof } from "./merkle.js";
 import { indexedHeight } from "./indexer.js";
 import { sseHandler, attachWs } from "./stream.js";
@@ -118,6 +119,11 @@ export function buildApp() {
     const feesPaid = atts.reduce((s, a) => s + Number(a.fee || 0), 0);
     res.json({ address: req.params.a.toLowerCase(), attestations: n, avg_score: avgScore, avg_confidence: avgConf, fees_paid: feesPaid });
   });
+
+  // ── miner / holder / supply analytics (read-only aggregates; see src/analytics.ts) ──
+  app.get("/analytics/miners", (req, res) => res.json(analytics.miners(String(req.query.window ?? "1d"))));
+  app.get("/analytics/richlist", (req, res) => res.json(analytics.richlist(Number(req.query.limit ?? 100))));
+  app.get("/analytics/supply", (_req, res) => res.json(analytics.supply()));
 
   // ── L3 registry resolvers (deterministic; clients can recompute via csd-registry) ──
   app.get("/registry/peers", async (_req, res) => { try { res.json(await registry.peers()); } catch (e) { res.status(500).json({ error: String((e as Error).message) }); } });
