@@ -91,26 +91,42 @@ export function richlist(limit = 100): unknown {
   const tip = tipRow();
   if (!tip) return { ok: false, error: "no blocks indexed" };
   const lim = Math.max(1, Math.min(500, limit));
-  const rows = db().prepare(`
+  // setReadBigInts: a per-address SUM(value) can also exceed 2^53 (a whale UTXO set) → read exact.
+  const st = db().prepare(`
     SELECT addr, SUM(value) AS balance, COUNT(*) AS utxos
     FROM outputs WHERE spent_txid IS NULL AND addr IS NOT NULL
     GROUP BY addr ORDER BY balance DESC, addr ASC LIMIT ?
-  `).all(lim) as Array<{ addr: string; balance: number; utxos: number }>;
+  `);
+  st.setReadBigInts(true);
+  const rows = st.all(lim) as Array<{ addr: string; balance: bigint; utxos: bigint }>;
   const emitted = emittedSupply();
   return {
     ok: true, height: tip.height, count: rows.length, emitted_supply: emitted.toString(),
     holders: rows.map((r, i) => ({
-      rank: i + 1, addr: r.addr, balance: r.balance, utxos: r.utxos,
-      pct_of_emitted: emitted > 0n ? Number((BigInt(Math.round(r.balance)) * 1_000_000n) / emitted) / 10_000 : 0,
+      rank: i + 1, addr: r.addr, balance: amt(r.balance), utxos: Number(r.utxos),
+      pct_of_emitted: emitted > 0n ? Number((r.balance * 1_000_000n) / emitted) / 10_000 : 0,
     })),
   };
 }
 
+// Read an integer SUM as BigInt. node:sqlite THROWS ERR_OUT_OF_RANGE reading an aggregate past
+// 2^53 as a Number — and total emission crosses 2^53 (~9e15) in a few years, which would 500 every
+// analytics endpoint. setReadBigInts keeps these exact (same pattern as queries.ts addressStats).
+function sumBig(sql: string): bigint {
+  const st = db().prepare(sql);
+  st.setReadBigInts(true);
+  return ((st.get() as { v: bigint | null }).v) ?? 0n;
+}
+// A BigInt amount → JS number when safe, else a decimal string (never lossy; never NaN in JSON).
+function amt(v: bigint): number | string {
+  return v <= BigInt(Number.MAX_SAFE_INTEGER) && v >= BigInt(Number.MIN_SAFE_INTEGER) ? Number(v) : v.toString();
+}
+
 /** True emission = Σ coinbase outputs − Σ tx fees (coinbase value = subsidy + fees). */
 function emittedSupply(): bigint {
-  const cb = db().prepare("SELECT SUM(o.value) AS v FROM outputs o JOIN txs t ON o.txid=t.txid WHERE t.coinbase=1").get() as { v: number | null };
-  const fees = db().prepare("SELECT SUM(fee) AS f FROM txs WHERE coinbase=0").get() as { f: number | null };
-  return BigInt(cb.v ?? 0) - BigInt(fees.f ?? 0);
+  const cb = sumBig("SELECT SUM(o.value) AS v FROM outputs o JOIN txs t ON o.txid=t.txid WHERE t.coinbase=1");
+  const fees = sumBig("SELECT SUM(fee) AS v FROM txs WHERE coinbase=0");
+  return cb - fees;
 }
 
 export function supply(): unknown {
