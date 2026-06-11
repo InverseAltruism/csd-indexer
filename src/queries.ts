@@ -74,7 +74,10 @@ export function addressStats(addr: string): { funded: number | string; spent: nu
 // ── CSD-specific (the reason this exists) ──
 export function proposal(id: string): any { return db().prepare("SELECT * FROM proposals WHERE txid=?").get(id) ?? null; }
 export function proposalsByDomain(domain: string, limit = 100): any[] {
-  return db().prepare("SELECT * FROM proposals WHERE domain=? ORDER BY height DESC LIMIT ?").all(domain, limit) as any[];
+  // clamp: callers (e.g. metaprotocol resolvers) may ask for the full domain history —
+  // a resolver fed a truncated feed would silently lose its oldest records (deploys!)
+  const lim = Math.min(Math.max(1, Math.floor(Number(limit) || 100)), 10_000);
+  return db().prepare("SELECT * FROM proposals WHERE domain=? ORDER BY height DESC LIMIT ?").all(domain, lim) as any[];
 }
 export function attestationsFor(proposalId: string): any[] {
   return db().prepare("SELECT proposal_id, attester, score, confidence, fee, txid, height, time FROM attestations WHERE proposal_id=? ORDER BY height").all(proposalId) as any[];
