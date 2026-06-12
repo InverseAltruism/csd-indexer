@@ -117,7 +117,7 @@
 </header>
 <main id="view"><div class="loading">loading…</div></main>
 <footer>
-  CSD Explorer · a <b>derived, untrusted view</b> — inclusion is re-verified in your browser against the PoW header.
+  CSD Explorer · a <b>derived, untrusted view</b> - inclusion is re-verified in your browser against the PoW header.
   <a href="https://github.com/InverseAltruism/csd-indexer" target="_blank">source</a>
 </footer>
 <script>
@@ -138,7 +138,7 @@ const SIB = (() => {
 })();
 const jx = async(base,p)=>{ if(!base) return null; try{ const r=await fetch(base+p); if(!r.ok) return null; return await r.json(); }catch{ return null; } };
 
-// Known-address labels — operational identities that make flows legible. PUBLIC info only.
+// Known-address labels - operational identities that make flows legible. PUBLIC info only.
 const LABELS = {
   "0x6b09ce74e6070ebc982ab0fb793a211c4d24f016": "CairnX treasury",
   "0x9d9305de03a77efd7f69720baff8e3e461cfe010": "Cairn treasury",
@@ -150,7 +150,7 @@ const labelOf = (a)=> LABELS[(a||'').toLowerCase()] || null;
 const $ = (s,r=document)=>r.querySelector(s);
 const el = (h)=>{const t=document.createElement('template');t.innerHTML=h.trim();return t.content.firstChild;};
 // HTML-escape ALL chain-derived text before it touches innerHTML. domain/uri (and any free-form
-// field) are attacker-controlled on-chain — without this they are a stored-XSS sink.
+// field) are attacker-controlled on-chain - without this they are a stored-XSS sink.
 const esc = (s)=> String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const short = (s,n=10)=> { s=esc(s); return s? (s.length>2*n? s.slice(0,n)+'…'+s.slice(-6): s):''; };
 // short() is only ever called on hex (txid/hash/addr) so escaping is a no-op there, but it keeps
@@ -203,11 +203,11 @@ function doSearch(e){e.preventDefault();let q=$('#q').value.trim();if(!q)return 
 // chain string like a domain). Both go through esc to block attribute/markup breakout.
 const link=(href,label,cls='')=>`<a class="${esc(cls)}" href="#${esc(href)}">${esc(label)}</a>`;
 const txidLink=(t)=>link('/tx/'+t,short(t,10),'mono');
-const addrLink=(a)=>a&&a!=='0x?'?link('/address/'+a,short(a,8),'mono')+(labelOf(a)?`<span class="chip">${esc(labelOf(a))}</span>`:''):'<span class="dim">—</span>';
+const addrLink=(a)=>a&&a!=='0x?'?link('/address/'+a,short(a,8),'mono')+(labelOf(a)?`<span class="chip">${esc(labelOf(a))}</span>`:''):'<span class="dim">-</span>';
 
 // ── CairnX record → plain English (mirrors cairnx CONVENTION §4/§9-18; display only) ──
 const fmtAmt=(v,dec)=>{try{const n=BigInt(v);const d=BigInt(10)**BigInt(dec||0);const i=n/d,f=n%d;return f?`${i}.${String(f).padStart(Number(dec),'0').replace(/0+$/,'')}`:i.toLocaleString();}catch{return esc(v);}};
-// token decimals, warmed once per session from the resolver (cairn front door only) — action
+// token decimals, warmed once per session from the resolver (cairn front door only) - action
 // lines show HUMAN amounts when known, labeled base units otherwise (never a silent 10^n shift)
 let DEC=null;
 async function warmDecimals(){ if(DEC) return DEC; DEC={}; const t=await jx(SIB.cairnx,'/tokens'); for(const x of (t||[])) DEC[x.ticker]=x.decimals; return DEC; }
@@ -216,24 +216,24 @@ function describeCairnx(rec){
   try{
     const giveTok = rec.give&&rec.give.ticker, giveName = rec.give&&rec.give.name;
     switch(rec.t){
-      case 'deploy': return `🪙 <span class="what">Deployed token <b class="amber">${esc(rec.ticker)}</b></span> — supply ${fmtAmt(rec.supply,rec.decimals)}, ${rec.mint==='issuer'?'issuer-mint (fixed)':'open mint'}${rec.name?` · “${esc(rec.name)}”`:''}`;
-      case 'mint': return `⛏ <span class="what">Minted <b class="amber">${esc(rec.ticker)}</b></span>${rec.amount?` — ${amt(rec.amount,rec.ticker)}`:''}`;
+      case 'deploy': return `🪙 <span class="what">Deployed token <b class="amber">${esc(rec.ticker)}</b></span> - supply ${fmtAmt(rec.supply,rec.decimals)}, ${rec.mint==='issuer'?'issuer-mint (fixed)':'open mint'}${rec.name?` · “${esc(rec.name)}”`:''}`;
+      case 'mint': return `⛏ <span class="what">Minted <b class="amber">${esc(rec.ticker)}</b></span>${rec.amount?` - ${amt(rec.amount,rec.ticker)}`:''}`;
       case 'transfer': return `→ <span class="what">Transferred <b>${amt(rec.amount,rec.ticker)}</b> <b class="amber">${esc(rec.ticker)}</b></span> to ${addrLink(rec.to)}`;
       case 'offer': {
         const what = giveName?`name <b class="green">${esc(giveName)}.csd</b>`:`<b>${amt(rec.give.amount,giveTok)}</b> <b class="amber">${esc(giveTok)}</b>`;
         const price = rec.want.value!=null?`${fmtCSD(rec.want.value)}`:`${esc(rec.want.amount)} ${esc(rec.want.ticker)}`;
-        return `🏷 <span class="what">Listed ${what} for <b>${price}</b></span>${rec.taker?` — reserved for ${addrLink(rec.taker)} (RFQ)`:' — open offer'}${rec.min?` · partial fills ≥ ${fmtCSD(rec.min)}`:''}${rec.bid?' · answers a bid':''}`;
+        return `🏷 <span class="what">Listed ${what} for <b>${price}</b></span>${rec.taker?` - reserved for ${addrLink(rec.taker)} (RFQ)`:' - open offer'}${rec.min?` · partial fills ≥ ${fmtCSD(rec.min)}`:''}${rec.bid?' · answers a bid':''}`;
       }
       case 'bid': {
         const want = rec.want.name?`name <b class="green">${esc(rec.want.name)}.csd</b>`:`<b>${amt(rec.want.amount,rec.want.ticker)}</b> <b class="amber">${esc(rec.want.ticker)}</b>`;
-        return `🙋 <span class="what">Bid <b>${fmtCSD(rec.give.value)}</b> for ${want}</span> — non-binding; a seller answers with a reserved offer`;
+        return `🙋 <span class="what">Bid <b>${fmtCSD(rec.give.value)}</b> for ${want}</span> - non-binding; a seller answers with a reserved offer`;
       }
       case 'ocancel': return `✕ <span class="what">Cancelled all open offers</span>${rec.ticker?` in <b class="amber">${esc(rec.ticker)}</b>`:rec.name?` on <b class="green">${esc(rec.name)}.csd</b>`:''}`;
-      case 'ncommit': return `🔒 <span class="what">Sealed a name commitment</span> — the name is revealed later (front-run defense)`;
+      case 'ncommit': return `🔒 <span class="what">Sealed a name commitment</span> - the name is revealed later (front-run defense)`;
       case 'name': return `📛 <span class="what">${rec.salt?'Revealed & claimed':'Claimed'} name <b class="green">${esc(rec.name)}.csd</b></span>`;
       case 'nxfer': return `🎁 <span class="what">Transferred name <b class="green">${esc(rec.name)}.csd</b></span> to ${addrLink(rec.to)}`;
       case 'nset': return `📍 <span class="what">Pointed <b class="green">${esc(rec.name)}.csd</b></span> at ${addrLink(rec.addr)}`;
-      case 'nrenew': return `♻️ <span class="what">Renewed the lease on <b class="green">${esc(rec.name)}.csd</b></span> — +1 year`;
+      case 'nrenew': return `♻️ <span class="what">Renewed the lease on <b class="green">${esc(rec.name)}.csd</b></span> - +1 year`;
       case 'tmeta': return `🖼 <span class="what">Updated <b class="amber">${esc(rec.ticker)}</b> metadata</span> (content-addressed)`;
       default: return null;
     }
@@ -242,7 +242,7 @@ function describeCairnx(rec){
 function describeDomainRecord(domain,uri){
   if(domain==='cairnx:v1'){ try{ return describeCairnx(JSON.parse(uri)); }catch{ return null; } }
   if(domain==='csd:anchor:base'){ try{ const a=JSON.parse(uri); return `⚓ <span class="what">Anchored Base block <b>${Number(a.height??a.number??0).toLocaleString()}</b></span> into CSD (cross-chain checkpoint)`; }catch{ return null; } }
-  if(domain==='csd:bridge:deploy'){ return `📜 <span class="what">Bridge deployment registry record</span> — the canonical contract addresses, verifiable against any node`; }
+  if(domain==='csd:bridge:deploy'){ return `📜 <span class="what">Bridge deployment registry record</span> - the canonical contract addresses, verifiable against any node`; }
   return null;
 }
 // payment flow of a tx, from the signer's perspective (single-signer chain: signer pays all inputs)
@@ -275,22 +275,22 @@ async function home(v){
   const halvDays=supply?Math.round(supply.halving.est_seconds_remaining/86400):null;
   v.appendChild(el(`<div class="pulse">
     <div class="pu hot"><div class="n">${health.indexed_height.toLocaleString()}</div><div class="l">block height</div></div>
-    <div class="pu"><div class="n">${miners?(miners.network_hashrate/1e9).toFixed(1):'—'} <span class="u">GH/s</span></div><div class="l">network hashrate</div></div>
-    <div class="pu"><div class="n">${miners?Math.round(miners.avg_interval_secs):'—'} <span class="u">s</span></div><div class="l">avg block time</div></div>
-    <div class="pu"><div class="n">${miners?miners.miner_count:'—'}</div><div class="l">miners (24h)</div></div>
-    <div class="pu gold"><div class="n">${supply?fmtCSD(supply.emitted_supply).replace(' CSD',''):'—'} <span class="u">CSD</span></div><div class="l">circulating (${supply?supply.pct_emitted.toFixed(2):'—'}% of max)</div></div>
-    <div class="pu"><div class="n">${halvDays!=null?'~'+Math.round(halvDays/365*10)/10+' <span class="u">yr</span>':'—'}</div><div class="l">to first halving</div></div>
+    <div class="pu"><div class="n">${miners?(miners.network_hashrate/1e9).toFixed(1):'-'} <span class="u">GH/s</span></div><div class="l">network hashrate</div></div>
+    <div class="pu"><div class="n">${miners?Math.round(miners.avg_interval_secs):'-'} <span class="u">s</span></div><div class="l">avg block time</div></div>
+    <div class="pu"><div class="n">${miners?miners.miner_count:'-'}</div><div class="l">miners (24h)</div></div>
+    <div class="pu gold"><div class="n">${supply?fmtCSD(supply.emitted_supply).replace(' CSD',''):'-'} <span class="u">CSD</span></div><div class="l">circulating (${supply?supply.pct_emitted.toFixed(2):'-'}% of max)</div></div>
+    <div class="pu"><div class="n">${halvDays!=null?'~'+Math.round(halvDays/365*10)/10+' <span class="u">yr</span>':'-'}</div><div class="l">to first halving</div></div>
   </div>`));
 
   // ── coins on this chain: native CSD + every CairnX token (humanly readable) ──
-  const coinsPanel=el(`<div class="panel"><h2>the CSD economy — native coin & on-chain tokens</h2><div class="coins" id="coins"></div>
+  const coinsPanel=el(`<div class="panel"><h2>the CSD economy: native coin & on-chain tokens</h2><div class="coins" id="coins"></div>
     <div class="muted" id="coins-note"></div></div>`);
   v.appendChild(coinsPanel);
   const coins=$('#coins',coinsPanel);
-  coins.appendChild(el(`<div class="coin"><span class="tk">CSD</span><span class="nm">the native coin — secures the chain (PoW)</span>
-    <div class="meta"><span>circulating <b>${supply?fmtCSD(supply.emitted_supply):'—'}</b></span>
-    <span>max <b>${supply?fmtCSD(supply.max_supply):'—'}</b></span>
-    <span>block reward <b>${supply?fmtCSD(supply.block_reward):'—'}</b></span></div>
+  coins.appendChild(el(`<div class="coin"><span class="tk">CSD</span><span class="nm">the native coin - secures the chain (PoW)</span>
+    <div class="meta"><span>circulating <b>${supply?fmtCSD(supply.emitted_supply):'-'}</b></span>
+    <span>max <b>${supply?fmtCSD(supply.max_supply):'-'}</b></span>
+    <span>block reward <b>${supply?fmtCSD(supply.block_reward):'-'}</b></span></div>
     <div class="bar"><i style="width:${supply?Math.max(1,supply.pct_emitted):0}%"></i></div></div>`));
   (async()=>{
     const toks=await jx(SIB.cairnx,'/tokens');
@@ -298,11 +298,11 @@ async function home(v){
     const names=await jx(SIB.cairnx,'/names');
     for(const t of toks){
       const pct=Number(t.supply)>0?Number(BigInt(t.minted)*100n/BigInt(t.supply)):0;
-      coins.appendChild(el(`<a class="coin" href="#/token/${esc(t.ticker)}"><span class="tk">${esc(t.ticker)}</span><span class="nm">${esc(t.name||'CairnX token')} — ${t.mint==='issuer'?'fixed supply (issuer-mint)':'open mint'}</span>
+      coins.appendChild(el(`<a class="coin" href="#/token/${esc(t.ticker)}"><span class="tk">${esc(t.ticker)}</span><span class="nm">${esc(t.name||'CairnX token')} - ${t.mint==='issuer'?'fixed supply (issuer-mint)':'open mint'}</span>
         <div class="meta"><span>minted <b>${fmtAmt(t.minted,t.decimals)}</b></span><span>max <b>${fmtAmt(t.supply,t.decimals)}</b></span></div>
         <div class="bar"><i style="width:${Math.max(2,pct)}%"></i></div></a>`));
     }
-    $('#coins-note',coinsPanel).innerHTML=`Every token above is <b>CairnX</b> — Compute Substrate's native token standard: records carried inside ordinary chain transactions (the Ordinals/Runes class, but with atomic delivery-versus-payment built into consensus), no contracts, no custodian, state recomputable by anyone. ${names?`<b>${names.length}</b> <span class=\"green\">.csd</span> names registered. `:''}Trade at <a href="https://cairn-substrate.com/trade" target="_blank">/trade</a> · build on it: <a href="https://cairn-substrate.com/docs" target="_blank">docs</a> + the <span class="mono">@inversealtruism/cairnx-core</span> package.`;
+    $('#coins-note',coinsPanel).innerHTML=`Every token above is <b>CairnX</b> - Compute Substrate's first token standard: records carried inside ordinary chain transactions (the Ordinals/Runes class, but with atomic delivery-versus-payment built into consensus), no contracts, no custodian, state recomputable by anyone. ${names?`<b>${names.length}</b> <span class=\"green\">.csd</span> names registered. `:''}Trade at <a href="https://cairn-substrate.com/trade" target="_blank">/trade</a> · build on it: <a href="https://cairn-substrate.com/docs" target="_blank">docs</a> + the <span class="mono">@inversealtruism/cairnx-core</span> package.`;
   })();
 
   v.appendChild(el(`<div class="row">
@@ -313,7 +313,7 @@ async function home(v){
       <div>transactions</div><div class="v">${health.txs.toLocaleString()}</div>
       <div>proposals</div><div class="v">${health.proposals.toLocaleString()}</div>
       <div>attestations</div><div class="v">${health.attestations.toLocaleString()}</div>
-      <div>top miner (24h)</div><div class="v">${miners&&miners.miners&&miners.miners[0]?addrLink(miners.miners[0].addr)+' <span class="dim">('+Math.round((miners.concentration.top1)*100)+'% of blocks)</span>':'—'}</div>
+      <div>top miner (24h)</div><div class="v">${miners&&miners.miners&&miners.miners[0]?addrLink(miners.miners[0].addr)+' <span class="dim">('+Math.round((miners.concentration.top1)*100)+'% of blocks)</span>':'-'}</div>
     </div></div>
   </div>`));
   const feed=el(`<div class="panel"><h2>latest blocks <span class="pill" id="livepill">● live</span></h2>
@@ -337,7 +337,7 @@ async function tokenPage(v,ticker){
     <div class="action"><span class="tk" style="font-size:24px;color:var(--amber);font-weight:700">${esc(t.ticker)}</span>
       <span class="nm dim" style="margin-left:8px">${esc(t.name||'CairnX token')}</span></div>
     <div class="kv">
-      <div>kind</div><div class="v">${t.mint==='issuer'?'fixed supply — only the issuer could mint (no dilution)':'open mint (up to '+fmtAmt(t.mintLimit||'0',t.decimals)+' per mint)'}</div>
+      <div>kind</div><div class="v">${t.mint==='issuer'?'fixed supply - only the issuer could mint (no dilution)':'open mint (up to '+fmtAmt(t.mintLimit||'0',t.decimals)+' per mint)'}</div>
       <div>minted / max</div><div class="v"><b>${fmtAmt(t.minted,t.decimals)}</b> / ${fmtAmt(t.supply,t.decimals)} <span class="dim">(${pct.toFixed(1)}%)</span></div>
       <div>decimals</div><div class="v">${t.decimals}</div>
       <div>deployed</div><div class="v">${link('/block/'+t.height,t.height)} by ${addrLink(t.deployer)} <span class="dim">· tx ${txidLink(t.deployId)}</span></div>
@@ -372,7 +372,7 @@ async function blockPage(v,id){
   v.innerHTML='';
   v.appendChild(el(`<div class="panel"><h2>block ${b.height}</h2><div class="kv">
     <div>hash</div><div class="v mono green">${esc(b.hash)}</div>
-    <div>prev</div><div class="v">${b.prev?link('/block/'+b.prev,b.prev,'mono'):'—'}</div>
+    <div>prev</div><div class="v">${b.prev?link('/block/'+b.prev,b.prev,'mono'):'-'}</div>
     <div>merkle root</div><div class="v mono dim">${esc(b.merkle)}</div>
     <div>time</div><div class="v">${new Date(b.time*1000).toISOString()} <span class="dim">(${ago(b.time)})</span></div>
     <div>bits</div><div class="v">0x${(b.bits>>>0).toString(16)}</div>
@@ -401,7 +401,7 @@ async function txPage(v,id){
       if(prop) line=describeDomainRecord(prop.domain,prop.uri)
         || `📌 <span class="what">Anchored a proposal</span> in ${link('/domain/'+encodeURIComponent(prop.domain),prop.domain)}`;
     } else if(tx.app_type==='Attest'){
-      // the attested proposal id lives in the tx app payload — ask the node (cairn front door only)
+      // the attested proposal id lives in the tx app payload - ask the node (cairn front door only)
       const full=await jx(SIB.node,'/tx/'+tx.txid);
       const pid=full&&full.tx&&full.tx.app&&full.tx.app.proposal_id;
       if(pid){
@@ -412,18 +412,18 @@ async function txPage(v,id){
           let rec=null; try{rec=JSON.parse(prop.uri);}catch{}
           const me=(tx.signer||'').toLowerCase();
           const paid=(tx.outputs||[]).filter(o=>(o.addr||'').toLowerCase()!==me).reduce((s,o)=>s+o.value,0);
-          if(score===0) line=`✕ <span class="what">Cancelled</span> ${rec&&rec.t==='bid'?'a bid':'an offer'} — ${link('/proposal/'+pidHex,short(pidHex,10),'mono')}`;
-          else if(conf===1000000&&rec) line=`⇄ <span class="what">Token swap fill</span> — took the offer ${link('/proposal/'+pidHex,short(pidHex,10),'mono')} (${esc(rec.give&&rec.give.amount)} ${esc(rec.give&&rec.give.ticker)} for ${esc(rec.want&&rec.want.amount)} ${esc(rec.want&&rec.want.ticker)}, paid in tokens — no CSD moves)`;
+          if(score===0) line=`✕ <span class="what">Cancelled</span> ${rec&&rec.t==='bid'?'a bid':'an offer'} - ${link('/proposal/'+pidHex,short(pidHex,10),'mono')}`;
+          else if(conf===1000000&&rec) line=`⇄ <span class="what">Token swap fill</span> - took the offer ${link('/proposal/'+pidHex,short(pidHex,10),'mono')} (${esc(rec.give&&rec.give.amount)} ${esc(rec.give&&rec.give.ticker)} for ${esc(rec.want&&rec.want.amount)} ${esc(rec.want&&rec.want.ticker)}, paid in tokens - no CSD moves)`;
           else if(rec&&rec.t==='offer'){
             const what=rec.give.name?`name <b class="green">${esc(rec.give.name)}.csd</b>`:`<b class="amber">${esc(rec.give.ticker)}</b>`;
-            line=`🤝 <span class="what">Bought ${what}</span> for <b>${fmtCSD(paid)}</b> (payment + fill in ONE atomic tx) — offer ${link('/proposal/'+pidHex,short(pidHex,10),'mono')}`;
+            line=`🤝 <span class="what">Bought ${what}</span> for <b>${fmtCSD(paid)}</b> (payment + fill in ONE atomic tx) - offer ${link('/proposal/'+pidHex,short(pidHex,10),'mono')}`;
           }
           else line=`⭐ <span class="what">Attested</span> score ${score} on ${link('/proposal/'+pidHex,short(pidHex,10),'mono')}`;
         } else if(prop){
           line=`⭐ <span class="what">Attested</span> score ${score} on ${link('/proposal/'+pidHex,short(pidHex,10),'mono')} in ${link('/domain/'+encodeURIComponent(prop.domain),prop.domain)}`;
         }
       } else if(!SIB.node) line='⭐ <span class="what">Attestation</span> <span class="dim">(open via the cairn front door for full decoding)</span>';
-    } else if(tx.coinbase){ line='⛏ <span class="what">Block reward</span> — new CSD minted to the miner'; }
+    } else if(tx.coinbase){ line='⛏ <span class="what">Block reward</span> - new CSD minted to the miner'; }
     else {
       const me=(tx.signer||'').toLowerCase();
       const outs=(tx.outputs||[]).filter(o=>(o.addr||'').toLowerCase()!==me);
@@ -446,7 +446,7 @@ async function txPage(v,id){
       <td class="opt">${o.spent_txid?`<span class="dim">spent by ${txidLink(o.spent_txid)}</span>`:'<span class="badge ok">unspent</span>'}</td></tr>`).join('')}</tbody></table></div></div>`));
   if(proof){
     v.appendChild(el(`<div class="panel"><h2>merkle inclusion proof</h2>
-      <div class="muted">This proof is served by an <i>untrusted</i> indexer. Your browser folds it to the block's merkle root below — that root lives in the PoW-verified header, so a correct fold is trustless proof of inclusion.</div>
+      <div class="muted">This proof is served by an <i>untrusted</i> indexer. Your browser folds it to the block's merkle root below - that root lives in the PoW-verified header, so a correct fold is trustless proof of inclusion.</div>
       <div class="kv" style="margin-top:10px">
         <div>block height</div><div class="v">${proof.block_height}</div>
         <div>position</div><div class="v">${proof.pos}</div>
@@ -477,7 +477,7 @@ async function addrPage(v,a){
     <div>UTXOs</div><div class="v">${utxos.length}</div>
   </div><div id="cxpanel"></div></div>`));
 
-  // ── CairnX holdings (token balances + .csd names) — cairn front door only ──
+  // ── CairnX holdings (token balances + .csd names) - cairn front door only ──
   (async()=>{
     const [cx,toklist]=await Promise.all([jx(SIB.cairnx,'/address/'+a),jx(SIB.cairnx,'/tokens')]);
     if(!cx) return;
@@ -519,7 +519,7 @@ async function addrPage(v,a){
         if(pid){const prop=await j('/proposal/'+pid).catch(()=>null);
           if(prop&&prop.domain==='cairnx:v1'){let rec=null;try{rec=JSON.parse(prop.uri);}catch{}
             const slot=$('#act-'+i);
-            if(slot) slot.innerHTML=nf.tx.app.score===0?'✕ cancelled an offer/bid':(rec&&rec.t==='offer'?`🤝 fill — ${rec.give.name?esc(rec.give.name)+'.csd':esc(rec.give.ticker)}`:'⭐ attested');
+            if(slot) slot.innerHTML=nf.tx.app.score===0?'✕ cancelled an offer/bid':(rec&&rec.t==='offer'?`🤝 fill - ${rec.give.name?esc(rec.give.name)+'.csd':esc(rec.give.ticker)}`:'⭐ attested');
           }}
       } else if(full.coinbase){const slot=$('#act-'+i); if(slot) slot.innerHTML='⛏ block reward';}
       else if(full.app_type==='Transfer'||full.app_type==='None'){const slot=$('#act-'+i); if(slot) slot.innerHTML='💸 CSD transfer';}
@@ -532,9 +532,9 @@ async function domainPage(v,d){
   const props=await j('/domain/'+encodeURIComponent(d)+'/proposals');
   v.innerHTML='';
   v.appendChild(el(`<div class="panel"><h2>domain <span class="amber">${esc(d)}</span></h2>
-    <div class="muted">${props.length} proposal(s). Rankings are a derived, recomputable view — not consensus-signed.</div>
+    <div class="muted">${props.length} proposal(s). Rankings are a derived, recomputable view - not consensus-signed.</div>
     <div class="scroll-x"><table style="margin-top:10px"><thead><tr><th>proposal</th><th>action</th><th class="opt">proposer</th><th class="opt">fee</th><th>height</th></tr></thead>
-    <tbody>${props.map(p=>`<tr><td>${link('/proposal/'+p.txid,short(p.txid,10),'mono')}</td><td class="act">${describeDomainRecord(d,p.uri)||'<span class="dim">—</span>'}</td><td class="opt">${addrLink(p.proposer)}</td><td class="opt">${fmtCSD(p.fee)}</td><td>${link('/block/'+p.height,p.height)}</td></tr>`).join('')}</tbody></table></div></div>`));
+    <tbody>${props.map(p=>`<tr><td>${link('/proposal/'+p.txid,short(p.txid,10),'mono')}</td><td class="act">${describeDomainRecord(d,p.uri)||'<span class="dim">-</span>'}</td><td class="opt">${addrLink(p.proposer)}</td><td class="opt">${fmtCSD(p.fee)}</td><td>${link('/block/'+p.height,p.height)}</td></tr>`).join('')}</tbody></table></div></div>`));
 }
 
 async function proposalPage(v,id){
@@ -547,13 +547,13 @@ async function proposalPage(v,id){
     <div>txid</div><div class="v mono green">${esc(p.txid)}</div>
     <div>domain</div><div class="v">${link('/domain/'+encodeURIComponent(p.domain),p.domain)}</div>
     <div>payload hash</div><div class="v mono dim">${esc(p.payload_hash)}</div>
-    <div>uri</div><div class="v dim">${p.uri?esc(p.uri):'—'}</div>
+    <div>uri</div><div class="v dim">${p.uri?esc(p.uri):'-'}</div>
     <div>proposer</div><div class="v">${addrLink(p.proposer)}</div>
     <div>fee</div><div class="v">${fmtCSD(p.fee)}</div>
     <div>expires epoch</div><div class="v">${p.expires_epoch}</div>
     <div>attestations</div><div class="v">${p.attestation_count}</div>
   </div></div>`));
-  v.appendChild(el(`<div class="panel"><h2>attestations (${(p.attestations||[]).length}) <span class="pill">per-attester — not on-chain aggregate</span></h2>
+  v.appendChild(el(`<div class="panel"><h2>attestations (${(p.attestations||[]).length}) <span class="pill">per-attester - not on-chain aggregate</span></h2>
     <table><thead><tr><th>attester</th><th>score</th><th>confidence</th><th>fee</th><th>tx</th></tr></thead>
     <tbody>${(p.attestations||[]).map(a=>`<tr><td>${addrLink(a.attester)}</td><td class="amber">${a.score}</td><td>${a.confidence}</td><td>${fmtCSD(a.fee)}</td><td>${txidLink(a.txid)}</td></tr>`).join('')||'<tr><td colspan=5 class="dim">none yet</td></tr>'}</tbody></table></div>`));
   // dogfood self-certification: fetch content, hash it in-browser, compare to the on-chain payload_hash
