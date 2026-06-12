@@ -103,7 +103,9 @@ export function buildApp() {
 
   // ── CSD extras ──
   app.get("/domains", (_req, res) => res.json(q.domains()));
-  app.get("/domain/:d/proposals", (req, res) => res.json(q.proposalsByDomain(req.params.d, Number(req.query.limit) || 100)));
+  app.get("/domain/:d/proposals", (req, res) => res.json(q.proposalsByDomain(
+    req.params.d, Number(req.query.limit) || 100,
+    req.query.from !== undefined ? Number(req.query.from) : undefined)));
   app.get("/proposal/:id", (req, res) => {
     const p = q.proposal(req.params.id);
     if (!p) return nf(res, "unknown proposal");
