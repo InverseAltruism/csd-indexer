@@ -42,6 +42,34 @@
   .row{display:flex;gap:16px;flex-wrap:wrap}.row>.panel{flex:1;min-width:280px}
   .loading{color:var(--dim);padding:20px;text-align:center}
   footer{color:var(--dim);font-size:11px;text-align:center;padding:24px;border-top:1px solid var(--line);margin-top:20px}
+  /* ── human-readable layer ── */
+  .chip{display:inline-block;font-size:10px;padding:1px 6px;border-radius:4px;border:1px solid #3a3414;background:#171304;color:var(--amber);margin-left:6px;vertical-align:1px}
+  .action{font-size:15px;line-height:1.6;padding:4px 0 10px}
+  .action .what{color:var(--fg)}
+  .flow{display:flex;flex-wrap:wrap;gap:8px 22px;font-size:13px;padding:8px 0 2px}
+  .flow .f{color:var(--dim2)} .flow b{color:var(--fg)}
+  .flow .out b{color:var(--red)} .flow .in b{color:var(--green)}
+  .scroll-x{overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .cxbal{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px}
+  .cxbal .tk{border:1px solid var(--line);border-radius:8px;padding:6px 12px;font-size:13px}
+  .cxbal .tk b{color:var(--amber)}
+  .cxbal .nm{border:1px solid #1f4d2e;border-radius:8px;padding:6px 12px;font-size:13px;color:var(--green)}
+  td.act{max-width:340px}
+  /* ── mobile ── */
+  @media (max-width:720px){
+    main{padding:10px}
+    header{padding:10px 12px;gap:10px}
+    .stats{font-size:11px;gap:10px}
+    .panel{padding:12px;border-radius:8px}
+    .kv{grid-template-columns:1fr;gap:2px 0}
+    .kv div:nth-child(odd){margin-top:8px;font-size:11px;text-transform:uppercase;letter-spacing:.5px}
+    .row{flex-direction:column}
+    table{font-size:12px}
+    th,td{padding:6px 6px;max-width:180px}
+    td.opt,th.opt{display:none}
+    .action{font-size:14px}
+    form.search input{font-size:16px} /* prevents iOS zoom-on-focus */
+  }
 </style>
 </head>
 <body>
@@ -66,6 +94,25 @@ const API = (() => {
   const m = location.pathname.match(/(.*)\/explorer\/?$/);
   return location.origin + (m ? m[1] + "/explorer/api" : "");
 })();
+// Sibling proxies exist only when this page is served through the cairn front door
+// (cairn-substrate.com/explorer): the NODE proxy enables attest→proposal decoding and the
+// CairnX proxy enables token/name enrichment. Standalone (:8793) degrades gracefully.
+const SIB = (() => {
+  const m = location.pathname.match(/(.*)\/explorer\/?$/);
+  if (!m) return { node:null, cairnx:null };
+  return { node: location.origin + m[1] + "/api/rpc", cairnx: location.origin + m[1] + "/trade/api/cairnx" };
+})();
+const jx = async(base,p)=>{ if(!base) return null; try{ const r=await fetch(base+p); if(!r.ok) return null; return await r.json(); }catch{ return null; } };
+
+// Known-address labels — operational identities that make flows legible. PUBLIC info only.
+const LABELS = {
+  "0x6b09ce74e6070ebc982ab0fb793a211c4d24f016": "CairnX treasury",
+  "0x9d9305de03a77efd7f69720baff8e3e461cfe010": "Cairn treasury",
+  "0xa8b5213a2682b4cd0af78a99ac8a804e55176f7c": "faucet",
+  "0x44d92872a5b65d37d60ed532f41efe7c5aed59ec": "operator",
+  "0xc25117a104e2cba2a69ad3981a3c67299f550504": "miner",
+};
+const labelOf = (a)=> LABELS[(a||'').toLowerCase()] || null;
 const $ = (s,r=document)=>r.querySelector(s);
 const el = (h)=>{const t=document.createElement('template');t.innerHTML=h.trim();return t.content.firstChild;};
 // HTML-escape ALL chain-derived text before it touches innerHTML. domain/uri (and any free-form
@@ -120,7 +167,60 @@ function doSearch(e){e.preventDefault();let q=$('#q').value.trim();if(!q)return 
 // chain string like a domain). Both go through esc to block attribute/markup breakout.
 const link=(href,label,cls='')=>`<a class="${esc(cls)}" href="#${esc(href)}">${esc(label)}</a>`;
 const txidLink=(t)=>link('/tx/'+t,short(t,10),'mono');
-const addrLink=(a)=>a&&a!=='0x?'?link('/address/'+a,short(a,8),'mono'):'<span class="dim">—</span>';
+const addrLink=(a)=>a&&a!=='0x?'?link('/address/'+a,short(a,8),'mono')+(labelOf(a)?`<span class="chip">${esc(labelOf(a))}</span>`:''):'<span class="dim">—</span>';
+
+// ── CairnX record → plain English (mirrors cairnx CONVENTION §4/§9-18; display only) ──
+const fmtAmt=(v,dec)=>{try{const n=BigInt(v);const d=BigInt(10)**BigInt(dec||0);const i=n/d,f=n%d;return f?`${i}.${String(f).padStart(Number(dec),'0').replace(/0+$/,'')}`:i.toLocaleString();}catch{return esc(v);}};
+function describeCairnx(rec){
+  try{
+    const giveTok = rec.give&&rec.give.ticker, giveName = rec.give&&rec.give.name;
+    switch(rec.t){
+      case 'deploy': return `🪙 <span class="what">Deployed token <b class="amber">${esc(rec.ticker)}</b></span> — supply ${fmtAmt(rec.supply,rec.decimals)}, ${rec.mint==='issuer'?'issuer-mint (fixed)':'open mint'}${rec.name?` · “${esc(rec.name)}”`:''}`;
+      case 'mint': return `⛏ <span class="what">Minted <b class="amber">${esc(rec.ticker)}</b></span>${rec.amount?` — ${esc(rec.amount)} base units`:''}`;
+      case 'transfer': return `→ <span class="what">Transferred <b>${esc(rec.amount)}</b> <b class="amber">${esc(rec.ticker)}</b></span> to ${addrLink(rec.to)}`;
+      case 'offer': {
+        const what = giveName?`name <b class="green">${esc(giveName)}.csd</b>`:`<b>${esc(rec.give.amount)}</b> <b class="amber">${esc(giveTok)}</b>`;
+        const price = rec.want.value!=null?`${fmtCSD(rec.want.value)}`:`${esc(rec.want.amount)} ${esc(rec.want.ticker)}`;
+        return `🏷 <span class="what">Listed ${what} for <b>${price}</b></span>${rec.taker?` — reserved for ${addrLink(rec.taker)} (RFQ)`:' — open offer'}${rec.min?` · partial fills ≥ ${fmtCSD(rec.min)}`:''}${rec.bid?' · answers a bid':''}`;
+      }
+      case 'bid': {
+        const want = rec.want.name?`name <b class="green">${esc(rec.want.name)}.csd</b>`:`<b>${esc(rec.want.amount)}</b> <b class="amber">${esc(rec.want.ticker)}</b>`;
+        return `🙋 <span class="what">Bid <b>${fmtCSD(rec.give.value)}</b> for ${want}</span> — non-binding; a seller answers with a reserved offer`;
+      }
+      case 'ocancel': return `✕ <span class="what">Cancelled all open offers</span>${rec.ticker?` in <b class="amber">${esc(rec.ticker)}</b>`:rec.name?` on <b class="green">${esc(rec.name)}.csd</b>`:''}`;
+      case 'ncommit': return `🔒 <span class="what">Sealed a name commitment</span> — the name is revealed later (front-run defense)`;
+      case 'name': return `📛 <span class="what">${rec.salt?'Revealed & claimed':'Claimed'} name <b class="green">${esc(rec.name)}.csd</b></span>`;
+      case 'nxfer': return `🎁 <span class="what">Transferred name <b class="green">${esc(rec.name)}.csd</b></span> to ${addrLink(rec.to)}`;
+      case 'nset': return `📍 <span class="what">Pointed <b class="green">${esc(rec.name)}.csd</b></span> at ${addrLink(rec.addr)}`;
+      case 'nrenew': return `♻️ <span class="what">Renewed the lease on <b class="green">${esc(rec.name)}.csd</b></span> — +1 year`;
+      case 'tmeta': return `🖼 <span class="what">Updated <b class="amber">${esc(rec.ticker)}</b> metadata</span> (content-addressed)`;
+      default: return null;
+    }
+  }catch{return null;}
+}
+function describeDomainRecord(domain,uri){
+  if(domain==='cairnx:v1'){ try{ return describeCairnx(JSON.parse(uri)); }catch{ return null; } }
+  if(domain==='csd:anchor:base'){ try{ const a=JSON.parse(uri); return `⚓ <span class="what">Anchored Base block <b>${Number(a.height??a.number??0).toLocaleString()}</b></span> into CSD (cross-chain checkpoint)`; }catch{ return null; } }
+  if(domain==='csd:bridge:deploy'){ return `📜 <span class="what">Bridge deployment registry record</span> — the canonical contract addresses, verifiable against any node`; }
+  return null;
+}
+// payment flow of a tx, from the signer's perspective (single-signer chain: signer pays all inputs)
+function flowHtml(tx){
+  const me=(tx.signer||'').toLowerCase();
+  let toOthers=0, change=0; const outs=[];
+  for(const o of (tx.outputs||[])){
+    if((o.addr||'').toLowerCase()===me) change+=o.value;
+    else { toOthers+=o.value; outs.push(o); }
+  }
+  const parts=[];
+  if(tx.coinbase) parts.push(`<span class="f in">mined <b>+${fmtCSD((tx.outputs||[]).reduce((s,o)=>s+o.value,0))}</b> (block reward)</span>`);
+  else{
+    if(outs.length) parts.push(`<span class="f out">sent <b>−${fmtCSD(toOthers)}</b> ${outs.length===1?`to ${addrLink(outs[0].addr)}`:`to ${outs.length} recipients`}</span>`);
+    parts.push(`<span class="f out">fee <b>−${fmtCSD(tx.fee)}</b></span>`);
+    if(change) parts.push(`<span class="f">change back <b>${fmtCSD(change)}</b></span>`);
+  }
+  return `<div class="flow">${parts.join('')}</div>`;
+}
 
 // ── pages ──
 async function home(v){
@@ -183,6 +283,49 @@ async function txPage(v,id){
   const [tx,status,proof]=await Promise.all([j('/tx/'+id),j('/tx/'+id+'/status').catch(()=>null),j('/tx/'+id+'/merkle-proof').catch(()=>null)]);
   v.innerHTML='';
   const typeBadge = tx.app_type==='Propose'?'<span class="badge ok">Propose</span>':tx.app_type==='Attest'?'<span class="badge pend">Attest</span>':tx.coinbase?'<span class="pill">coinbase</span>':'<span class="pill">transfer</span>';
+
+  // ── what happened, in human terms ──
+  const human=el(`<div class="panel"><h2>what happened</h2><div class="action" id="txaction"><span class="dim">decoding…</span></div>${flowHtml(tx)}</div>`);
+  v.appendChild(human);
+  (async()=>{
+    const slot=$('#txaction',human);
+    let line=null;
+    if(tx.app_type==='Propose'){
+      const prop=await j('/proposal/'+tx.txid).catch(()=>null);
+      if(prop) line=describeDomainRecord(prop.domain,prop.uri)
+        || `📌 <span class="what">Anchored a proposal</span> in ${link('/domain/'+encodeURIComponent(prop.domain),prop.domain)}`;
+    } else if(tx.app_type==='Attest'){
+      // the attested proposal id lives in the tx app payload — ask the node (cairn front door only)
+      const full=await jx(SIB.node,'/tx/'+tx.txid);
+      const pid=full&&full.tx&&full.tx.app&&full.tx.app.proposal_id;
+      if(pid){
+        const pidHex=typeof pid==='string'?pid:'0x'+Array.from(pid).map(x=>x.toString(16).padStart(2,'0')).join('');
+        const prop=await j('/proposal/'+pidHex).catch(()=>null);
+        const score=full.tx.app.score, conf=full.tx.app.confidence;
+        if(prop&&prop.domain==='cairnx:v1'){
+          let rec=null; try{rec=JSON.parse(prop.uri);}catch{}
+          const me=(tx.signer||'').toLowerCase();
+          const paid=(tx.outputs||[]).filter(o=>(o.addr||'').toLowerCase()!==me).reduce((s,o)=>s+o.value,0);
+          if(score===0) line=`✕ <span class="what">Cancelled</span> ${rec&&rec.t==='bid'?'a bid':'an offer'} — ${link('/proposal/'+pidHex,short(pidHex,10),'mono')}`;
+          else if(conf===1000000&&rec) line=`⇄ <span class="what">Token swap fill</span> — took the offer ${link('/proposal/'+pidHex,short(pidHex,10),'mono')} (${esc(rec.give&&rec.give.amount)} ${esc(rec.give&&rec.give.ticker)} for ${esc(rec.want&&rec.want.amount)} ${esc(rec.want&&rec.want.ticker)}, paid in tokens — no CSD moves)`;
+          else if(rec&&rec.t==='offer'){
+            const what=rec.give.name?`name <b class="green">${esc(rec.give.name)}.csd</b>`:`<b class="amber">${esc(rec.give.ticker)}</b>`;
+            line=`🤝 <span class="what">Bought ${what}</span> for <b>${fmtCSD(paid)}</b> (payment + fill in ONE atomic tx) — offer ${link('/proposal/'+pidHex,short(pidHex,10),'mono')}`;
+          }
+          else line=`⭐ <span class="what">Attested</span> score ${score} on ${link('/proposal/'+pidHex,short(pidHex,10),'mono')}`;
+        } else if(prop){
+          line=`⭐ <span class="what">Attested</span> score ${score} on ${link('/proposal/'+pidHex,short(pidHex,10),'mono')} in ${link('/domain/'+encodeURIComponent(prop.domain),prop.domain)}`;
+        }
+      } else if(!SIB.node) line='⭐ <span class="what">Attestation</span> <span class="dim">(open via the cairn front door for full decoding)</span>';
+    } else if(tx.coinbase){ line='⛏ <span class="what">Block reward</span> — new CSD minted to the miner'; }
+    else {
+      const me=(tx.signer||'').toLowerCase();
+      const outs=(tx.outputs||[]).filter(o=>(o.addr||'').toLowerCase()!==me);
+      line=`💸 <span class="what">${addrLink(tx.signer)} sent CSD</span>${outs.length===1?` to ${addrLink(outs[0].addr)}`:` to ${outs.length} recipients`}`;
+    }
+    slot.innerHTML=line||'<span class="dim">a plain chain transaction</span>';
+  })();
+
   v.appendChild(el(`<div class="panel"><h2>transaction ${typeBadge} <span id="inclbadge" class="badge pend">verifying inclusion…</span></h2>
     <div class="kv">
       <div>txid</div><div class="v mono green">${esc(tx.txid)}</div>
@@ -192,9 +335,9 @@ async function txPage(v,id){
       <div>fee</div><div class="v">${fmtCSD(tx.fee)}</div>
       <div>inputs / outputs</div><div class="v">${tx.n_in} / ${tx.n_out}</div>
     </div></div>`));
-  v.appendChild(el(`<div class="panel"><h2>outputs</h2><table><thead><tr><th>#</th><th>address</th><th>value</th><th>status</th></tr></thead>
+  v.appendChild(el(`<div class="panel"><h2>outputs</h2><div class="scroll-x"><table><thead><tr><th>#</th><th>address</th><th>value</th><th class="opt">status</th></tr></thead>
     <tbody>${(tx.outputs||[]).map(o=>`<tr><td class="dim">${o.vout}</td><td>${addrLink(o.addr)}</td><td>${fmtCSD(o.value)}</td>
-      <td>${o.spent_txid?`<span class="dim">spent by ${txidLink(o.spent_txid)}</span>`:'<span class="badge ok">unspent</span>'}</td></tr>`).join('')}</tbody></table></div>`));
+      <td class="opt">${o.spent_txid?`<span class="dim">spent by ${txidLink(o.spent_txid)}</span>`:'<span class="badge ok">unspent</span>'}</td></tr>`).join('')}</tbody></table></div></div>`));
   if(proof){
     v.appendChild(el(`<div class="panel"><h2>merkle inclusion proof</h2>
       <div class="muted">This proof is served by an <i>untrusted</i> indexer. Your browser folds it to the block's merkle root below — that root lives in the PoW-verified header, so a correct fold is trustless proof of inclusion.</div>
@@ -217,16 +360,64 @@ async function addrPage(v,a){
   const [info,utxos,txs]=await Promise.all([j('/address/'+a),j('/address/'+a+'/utxo'),j('/address/'+a+'/txs')]);
   const s=info.chain_stats;
   v.innerHTML='';
-  v.appendChild(el(`<div class="panel"><h2>address</h2><div class="kv">
+  const lbl=labelOf(a);
+  v.appendChild(el(`<div class="panel"><h2>address${lbl?` <span class="chip">${esc(lbl)}</span>`:''}</h2><div class="kv">
     <div>address</div><div class="v mono green">${esc(a)}</div>
     <div>balance</div><div class="v amber">${fmtCSD(s.balance)}</div>
     <div>received</div><div class="v">${fmtCSD(s.funded)}</div>
     <div>spent</div><div class="v">${fmtCSD(s.spent)}</div>
     <div>tx count</div><div class="v">${s.tx_count}</div>
     <div>UTXOs</div><div class="v">${utxos.length}</div>
-  </div></div>`));
-  v.appendChild(el(`<div class="panel"><h2>transactions (${txs.length})</h2><table><thead><tr><th>txid</th><th>type</th><th>block</th><th>fee</th></tr></thead>
-    <tbody>${txs.map(t=>`<tr><td>${txidLink(t.txid)}</td><td class="dim">${t.app_type}</td><td>${link('/block/'+t.height,t.height)}</td><td>${fmtCSD(t.fee)}</td></tr>`).join('')}</tbody></table></div>`));
+  </div><div id="cxpanel"></div></div>`));
+
+  // ── CairnX holdings (token balances + .csd names) — cairn front door only ──
+  (async()=>{
+    const [cx,toklist]=await Promise.all([jx(SIB.cairnx,'/address/'+a),jx(SIB.cairnx,'/tokens')]);
+    if(!cx) return;
+    const dec={}; for(const t of (toklist||[])) dec[t.ticker]=t.decimals;
+    const toks=Object.entries(cx.balances||{});
+    const names=cx.names||[];
+    if(!toks.length&&!names.length) return;
+    $('#cxpanel').innerHTML=`<div class="cxbal">${
+      toks.map(([t,b])=>`<span class="tk"><b>${esc(t)}</b> ${fmtAmt(b.available,dec[t]??0)}${Number(b.locked)?` <span class="dim">(+${fmtAmt(b.locked,dec[t]??0)} locked in offers)</span>`:''}</span>`).join('')}${
+      names.map(n=>`<span class="nm">${esc(n)}.csd</span>`).join('')}</div>`;
+  })();
+
+  // tx table with a human ACTION column + direction relative to THIS address
+  const rows=txs.map((t,i)=>`<tr><td>${txidLink(t.txid)}</td><td class="act" id="act-${i}"><span class="dim">${esc(t.app_type)}</span></td><td class="opt">${link('/block/'+t.height,t.height)}</td><td id="dir-${i}" class="dim">…</td></tr>`).join('');
+  v.appendChild(el(`<div class="panel"><h2>transactions (${txs.length})</h2><div class="scroll-x"><table><thead><tr><th>txid</th><th>action</th><th class="opt">block</th><th>Δ for this address</th></tr></thead>
+    <tbody>${rows}</tbody></table></div>${txs.length>25?'<div class="muted">action decoding shown for the latest 25</div>':''}</div>`));
+
+  // decode the visible window in parallel (each is one cheap local lookup)
+  const me=a.toLowerCase();
+  txs.slice(0,25).forEach(async(t,i)=>{
+    try{
+      const full=await j('/tx/'+t.txid);
+      // direction: outputs to me − (if I signed: everything I paid)
+      const recv=(full.outputs||[]).filter(o=>(o.addr||'').toLowerCase()===me).reduce((x,o)=>x+o.value,0);
+      let delta;
+      if((full.signer||'').toLowerCase()===me){
+        const out=(full.outputs||[]).filter(o=>(o.addr||'').toLowerCase()!==me).reduce((x,o)=>x+o.value,0);
+        delta=-(out+full.fee);
+      } else delta=recv;
+      const d=$('#dir-'+i);
+      if(d) d.outerHTML=`<td class="${delta>=0?'green':'red'}">${delta>=0?'+':''}${fmtCSD(delta)}</td>`;
+      if(full.app_type==='Propose'){
+        const prop=await j('/proposal/'+t.txid).catch(()=>null);
+        const line=prop&&(describeDomainRecord(prop.domain,prop.uri)||`📌 proposal in ${esc(prop.domain)}`);
+        const slot=$('#act-'+i); if(slot&&line) slot.innerHTML=line;
+      } else if(full.app_type==='Attest'&&SIB.node){
+        const nf=await jx(SIB.node,'/tx/'+t.txid);
+        const pid=nf&&nf.tx&&nf.tx.app&&nf.tx.app.proposal_id;
+        if(pid){const prop=await j('/proposal/'+pid).catch(()=>null);
+          if(prop&&prop.domain==='cairnx:v1'){let rec=null;try{rec=JSON.parse(prop.uri);}catch{}
+            const slot=$('#act-'+i);
+            if(slot) slot.innerHTML=nf.tx.app.score===0?'✕ cancelled an offer/bid':(rec&&rec.t==='offer'?`🤝 fill — ${rec.give.name?esc(rec.give.name)+'.csd':esc(rec.give.ticker)}`:'⭐ attested');
+          }}
+      } else if(full.coinbase){const slot=$('#act-'+i); if(slot) slot.innerHTML='⛏ block reward';}
+      else if(full.app_type==='Transfer'||full.app_type==='None'){const slot=$('#act-'+i); if(slot) slot.innerHTML='💸 CSD transfer';}
+    }catch{}
+  });
 }
 
 async function domainPage(v,d){
@@ -234,13 +425,15 @@ async function domainPage(v,d){
   v.innerHTML='';
   v.appendChild(el(`<div class="panel"><h2>domain <span class="amber">${esc(d)}</span></h2>
     <div class="muted">${props.length} proposal(s). Rankings are a derived, recomputable view — not consensus-signed.</div>
-    <table style="margin-top:10px"><thead><tr><th>proposal</th><th>proposer</th><th>fee</th><th>height</th></tr></thead>
-    <tbody>${props.map(p=>`<tr><td>${link('/proposal/'+p.txid,short(p.txid,10),'mono')}</td><td>${addrLink(p.proposer)}</td><td>${fmtCSD(p.fee)}</td><td>${link('/block/'+p.height,p.height)}</td></tr>`).join('')}</tbody></table></div>`));
+    <div class="scroll-x"><table style="margin-top:10px"><thead><tr><th>proposal</th><th>action</th><th class="opt">proposer</th><th class="opt">fee</th><th>height</th></tr></thead>
+    <tbody>${props.map(p=>`<tr><td>${link('/proposal/'+p.txid,short(p.txid,10),'mono')}</td><td class="act">${describeDomainRecord(d,p.uri)||'<span class="dim">—</span>'}</td><td class="opt">${addrLink(p.proposer)}</td><td class="opt">${fmtCSD(p.fee)}</td><td>${link('/block/'+p.height,p.height)}</td></tr>`).join('')}</tbody></table></div></div>`));
 }
 
 async function proposalPage(v,id){
   const p=await j('/proposal/'+id);
   v.innerHTML='';
+  const human=describeDomainRecord(p.domain,p.uri);
+  if(human) v.appendChild(el(`<div class="panel"><h2>what happened</h2><div class="action">${human}</div></div>`));
   v.appendChild(el(`<div class="panel"><h2>proposal <span id="cibadge" class="badge pend">checking content…</span></h2><div class="kv">
     <div>txid</div><div class="v mono green">${esc(p.txid)}</div>
     <div>domain</div><div class="v">${link('/domain/'+encodeURIComponent(p.domain),p.domain)}</div>
