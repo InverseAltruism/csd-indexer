@@ -107,7 +107,7 @@ export async function miners(window: string): Promise<unknown> {
 export async function richlist(limit = 100): Promise<unknown> {
   const tip = await tipRow();
   if (!tip) return { ok: false, error: "no blocks indexed" };
-  const lim = Math.max(1, Math.min(500, limit));
+  const lim = Math.max(1, Math.min(500, Math.floor(Number(limit)) || 100));
   const rows = await store().all<{ addr: string; balance: number | bigint; utxos: number | bigint }>(`
     SELECT addr, SUM(value) AS balance, COUNT(*) AS utxos
     FROM outputs WHERE spent_txid IS NULL AND addr IS NOT NULL

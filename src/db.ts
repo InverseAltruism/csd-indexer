@@ -97,17 +97,29 @@ const DDL = `
 class SqliteStore implements Store {
   readonly backend = "sqlite" as const;
   private d: DatabaseSync;
+  // Statement cache: the codebase has ~30 distinct SQL strings, and prepare-per-call
+  // measured ~2.5x slower on the hot write path (200k-insert microbench: 536ms prepared
+  // vs 1333ms re-prepared). Unbounded growth is impossible in practice, but cap anyway.
+  private stmts = new Map<string, ReturnType<DatabaseSync["prepare"]>>();
   constructor(file: string) {
     this.d = new DatabaseSync(file);
     this.d.exec(`PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = OFF;`);
     this.d.exec(DDL);
   }
+  private stmt(sql: string) {
+    let st = this.stmts.get(sql);
+    if (!st) {
+      if (this.stmts.size > 256) this.stmts.clear(); // safety valve, never hit by current code
+      st = this.d.prepare(sql);
+      st.setReadBigInts(true);
+      this.stmts.set(sql, st);
+    }
+    return st;
+  }
   // node:sqlite THROWS ERR_OUT_OF_RANGE reading an integer past 2^53 as a Number, so we
   // ALWAYS read integers as BigInt and convert back per-value (exact, never throws).
   private rows<T>(sql: string, params: unknown[]): T[] {
-    const st = this.d.prepare(sql);
-    st.setReadBigInts(true);
-    const raw = st.all(...(params as never[])) as Record<string, unknown>[];
+    const raw = this.stmt(sql).all(...(params as never[])) as Record<string, unknown>[];
     return raw.map((r) => {
       const o: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(r)) o[k] = typeof v === "bigint" ? exact(v) : v;
@@ -116,7 +128,7 @@ class SqliteStore implements Store {
   }
   async exec(sql: string): Promise<void> { this.d.exec(sql); }
   async run(sql: string, ...params: unknown[]): Promise<void> {
-    this.d.prepare(sql).run(...(params as never[]));
+    this.stmt(sql).run(...(params as never[]));
   }
   async get<T>(sql: string, ...params: unknown[]): Promise<T | undefined> {
     return this.rows<T>(sql, params)[0];
@@ -124,9 +136,11 @@ class SqliteStore implements Store {
   async all<T>(sql: string, ...params: unknown[]): Promise<T[]> {
     return this.rows<T>(sql, params);
   }
-  // DatabaseSync is synchronous, so the BEGIN..COMMIT window contains no awaits in
-  // practice — but fn is typed async for interface parity (it must not interleave
-  // OTHER store calls from outside; the indexer is the only writer).
+  // ISOLATION INVARIANT (load-bearing, experimentally verified): the BEGIN..COMMIT window
+  // stays atomic w.r.t. HTTP readers ONLY because every await inside dbTx callbacks is a
+  // store call (a microtask — the event loop cannot run I/O callbacks until the microtask
+  // chain drains). Adding `await fetch(...)`/fs/timers inside a dbTx callback would let
+  // readers interleave on this SAME connection and see uncommitted rows. Don't.
   async tx<T>(fn: (s: Store) => Promise<T>): Promise<T> {
     this.d.exec("BEGIN");
     try { const r = await fn(this); this.d.exec("COMMIT"); return r; }
@@ -146,7 +160,8 @@ function toPg(sql: string): string {
 class PgStore implements Store {
   readonly backend = "postgres" as const;
   private pool!: import("pg").Pool;
-  private ready!: Promise<void>;
+  private schemaSafe: string;
+  private _ready: Promise<void> | null = null;
   constructor(url: string, schema: string) {
     const { Pool, types } = require("pg") as typeof import("pg");
     // Exact integer reads, same policy as the sqlite backend: int8 (OID 20) and the
@@ -157,35 +172,55 @@ class PgStore implements Store {
       getTypeParser: (oid: number, format?: string) =>
         oid === 20 || oid === 1700 ? exactParser : (types.getTypeParser as (o: number, f?: string) => unknown)(oid, format),
     } as unknown as import("pg").CustomTypesConfig;
-    this.pool = new Pool({ connectionString: url, max: CFG.pgPoolSize, types: perPool });
-    const s = schema.replace(/[^a-zA-Z0-9_]/g, "");
-    this.ready = (async () => {
+    this.pool = new Pool({
+      connectionString: url, max: CFG.pgPoolSize, types: perPool,
+      // never queue forever: a saturated pool should error a request, not hang it
+      connectionTimeoutMillis: 10_000,
+      // server-side guards: no runaway query can starve the block writer, and an
+      // abandoned BEGIN can't hold locks forever
+      options: "-c statement_timeout=30000 -c idle_in_transaction_session_timeout=60000",
+    });
+    // pg-pool EMITS 'error' for connection failures on IDLE pooled clients (server
+    // restart, idle kill, network blip). With no listener that's an uncaught exception
+    // that takes the whole process down — log and let the pool replace the client.
+    this.pool.on("error", (e) => console.error(`[pg pool] idle client error: ${e.message}`));
+    this.schemaSafe = schema.replace(/[^a-zA-Z0-9_]/g, "");
+    // every pooled connection joins the schema; errors here surface on the user query
+    this.pool.on("connect", (client) => { client.query(`SET search_path TO ${this.schemaSafe}`).catch(() => {}); });
+  }
+  // Lazily (re)established: if the first connect/DDL fails (pg still starting, network
+  // blip), the failure must NOT be cached forever — the next call retries from scratch,
+  // so the indexer loop recovers as soon as Postgres does.
+  private ready(): Promise<void> {
+    if (this._ready) return this._ready;
+    const p = (async () => {
       const c = await this.pool.connect();
       try {
-        await c.query(`CREATE SCHEMA IF NOT EXISTS ${s}`);
-        await c.query(`SET search_path TO ${s}`);
+        await c.query(`CREATE SCHEMA IF NOT EXISTS ${this.schemaSafe}`);
+        await c.query(`SET search_path TO ${this.schemaSafe}`);
         await c.query(DDL);
       } finally { c.release(); }
-      // every pooled connection joins the schema
-      this.pool.on("connect", (client) => { void client.query(`SET search_path TO ${s}`); });
     })();
+    this._ready = p;
+    p.catch(() => { if (this._ready === p) this._ready = null; });
+    return p;
   }
-  async exec(sql: string): Promise<void> { await this.ready; await this.pool.query(sql); }
+  async exec(sql: string): Promise<void> { await this.ready(); await this.pool.query(sql); }
   async run(sql: string, ...params: unknown[]): Promise<void> {
-    await this.ready; await this.pool.query(toPg(sql), params as unknown[]);
+    await this.ready(); await this.pool.query(toPg(sql), params as unknown[]);
   }
   async get<T>(sql: string, ...params: unknown[]): Promise<T | undefined> {
-    await this.ready;
+    await this.ready();
     const r = await this.pool.query(toPg(sql), params as unknown[]);
     return r.rows[0] as T | undefined;
   }
   async all<T>(sql: string, ...params: unknown[]): Promise<T[]> {
-    await this.ready;
+    await this.ready();
     const r = await this.pool.query(toPg(sql), params as unknown[]);
     return r.rows as T[];
   }
   async tx<T>(fn: (s: Store) => Promise<T>): Promise<T> {
-    await this.ready;
+    await this.ready();
     const c = await this.pool.connect();
     const cs: Store = {
       backend: "postgres",

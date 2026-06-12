@@ -3,8 +3,8 @@
 // served merkle proof with the published L0 light-client convention.
 import { verifyMerkleProof } from "@inversealtruism/csd-codec";
 
-const API = "http://127.0.0.1:8793";
-const RPC = "http://127.0.0.1:8790";
+const API = process.env.CSD_INDEX_API || "http://127.0.0.1:8793";
+const RPC = process.env.CSD_RPC || "http://127.0.0.1:8789";
 const a = async (p) => (await fetch(API + p)).json();
 const r = async (p) => (await fetch(RPC + p)).json();
 let P = 0, F = 0; const ok = (n, c) => { c ? P++ : F++; console.log((c ? "  ✅ " : "  ❌ ") + n); };

@@ -67,7 +67,9 @@ export function buildApp() {
     const b = await q.blockByHash(req.params.hash!);
     if (!b) return nf(res, "unknown block");
     const txids = await q.blockTxids(b.height);
-    res.json((await Promise.all(txids.map((t) => q.tx(t)))).map((t) => withVio(t!)));
+    // filter(Boolean): on pg a concurrent reorg can unwind a txid between the list query
+    // and the row fetch — drop the hole rather than emit a null element (sqlite: impossible)
+    res.json((await Promise.all(txids.map((t) => q.tx(t)))).filter(Boolean).map((t) => withVio(t!)));
   }));
 
   // ── tx ──
@@ -98,12 +100,12 @@ export function buildApp() {
   app.get("/address/:a/txs", h(async (req, res) => {
     if (!ADDR.test(req.params.a!.toLowerCase())) return bad(res, "want /address/0x<40-hex>");
     const ids = await q.addressTxids(req.params.a!, null);
-    res.json((await Promise.all(ids.map((r) => q.tx(r.txid)))).map((t) => withVio(t!)));
+    res.json((await Promise.all(ids.map((r) => q.tx(r.txid)))).filter(Boolean).map((t) => withVio(t!)));
   }));
   app.get("/address/:a/txs/chain/:last", h(async (req, res) => {
     const before = Number(req.params.last!);
     const ids = await q.addressTxids(req.params.a!, Number.isFinite(before) ? before : null);
-    res.json((await Promise.all(ids.map((r) => q.tx(r.txid)))).map((t) => withVio(t!)));
+    res.json((await Promise.all(ids.map((r) => q.tx(r.txid)))).filter(Boolean).map((t) => withVio(t!)));
   }));
   app.get("/address/:a/utxo", h(async (req, res) => {
     if (!ADDR.test(req.params.a!.toLowerCase())) return bad(res, "want /address/0x<40-hex>");

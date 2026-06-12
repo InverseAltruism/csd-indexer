@@ -13,6 +13,16 @@ import { deriveAddr, addrFromScriptPubkey, appType } from "./decode.js";
 import { CFG } from "./config.js";
 import { bus } from "./events.js";
 
+// App-payload integers are attacker-chosen JSON. Clamp to a non-negative safe integer
+// DETERMINISTICALLY (NaN/negative → 0, >2^53-1 → 2^53-1): sqlite would store junk as
+// REAL and pg would reject "1e+21" as an int8 param — wedging the sync loop on that
+// block forever. Consensus data (heights, values, time) is NOT clamped — only app JSON.
+function clampInt(v: unknown): number {
+  const n = Math.floor(Number(v ?? 0));
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return n > Number.MAX_SAFE_INTEGER ? Number.MAX_SAFE_INTEGER : n;
+}
+
 const TIP_KEY = "indexed_height";
 
 export interface IndexResult { from: number; to: number; tip: number; blocks: number; reorgs: number; reorgDepth: number; }
@@ -107,10 +117,10 @@ export async function writeBlock(b: rpc.RpcBlock): Promise<void> {
 
       if (kind === "Propose" && t.app) {
         await d.run(SQL_PROP, t.txid, String(t.app.domain ?? ""), String(t.app.payload_hash ?? ""), String(t.app.uri ?? ""),
-          Number(t.app.expires_epoch ?? 0), signer, fee, blk.height, time);
+          clampInt(t.app.expires_epoch), signer, fee, blk.height, time);
       } else if (kind === "Attest" && t.app) {
-        await d.run(SQL_ATT, t.txid, String(t.app.proposal_id ?? ""), signer, Number(t.app.score ?? 0),
-          Number(t.app.confidence ?? 0), fee, blk.height, time);
+        await d.run(SQL_ATT, t.txid, String(t.app.proposal_id ?? ""), signer, clampInt(t.app.score),
+          clampInt(t.app.confidence), fee, blk.height, time);
       }
     }
   });

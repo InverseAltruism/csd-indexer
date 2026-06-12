@@ -16,26 +16,40 @@ function amt(v: number | bigint | null | undefined): number | string {
   if (typeof v === "number") return v;
   return v <= BigInt(Number.MAX_SAFE_INTEGER) && v >= BigInt(Number.MIN_SAFE_INTEGER) ? Number(v) : v.toString();
 }
+// Raw-row JSON safety: the store returns bigint for any integer past 2^53 (e.g. an
+// attacker-chosen expires_epoch in a Propose payload). A stray bigint crashes
+// JSON.stringify — one poisoned row must never 500 a whole endpoint, so every raw row
+// that goes straight to res.json passes through here (bigint → decimal string).
+function jsonSafe<T>(row: T): T {
+  if (row == null || typeof row !== "object") return row;
+  const o = row as Record<string, unknown>;
+  for (const k of Object.keys(o)) if (typeof o[k] === "bigint") o[k] = String(o[k]);
+  return row;
+}
+const jsonSafeAll = <T>(rows: T[]): T[] => { rows.forEach(jsonSafe); return rows; };
+// height params arrive from URLs — only a non-negative safe integer can match a row,
+// and anything else must 404, not 500 (pg would reject 1e21/2.5 as an int8 param).
+const heightOk = (h: number): boolean => Number.isSafeInteger(h) && h >= 0;
 
 export async function tipHeight(): Promise<number> {
   const r = await store().get<{ h: number | null }>("SELECT MAX(height) h FROM blocks WHERE orphaned=0");
   return r?.h ?? -1;
 }
 export async function blockByHeight(h: number): Promise<BlockRow | null> {
-  if (!Number.isFinite(h)) return null;
-  return ((await store().get<BlockRow>("SELECT * FROM blocks WHERE height=? AND orphaned=0", h)) as BlockRow) ?? null;
+  if (!heightOk(h)) return null;
+  return jsonSafe(((await store().get<BlockRow>("SELECT * FROM blocks WHERE height=? AND orphaned=0", h)) as BlockRow) ?? null);
 }
 export async function blockByHash(hash: string): Promise<BlockRow | null> {
-  return ((await store().get<BlockRow>("SELECT * FROM blocks WHERE hash=? AND orphaned=0", hash.toLowerCase())) as BlockRow) ?? null;
+  return jsonSafe(((await store().get<BlockRow>("SELECT * FROM blocks WHERE hash=? AND orphaned=0", hash.toLowerCase())) as BlockRow) ?? null);
 }
 export async function recentBlocks(limit = 25): Promise<BlockRow[]> {
-  return await store().all<BlockRow>("SELECT * FROM blocks WHERE orphaned=0 ORDER BY height DESC LIMIT ?", limit);
+  return jsonSafeAll(await store().all<BlockRow>("SELECT * FROM blocks WHERE orphaned=0 ORDER BY height DESC LIMIT ?", limit));
 }
 export async function blockTxids(height: number): Promise<string[]> {
   return (await store().all<{ txid: string }>("SELECT txid FROM txs WHERE height=? ORDER BY pos", height)).map(r => r.txid);
 }
 export async function tx(txid: string): Promise<TxRow | null> {
-  return ((await store().get<TxRow>("SELECT * FROM txs WHERE txid=?", txid)) as TxRow) ?? null;
+  return jsonSafe(((await store().get<TxRow>("SELECT * FROM txs WHERE txid=?", txid)) as TxRow) ?? null);
 }
 export async function txOutputs(txid: string): Promise<OutRow[]> {
   const rows = await store().all<OutRow>("SELECT * FROM outputs WHERE txid=? ORDER BY vout", txid);
@@ -64,7 +78,7 @@ export async function addressStats(addr: string): Promise<{ funded: number | str
 }
 
 // ── CSD-specific (the reason this exists) ──
-export async function proposal(id: string): Promise<any> { return (await store().get("SELECT * FROM proposals WHERE txid=?", id)) ?? null; }
+export async function proposal(id: string): Promise<any> { return jsonSafe((await store().get("SELECT * FROM proposals WHERE txid=?", id)) ?? null); }
 export async function proposalsByDomain(domain: string, limit = 100, from?: number): Promise<any[]> {
   // clamp: callers (e.g. metaprotocol resolvers) may ask for the full domain history —
   // a resolver fed a truncated feed would silently lose its oldest records (deploys!)
@@ -73,16 +87,16 @@ export async function proposalsByDomain(domain: string, limit = 100, from?: numb
   // the ENTIRE domain history deterministically (page until a short page; de-dup by txid at the
   // `from` boundary). Without `from`, the legacy newest-first window is preserved.
   if (from !== undefined && Number.isFinite(Number(from))) {
-    return await store().all("SELECT * FROM proposals WHERE domain=? AND height>=? ORDER BY height ASC, txid ASC LIMIT ?",
-      domain, Math.max(0, Math.floor(Number(from))), lim);
+    return jsonSafeAll(await store().all("SELECT * FROM proposals WHERE domain=? AND height>=? ORDER BY height ASC, txid ASC LIMIT ?",
+      domain, Math.max(0, Math.floor(Number(from))), lim));
   }
-  return await store().all("SELECT * FROM proposals WHERE domain=? ORDER BY height DESC, txid ASC LIMIT ?", domain, lim);
+  return jsonSafeAll(await store().all("SELECT * FROM proposals WHERE domain=? ORDER BY height DESC, txid ASC LIMIT ?", domain, lim));
 }
 export async function attestationsFor(proposalId: string): Promise<any[]> {
-  return await store().all("SELECT proposal_id, attester, score, confidence, fee, txid, height, time FROM attestations WHERE proposal_id=? ORDER BY height, txid", proposalId);
+  return jsonSafeAll(await store().all("SELECT proposal_id, attester, score, confidence, fee, txid, height, time FROM attestations WHERE proposal_id=? ORDER BY height, txid", proposalId));
 }
 export async function attestationsBy(addr: string, limit = 200): Promise<any[]> {
-  return await store().all("SELECT * FROM attestations WHERE attester=? ORDER BY height DESC, txid ASC LIMIT ?", addr.toLowerCase(), limit);
+  return jsonSafeAll(await store().all("SELECT * FROM attestations WHERE attester=? ORDER BY height DESC, txid ASC LIMIT ?", addr.toLowerCase(), limit));
 }
 export async function domains(): Promise<{ domain: string; proposals: number }[]> {
   const rows = await store().all<{ domain: string; proposals: number | bigint }>("SELECT domain, COUNT(*) proposals FROM proposals GROUP BY domain ORDER BY proposals DESC, domain ASC");
