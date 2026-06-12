@@ -5,12 +5,17 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>CSD Explorer</title>
 <style>
-  :root{--bg:#050505;--panel:#0a0a0a;--panel2:#0d0d0d;--line:#1a1a1a;--green:#57d977;--amber:#ffd24a;--fg:#f2f2f2;--dim:#6f6f6f;--dim2:#a6a6a6;--red:#ff6b6b}
+  :root{--bg:#050505;--panel:#0a0c0b;--panel2:#0d0f0e;--line:#1b1f1d;--green:#57d977;--amber:#ffd24a;--fg:#f2f2f2;--dim:#6f6f6f;--dim2:#a6a6a6;--red:#ff6b6b}
   *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
+    background:radial-gradient(60% 40% at 70% -10%,rgba(87,217,119,.05),transparent 60%),
+               radial-gradient(40% 30% at 10% 110%,rgba(255,210,74,.04),transparent 60%)}
   a{color:var(--green);text-decoration:none}a:hover{text-decoration:underline}
-  header{position:sticky;top:0;background:linear-gradient(#050505,#050505ee);border-bottom:1px solid var(--line);padding:14px 18px;display:flex;gap:16px;align-items:center;flex-wrap:wrap;z-index:5}
+  header{position:sticky;top:0;background:linear-gradient(#050505f5,#050505e6);backdrop-filter:blur(6px);border-bottom:1px solid var(--line);padding:13px 18px;display:flex;gap:16px;align-items:center;flex-wrap:wrap;z-index:5}
+  header::after{content:"";position:absolute;left:0;right:0;bottom:-1px;height:1px;background:linear-gradient(90deg,transparent,rgba(87,217,119,.5),rgba(255,210,74,.4),transparent)}
   .brand{font-weight:700;letter-spacing:.5px;color:var(--green);display:flex;gap:8px;align-items:center}
+  .brand:hover{text-decoration:none;filter:brightness(1.2)}
   .brand b{color:var(--amber)}
   .dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green);animation:pulse 2s infinite}
   @keyframes pulse{50%{opacity:.4}}
@@ -20,8 +25,27 @@
   .stats{display:flex;gap:14px;color:var(--dim2);font-size:12px;flex-wrap:wrap}
   .stats b{color:var(--fg)}
   main{max-width:1080px;margin:0 auto;padding:18px}
-  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:16px}
-  h2{margin:.2em 0 .6em;font-size:15px;color:var(--amber);font-weight:600}
+  .panel{background:linear-gradient(180deg,var(--panel),#080a09);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:16px;position:relative;transition:border-color .15s}
+  .panel:hover{border-color:#242a27}
+  h2{margin:.2em 0 .6em;font-size:12px;color:var(--amber);font-weight:600;text-transform:uppercase;letter-spacing:1.5px}
+  /* chain-pulse hero */
+  .pulse{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;margin-bottom:16px}
+  .pu{background:linear-gradient(180deg,var(--panel),#080a09);border:1px solid var(--line);border-radius:12px;padding:14px 16px}
+  .pu .n{font-size:22px;color:var(--fg);letter-spacing:-.5px}
+  .pu .n .u{font-size:12px;color:var(--dim2)}
+  .pu .l{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:1.2px;margin-top:3px}
+  .pu.hot .n{color:var(--green)}
+  .pu.gold .n{color:var(--amber)}
+  /* coin cards */
+  .coins{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:12px}
+  .coin{border:1px solid var(--line);border-radius:12px;padding:14px 16px;background:#080a09;transition:transform .15s,border-color .15s;display:block;color:inherit}
+  .coin:hover{transform:translateY(-2px);border-color:rgba(255,210,74,.4);text-decoration:none}
+  .coin .tk{font-size:17px;color:var(--amber);font-weight:700}
+  .coin .nm{color:var(--dim2);font-size:12px;margin-left:6px}
+  .coin .meta{display:flex;gap:14px;margin-top:8px;font-size:12px;color:var(--dim2);flex-wrap:wrap}
+  .coin .meta b{color:var(--fg)}
+  .bar{height:4px;background:#101513;border-radius:3px;margin-top:10px;overflow:hidden}
+  .bar i{display:block;height:100%;background:linear-gradient(90deg,#2a6,var(--green))}
   table{width:100%;border-collapse:collapse;font-size:13px}
   th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:280px}
   th{color:var(--dim);font-weight:500}
@@ -74,7 +98,7 @@
 </head>
 <body>
 <header>
-  <div class="brand"><span class="dot"></span>CSD&nbsp;<b>Explorer</b></div>
+  <a class="brand" href="#/" title="explorer home"><span class="dot"></span>CSD&nbsp;<b>Explorer</b></a>
   <form class="search" onsubmit="return doSearch(event)">
     <input id="q" placeholder="search: block height · 0x<txid> · 0x<address> · domain" autocomplete="off"/>
     <button>↵</button>
@@ -152,6 +176,7 @@ async function route(){
     else if(h.startsWith('/address/'))  await addrPage(v,h.slice(9));
     else if(h.startsWith('/domain/'))   await domainPage(v,decodeURIComponent(h.slice(8)));
     else if(h.startsWith('/proposal/')) await proposalPage(v,h.slice(10));
+    else if(h.startsWith('/token/'))     await tokenPage(v,decodeURIComponent(h.slice(7)));
     else v.innerHTML='<div class="panel">unknown route</div>';
   }catch(e){v.innerHTML='<div class="panel red">error: '+esc(e.message)+'</div>';}
 }
@@ -224,26 +249,90 @@ function flowHtml(tx){
 
 // ── pages ──
 async function home(v){
-  const [health,blocks,domains]=await Promise.all([j('/health'),j('/blocks/tip/height').then(()=>j('/block/'+ '' )).catch(()=>null),j('/domains')]);
+  const [health,domains,supply,miners]=await Promise.all([
+    j('/health'),j('/domains'),
+    j('/analytics/supply').catch(()=>null),j('/analytics/miners').catch(()=>null)]);
   const recent=await recentBlocks();
   v.innerHTML='';
+
+  // ── the chain at a glance ──
+  const halvDays=supply?Math.round(supply.halving.est_seconds_remaining/86400):null;
+  v.appendChild(el(`<div class="pulse">
+    <div class="pu hot"><div class="n">${health.indexed_height.toLocaleString()}</div><div class="l">block height</div></div>
+    <div class="pu"><div class="n">${miners?(miners.network_hashrate/1e9).toFixed(1):'—'} <span class="u">GH/s</span></div><div class="l">network hashrate</div></div>
+    <div class="pu"><div class="n">${miners?Math.round(miners.avg_interval_secs):'—'} <span class="u">s</span></div><div class="l">avg block time</div></div>
+    <div class="pu"><div class="n">${miners?miners.miner_count:'—'}</div><div class="l">miners (24h)</div></div>
+    <div class="pu gold"><div class="n">${supply?fmtCSD(supply.emitted_supply).replace(' CSD',''):'—'} <span class="u">CSD</span></div><div class="l">circulating (${supply?supply.pct_emitted.toFixed(2):'—'}% of max)</div></div>
+    <div class="pu"><div class="n">${halvDays!=null?'~'+Math.round(halvDays/365*10)/10+' <span class="u">yr</span>':'—'}</div><div class="l">to first halving</div></div>
+  </div>`));
+
+  // ── coins on this chain: native CSD + every CairnX token (humanly readable) ──
+  const coinsPanel=el(`<div class="panel"><h2>coins on this chain</h2><div class="coins" id="coins"></div>
+    <div class="muted" id="coins-note"></div></div>`);
+  v.appendChild(coinsPanel);
+  const coins=$('#coins',coinsPanel);
+  coins.appendChild(el(`<div class="coin"><span class="tk">CSD</span><span class="nm">the native coin — secures the chain (PoW)</span>
+    <div class="meta"><span>circulating <b>${supply?fmtCSD(supply.emitted_supply):'—'}</b></span>
+    <span>max <b>${supply?fmtCSD(supply.max_supply):'—'}</b></span>
+    <span>block reward <b>${supply?fmtCSD(supply.block_reward):'—'}</b></span></div>
+    <div class="bar"><i style="width:${supply?Math.max(1,supply.pct_emitted):0}%"></i></div></div>`));
+  (async()=>{
+    const toks=await jx(SIB.cairnx,'/tokens');
+    if(!toks){$('#coins-note',coinsPanel).innerHTML='CairnX tokens render on the <a href="https://cairn-substrate.com/explorer">cairn front door</a> (this standalone view has no token resolver).';return;}
+    const names=await jx(SIB.cairnx,'/names');
+    for(const t of toks){
+      const pct=Number(t.supply)>0?Number(BigInt(t.minted)*100n/BigInt(t.supply)):0;
+      coins.appendChild(el(`<a class="coin" href="#/token/${esc(t.ticker)}"><span class="tk">${esc(t.ticker)}</span><span class="nm">${esc(t.name||'CairnX token')} — ${t.mint==='issuer'?'fixed supply (issuer-mint)':'open mint'}</span>
+        <div class="meta"><span>minted <b>${fmtAmt(t.minted,t.decimals)}</b></span><span>max <b>${fmtAmt(t.supply,t.decimals)}</b></span></div>
+        <div class="bar"><i style="width:${Math.max(2,pct)}%"></i></div></a>`));
+    }
+    $('#coins-note',coinsPanel).innerHTML=`CairnX tokens live in ordinary chain transactions (Ordinals/Runes class — no contracts, no custodian); state is recomputable by anyone. ${names?`<b>${names.length}</b> .csd names registered. `:''}Trade them at <a href="https://cairn-substrate.com/trade" target="_blank">/trade</a>.`;
+  })();
+
   v.appendChild(el(`<div class="row">
-    <div class="panel"><h2>network</h2><div class="kv">
-      <div>indexed height</div><div class="v amber">${health.indexed_height.toLocaleString()}</div>
-      <div>blocks</div><div class="v">${health.blocks.toLocaleString()}</div>
+    <div class="panel"><h2>app activity (on-chain domains)</h2><div class="scroll-x"><table><thead><tr><th>domain</th><th>proposals</th></tr></thead>
+      <tbody>${domains.slice(0,8).map(d=>`<tr><td>${link('/domain/'+encodeURIComponent(d.domain),d.domain)}</td><td>${d.proposals}</td></tr>`).join('')}</tbody></table></div></div>
+    <div class="panel"><h2>chain records</h2><div class="kv">
+      <div>blocks indexed</div><div class="v">${health.blocks.toLocaleString()}</div>
       <div>transactions</div><div class="v">${health.txs.toLocaleString()}</div>
       <div>proposals</div><div class="v">${health.proposals.toLocaleString()}</div>
       <div>attestations</div><div class="v">${health.attestations.toLocaleString()}</div>
+      <div>top miner (24h)</div><div class="v">${miners&&miners.miners&&miners.miners[0]?addrLink(miners.miners[0].addr)+' <span class="dim">('+Math.round((miners.concentration.top1)*100)+'% of blocks)</span>':'—'}</div>
     </div></div>
-    <div class="panel"><h2>top domains</h2><table><thead><tr><th>domain</th><th>proposals</th></tr></thead>
-      <tbody>${domains.slice(0,8).map(d=>`<tr><td>${link('/domain/'+encodeURIComponent(d.domain),d.domain)}</td><td>${d.proposals}</td></tr>`).join('')}</tbody></table></div>
   </div>`));
   const feed=el(`<div class="panel"><h2>latest blocks <span class="pill" id="livepill">● live</span></h2>
-    <table><thead><tr><th>height</th><th>hash</th><th>txs</th><th>time</th></tr></thead><tbody id="blkfeed"></tbody></table></div>`);
+    <div class="scroll-x"><table><thead><tr><th>height</th><th>hash</th><th>txs</th><th>time</th></tr></thead><tbody id="blkfeed"></tbody></table></div></div>`);
   v.appendChild(feed);
   const tb=$('#blkfeed',feed);
   recent.forEach(b=>tb.appendChild(blockRow(b)));
   subscribeBlocks(tb);
+}
+
+// ── token page: one CairnX coin, humanly ──
+async function tokenPage(v,ticker){
+  const t=await jx(SIB.cairnx,'/token/'+encodeURIComponent(ticker));
+  if(!t){v.innerHTML='<div class="panel">token data needs the cairn front door (cairn-substrate.com/explorer)</div>';return;}
+  const holders=Object.entries(t.holders||{}).map(([a,b])=>({a,av:BigInt(b.available),lk:BigInt(b.locked)}))
+    .sort((x,y)=>(y.av+y.lk)>(x.av+x.lk)?1:-1);
+  const total=holders.reduce((s,h)=>s+h.av+h.lk,0n)||1n;
+  v.innerHTML='';
+  const pct=Number(t.supply)>0?Number(BigInt(t.minted)*100n/BigInt(t.supply)):0;
+  v.appendChild(el(`<div class="panel"><h2>token</h2>
+    <div class="action"><span class="tk" style="font-size:24px;color:var(--amber);font-weight:700">${esc(t.ticker)}</span>
+      <span class="nm dim" style="margin-left:8px">${esc(t.name||'CairnX token')}</span></div>
+    <div class="kv">
+      <div>kind</div><div class="v">${t.mint==='issuer'?'fixed supply — only the issuer could mint (no dilution)':'open mint (up to '+fmtAmt(t.mintLimit||'0',t.decimals)+' per mint)'}</div>
+      <div>minted / max</div><div class="v"><b>${fmtAmt(t.minted,t.decimals)}</b> / ${fmtAmt(t.supply,t.decimals)} <span class="dim">(${pct.toFixed(1)}%)</span></div>
+      <div>decimals</div><div class="v">${t.decimals}</div>
+      <div>deployed</div><div class="v">${link('/block/'+t.height,t.height)} by ${addrLink(t.deployer)} <span class="dim">· tx ${txidLink(t.deployId)}</span></div>
+      ${t.tmeta?`<div>metadata</div><div class="v mono dim">${esc(t.tmeta)} <span class="dim">(content-addressed, csd-swarm)</span></div>`:''}
+      <div>holders</div><div class="v">${holders.length}</div>
+      <div>trade</div><div class="v"><a href="https://cairn-substrate.com/trade" target="_blank">cairn-substrate.com/trade ↗</a></div>
+    </div></div>`));
+  v.appendChild(el(`<div class="panel"><h2>holders</h2><div class="scroll-x"><table><thead><tr><th>#</th><th>address</th><th>balance</th><th class="opt">locked in offers</th><th class="opt">share</th></tr></thead>
+    <tbody>${holders.slice(0,50).map((h,i)=>`<tr><td class="dim">${i+1}</td><td>${addrLink(h.a)}</td><td>${fmtAmt(h.av.toString(),t.decimals)}</td>
+      <td class="opt dim">${h.lk?fmtAmt(h.lk.toString(),t.decimals):''}</td>
+      <td class="opt dim">${(Number((h.av+h.lk)*1000n/total)/10).toFixed(1)}%</td></tr>`).join('')}</tbody></table></div></div>`));
 }
 function blockRow(b,live){
   return el(`<tr class="${live?'feed-row':''}"><td>${link('/block/'+b.height,b.height)}</td>
