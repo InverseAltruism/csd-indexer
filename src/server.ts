@@ -32,121 +32,127 @@ export function buildApp() {
   app.get("/", (_req, res) => res.sendFile(join(PUBLIC, "explorer.html")));
   app.use("/static", express.static(PUBLIC));
 
+  // async handlers: express 4 doesn't catch a rejected promise, so wrap every handler.
+  // Params are typed as plain strings (the routes below only read params they declare).
+  type Req = Request<Record<string, string>, unknown, unknown, Record<string, string | undefined>>;
+  const h = (fn: (req: Req, res: Response) => Promise<unknown>) =>
+    (req: Req, res: Response) => { fn(req, res).catch((e) => { if (!res.headersSent) res.status(500).json({ error: String((e as Error).message) }); }); };
+
   // ── health / status ──
-  app.get("/health", (_req, res) => res.json({ ok: true, indexed_height: indexedHeight(), ...q.counts() }));
+  app.get("/health", h(async (_req, res) => res.json({ ok: true, indexed_height: await indexedHeight(), ...(await q.counts()) })));
 
   // ── streaming (SSE firehoses; WebSocket is attached in serve()) ──
   app.get("/stream/all", sseHandler());
   app.get("/stream/blocks", sseHandler((e) => e.kind === "block" || e.kind === "reorg"));
   app.get("/stream/domain/:d", (req, res) => sseHandler((e) =>
-    e.kind === "reorg" || (e.kind === "proposal" && e.domain === req.params.d))(req, res));
+    e.kind === "reorg" || (e.kind === "proposal" && e.domain === req.params.d!))(req, res));
 
   // ── Esplora core ──
-  app.get("/blocks/tip/height", (_req, res) => res.json(q.tipHeight()));
-  app.get("/blocks/tip/hash", (_req, res) => { const b = q.blockByHeight(q.tipHeight()); return b ? res.json(b.hash) : nf(res); });
+  app.get("/blocks/tip/height", h(async (_req, res) => res.json(await q.tipHeight())));
+  app.get("/blocks/tip/hash", h(async (_req, res) => { const b = await q.blockByHeight(await q.tipHeight()); return b ? res.json(b.hash) : nf(res); }));
 
-  app.get("/block-height/:h", (req, res) => {
-    const b = q.blockByHeight(Number(req.params.h));
+  app.get("/block-height/:h", h(async (req, res) => {
+    const b = await q.blockByHeight(Number(req.params.h!));
     return b ? res.json(b.hash) : nf(res, "no block at height");
-  });
-  app.get("/block/:hash", (req, res) => {
-    const b = q.blockByHash(req.params.hash);
+  }));
+  app.get("/block/:hash", h(async (req, res) => {
+    const b = await q.blockByHash(req.params.hash!);
     return b ? res.json(b) : nf(res, "unknown block");
-  });
-  app.get("/block/:hash/txids", (req, res) => {
-    const b = q.blockByHash(req.params.hash);
-    return b ? res.json(q.blockTxids(b.height)) : nf(res, "unknown block");
-  });
-  app.get("/block/:hash/txs", (req, res) => {
-    const b = q.blockByHash(req.params.hash);
+  }));
+  app.get("/block/:hash/txids", h(async (req, res) => {
+    const b = await q.blockByHash(req.params.hash!);
+    return b ? res.json(await q.blockTxids(b.height)) : nf(res, "unknown block");
+  }));
+  app.get("/block/:hash/txs", h(async (req, res) => {
+    const b = await q.blockByHash(req.params.hash!);
     if (!b) return nf(res, "unknown block");
-    res.json(q.blockTxids(b.height).map((t) => withVio(q.tx(t)!)));
-  });
+    const txids = await q.blockTxids(b.height);
+    res.json((await Promise.all(txids.map((t) => q.tx(t)))).map((t) => withVio(t!)));
+  }));
 
   // ── tx ──
-  app.get("/tx/:id", (req, res) => {
-    if (!TXID.test(req.params.id)) return bad(res, "want /tx/0x<64-hex>");
-    const t = q.tx(req.params.id);
+  app.get("/tx/:id", h(async (req, res) => {
+    if (!TXID.test(req.params.id!)) return bad(res, "want /tx/0x<64-hex>");
+    const t = await q.tx(req.params.id!);
     if (!t) return nf(res, "unknown tx");
-    res.json({ ...withVio(t), outputs: q.txOutputs(t.txid) });
-  });
-  app.get("/tx/:id/status", (req, res) => {
-    const t = q.tx(req.params.id);
+    res.json({ ...withVio(t), outputs: await q.txOutputs(t.txid) });
+  }));
+  app.get("/tx/:id/status", h(async (req, res) => {
+    const t = await q.tx(req.params.id!);
     if (!t) return nf(res, "unknown tx");
-    const tip = q.tipHeight();
+    const tip = await q.tipHeight();
     res.json({ confirmed: true, block_height: t.height, confirmations: tip - t.height + 1, final: tip - t.height + 1 >= CFG.finalDepth });
-  });
+  }));
   // CSD keystone: merkle inclusion proof (Electrum format) for the L0 light client.
-  app.get("/tx/:id/merkle-proof", (req, res) => {
-    if (!TXID.test(req.params.id)) return bad(res, "want /tx/0x<64-hex>/merkle-proof");
-    const p = merkleProof(req.params.id);
+  app.get("/tx/:id/merkle-proof", h(async (req, res) => {
+    if (!TXID.test(req.params.id!)) return bad(res, "want /tx/0x<64-hex>/merkle-proof");
+    const p = await merkleProof(req.params.id!);
     return p ? res.json(p) : nf(res, "unknown tx (not indexed)");
-  });
+  }));
 
   // ── address ──
-  app.get("/address/:a", (req, res) => {
-    if (!ADDR.test(req.params.a.toLowerCase())) return bad(res, "want /address/0x<40-hex>");
-    res.json({ address: req.params.a.toLowerCase(), chain_stats: q.addressStats(req.params.a) });
-  });
-  app.get("/address/:a/txs", (req, res) => {
-    if (!ADDR.test(req.params.a.toLowerCase())) return bad(res, "want /address/0x<40-hex>");
-    res.json(q.addressTxids(req.params.a, null).map((r) => withVio(q.tx(r.txid)!)));
-  });
-  app.get("/address/:a/txs/chain/:last", (req, res) => {
-    const before = Number(req.params.last);
-    res.json(q.addressTxids(req.params.a, Number.isFinite(before) ? before : null).map((r) => withVio(q.tx(r.txid)!)));
-  });
-  app.get("/address/:a/utxo", (req, res) => {
-    if (!ADDR.test(req.params.a.toLowerCase())) return bad(res, "want /address/0x<40-hex>");
-    res.json(q.addressUtxos(req.params.a).map((o) => ({ txid: o.txid, vout: o.vout, value: o.value, status: { confirmed: true, block_height: o.height } })));
-  });
+  app.get("/address/:a", h(async (req, res) => {
+    if (!ADDR.test(req.params.a!.toLowerCase())) return bad(res, "want /address/0x<40-hex>");
+    res.json({ address: req.params.a!.toLowerCase(), chain_stats: await q.addressStats(req.params.a!) });
+  }));
+  app.get("/address/:a/txs", h(async (req, res) => {
+    if (!ADDR.test(req.params.a!.toLowerCase())) return bad(res, "want /address/0x<40-hex>");
+    const ids = await q.addressTxids(req.params.a!, null);
+    res.json((await Promise.all(ids.map((r) => q.tx(r.txid)))).map((t) => withVio(t!)));
+  }));
+  app.get("/address/:a/txs/chain/:last", h(async (req, res) => {
+    const before = Number(req.params.last!);
+    const ids = await q.addressTxids(req.params.a!, Number.isFinite(before) ? before : null);
+    res.json((await Promise.all(ids.map((r) => q.tx(r.txid)))).map((t) => withVio(t!)));
+  }));
+  app.get("/address/:a/utxo", h(async (req, res) => {
+    if (!ADDR.test(req.params.a!.toLowerCase())) return bad(res, "want /address/0x<40-hex>");
+    res.json((await q.addressUtxos(req.params.a!)).map((o) => ({ txid: o.txid, vout: o.vout, value: o.value, status: { confirmed: true, block_height: o.height } })));
+  }));
 
   // ── CSD extras ──
-  app.get("/domains", (_req, res) => res.json(q.domains()));
-  app.get("/domain/:d/proposals", (req, res) => res.json(q.proposalsByDomain(
-    req.params.d, Number(req.query.limit) || 100,
-    req.query.from !== undefined ? Number(req.query.from) : undefined)));
-  app.get("/proposal/:id", (req, res) => {
-    const p = q.proposal(req.params.id);
+  app.get("/domains", h(async (_req, res) => res.json(await q.domains())));
+  app.get("/domain/:d/proposals", h(async (req, res) => res.json(await q.proposalsByDomain(
+    req.params.d!, Number(req.query.limit) || 100,
+    req.query.from !== undefined ? Number(req.query.from) : undefined))));
+  app.get("/proposal/:id", h(async (req, res) => {
+    const p = await q.proposal(req.params.id!);
     if (!p) return nf(res, "unknown proposal");
-    const atts = q.attestationsFor(req.params.id);
+    const atts = await q.attestationsFor(req.params.id!);
     res.json({ ...p, attestation_count: atts.length, attestations: atts });
-  });
-  app.get("/proposal/:id/attestations", (req, res) => res.json(q.attestationsFor(req.params.id)));
-  app.get("/address/:a/reputation", (req, res) => {
-    const atts = q.attestationsBy(req.params.a);
+  }));
+  app.get("/proposal/:id/attestations", h(async (req, res) => res.json(await q.attestationsFor(req.params.id!))));
+  app.get("/address/:a/reputation", h(async (req, res) => {
+    const atts = await q.attestationsBy(req.params.a!);
     const n = atts.length;
     const avgScore = n ? atts.reduce((s, a) => s + Number(a.score || 0), 0) / n : 0;
     const avgConf = n ? atts.reduce((s, a) => s + Number(a.confidence || 0), 0) / n : 0;
     const feesPaid = atts.reduce((s, a) => s + Number(a.fee || 0), 0);
-    res.json({ address: req.params.a.toLowerCase(), attestations: n, avg_score: avgScore, avg_confidence: avgConf, fees_paid: feesPaid });
-  });
+    res.json({ address: req.params.a!.toLowerCase(), attestations: n, avg_score: avgScore, avg_confidence: avgConf, fees_paid: feesPaid });
+  }));
 
   // ── miner / holder / supply analytics (read-only aggregates; see src/analytics.ts) ──
-  app.get("/analytics/miners", (req, res) => {
-    try { res.json(analytics.miners(String(req.query.window ?? "1d"))); }
-    catch (e) { res.status(500).json({ error: String((e as Error).message) }); }
-  });
-  app.get("/analytics/richlist", (req, res) => res.json(analytics.richlist(Number(req.query.limit ?? 100))));
-  app.get("/analytics/supply", (_req, res) => res.json(analytics.supply()));
+  app.get("/analytics/miners", h(async (req, res) => res.json(await analytics.miners(String(req.query.window ?? "1d")))));
+  app.get("/analytics/richlist", h(async (req, res) => res.json(await analytics.richlist(Number(req.query.limit ?? 100)))));
+  app.get("/analytics/supply", h(async (_req, res) => res.json(await analytics.supply())));
 
   // ── L3 registry resolvers (deterministic; clients can recompute via csd-registry) ──
   app.get("/registry/peers", async (_req, res) => { try { res.json(await registry.peers()); } catch (e) { res.status(500).json({ error: String((e as Error).message) }); } });
   app.get("/registry/gateways", async (_req, res) => { try { res.json(await registry.gateways()); } catch (e) { res.status(500).json({ error: String((e as Error).message) }); } });
   app.get("/identity/:handle", async (req, res) => {
-    try { const r = await registry.identity(req.params.handle); return r ? res.json(r) : nf(res, "no verified binding for handle"); }
+    try { const r = await registry.identity(req.params.handle!); return r ? res.json(r) : nf(res, "no verified binding for handle"); }
     catch (e) { res.status(500).json({ error: String((e as Error).message) }); }
   });
   app.get("/address/:a/identity", async (req, res) => {
-    if (!ADDR.test(req.params.a.toLowerCase())) return bad(res, "want /address/0x<40-hex>/identity");
-    try { const r = await registry.reverse(req.params.a); return r ? res.json(r) : nf(res, "no primary name for address"); }
+    if (!ADDR.test(req.params.a!.toLowerCase())) return bad(res, "want /address/0x<40-hex>/identity");
+    try { const r = await registry.reverse(req.params.a!); return r ? res.json(r) : nf(res, "no primary name for address"); }
     catch (e) { res.status(500).json({ error: String((e as Error).message) }); }
   });
 
   // Content join: resolve canonical bytes by payload_hash via the L1 swarm gateway
   // (self-certifying — the gateway re-checks sha256==hash; we just proxy).
   app.get("/content/:hash", async (req, res) => {
-    const hash = String(req.params.hash || "").toLowerCase();
+    const hash = String(req.params.hash! || "").toLowerCase();
     if (!HASH.test(hash)) return bad(res, "want /content/0x<64-hex payload_hash>");
     try {
       const ctrl = new AbortController();

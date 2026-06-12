@@ -7,23 +7,23 @@
 // so prover and verifier share one convention by construction (verified live: the
 // SDK's merkleRoot reproduces the node's header.merkle for real blocks).
 import { merkleBranch, merkleRoot } from "@inversealtruism/csd-codec";
-import { db } from "./db.js";
+import { store } from "./db.js";
 
 export interface MerkleProof { block_height: number; pos: number; merkle: string[]; merkle_root: string; }
 
 /** Ordered txids of a (canonical) block, by position. */
-export function blockTxids(height: number): string[] {
-  return (db().prepare("SELECT txid FROM txs WHERE height=? ORDER BY pos").all(height) as { txid: string }[]).map(r => r.txid);
+export async function blockTxids(height: number): Promise<string[]> {
+  return (await store().all<{ txid: string }>("SELECT txid FROM txs WHERE height=? ORDER BY pos", height)).map(r => r.txid);
 }
 
 /** Build the inclusion proof for a txid, or null if we don't have it. */
-export function merkleProof(txid: string): MerkleProof | null {
-  const row = db().prepare("SELECT height,pos FROM txs WHERE txid=?").get(txid) as { height: number; pos: number } | undefined;
+export async function merkleProof(txid: string): Promise<MerkleProof | null> {
+  const row = await store().get<{ height: number; pos: number }>("SELECT height,pos FROM txs WHERE txid=?", txid);
   if (!row) return null;
-  const txids = blockTxids(row.height);
+  const txids = await blockTxids(Number(row.height));
   if (txids.length === 0 || row.pos >= txids.length) return null;
   return {
-    block_height: row.height,
+    block_height: Number(row.height),
     pos: row.pos,
     merkle: merkleBranch(txids, row.pos),
     merkle_root: merkleRoot(txids),

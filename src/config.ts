@@ -7,6 +7,15 @@ export const CFG = {
   rpc: env("CSD_RPC", "http://127.0.0.1:8789"),
   // sqlite file. node:sqlite (built into Node 22) — no native dep, no build step.
   db: env("CSD_INDEX_DB", "./csd-index.db"),
+  // Postgres connection string. When set, the indexer uses Postgres INSTEAD of sqlite —
+  // the scale path: node:sqlite is synchronous (every query blocks the event loop), so
+  // concurrent API readers serialize; a pg pool keeps reads flowing during block writes.
+  // e.g. CSD_INDEX_PG=postgres://csd:***@127.0.0.1:5432/csd_index
+  pg: env("CSD_INDEX_PG", ""),
+  // Postgres schema (namespace) for all tables — lets several indexers share one database.
+  pgSchema: env("CSD_INDEX_PG_SCHEMA", "public"),
+  // Postgres pool size (readers + the single writer).
+  pgPoolSize: num("CSD_INDEX_PG_POOL", 10),
   // HTTP bind for the REST + streaming API (8789 node, 8790 miner, 8791 swarm, 7777 cairn).
   listen: env("CSD_INDEX_LISTEN", "127.0.0.1:8793"),
   // L1 swarm gateway used to resolve content bytes by payload_hash (optional join).

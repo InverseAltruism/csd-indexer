@@ -1,6 +1,6 @@
 // The stateful sync engine: forward-only scan with reorg-safe unwind/replay.
 //
-// Each block is written in a single sqlite transaction. Inputs are resolved against
+// Each block is written in a single store transaction. Inputs are resolved against
 // our OWN outputs table (every prior block is already indexed, in order), so fees,
 // spends, and address deltas need zero extra RPC. The last `finalDepth` blocks stay
 // re-checkable; if a new block's `prev` doesn't link our stored tip, we walk back to
@@ -8,7 +8,7 @@
 // un-spend orphaned spends), and replay the canonical branch — the electrs/Subsquid
 // roll-back-then-replay pattern. Blocks deeper than finalDepth are never touched.
 import * as rpc from "./rpc.js";
-import { db, getMeta, setMeta, tx as dbTx } from "./db.js";
+import { store, getMeta, setMeta, tx as dbTx, type Store } from "./db.js";
 import { deriveAddr, addrFromScriptPubkey, appType } from "./decode.js";
 import { CFG } from "./config.js";
 import { bus } from "./events.js";
@@ -18,8 +18,8 @@ const TIP_KEY = "indexed_height";
 export interface IndexResult { from: number; to: number; tip: number; blocks: number; reorgs: number; reorgDepth: number; }
 
 /** Height we've indexed up to (canonical), or scanFrom-1 if fresh. */
-export function indexedHeight(): number {
-  const v = getMeta(TIP_KEY);
+export async function indexedHeight(): Promise<number> {
+  const v = await getMeta(TIP_KEY);
   return v == null ? CFG.scanFrom - 1 : Number(v);
 }
 
@@ -33,44 +33,44 @@ export function indexedHeight(): number {
  * present): call unwindAbove(height-1) first — in the production reorg path that always happens, and
  * forward writes are always at the tip, so this clear is correct there (no later spends to lose).
  */
-export function writeBlock(b: rpc.RpcBlock): void {
-  const d = db();
-  dbTx(() => {
+export async function writeBlock(b: rpc.RpcBlock): Promise<void> {
+  await dbTx(async (d: Store) => {
     const blk = b;
     const time = Number(blk.header.time ?? 0);
     // clear any prior contents of THIS height (keeps a same-height re-write internally consistent)
-    d.prepare(`UPDATE outputs SET spent_txid=NULL, spent_height=NULL WHERE spent_height=?`).run(blk.height);
-    d.prepare(`DELETE FROM address_history WHERE height=?`).run(blk.height);
-    d.prepare(`DELETE FROM proposals WHERE height=?`).run(blk.height);
-    d.prepare(`DELETE FROM attestations WHERE height=?`).run(blk.height);
-    d.prepare(`DELETE FROM outputs WHERE height=?`).run(blk.height);
-    d.prepare(`DELETE FROM txs WHERE height=?`).run(blk.height);
-    d.prepare(`INSERT INTO blocks(height,hash,prev,merkle,time,bits,nonce,version,tx_count,chainwork,orphaned)
+    await d.run(`UPDATE outputs SET spent_txid=NULL, spent_height=NULL WHERE spent_height=?`, blk.height);
+    await d.run(`DELETE FROM address_history WHERE height=?`, blk.height);
+    await d.run(`DELETE FROM proposals WHERE height=?`, blk.height);
+    await d.run(`DELETE FROM attestations WHERE height=?`, blk.height);
+    await d.run(`DELETE FROM outputs WHERE height=?`, blk.height);
+    await d.run(`DELETE FROM txs WHERE height=?`, blk.height);
+    await d.run(`INSERT INTO blocks(height,hash,prev,merkle,time,bits,nonce,version,tx_count,chainwork,orphaned)
       VALUES(?,?,?,?,?,?,?,?,?,?,0)
       ON CONFLICT(height) DO UPDATE SET hash=excluded.hash, prev=excluded.prev, merkle=excluded.merkle,
         time=excluded.time, bits=excluded.bits, nonce=excluded.nonce, version=excluded.version,
-        tx_count=excluded.tx_count, chainwork=excluded.chainwork, orphaned=0`)
-      .run(blk.height, blk.hash, blk.header.prev ?? null, blk.header.merkle ?? null, time,
-        Number(blk.header.bits ?? 0), Number(blk.header.nonce ?? 0), Number(blk.header.version ?? 0),
-        blk.txs.length, String(blk.chainwork ?? "0"));
+        tx_count=excluded.tx_count, chainwork=excluded.chainwork, orphaned=0`,
+      blk.height, blk.hash, blk.header.prev ?? null, blk.header.merkle ?? null, time,
+      Number(blk.header.bits ?? 0), Number(blk.header.nonce ?? 0), Number(blk.header.version ?? 0),
+      blk.txs.length, String(blk.chainwork ?? "0"));
 
-    const insTx = d.prepare(`INSERT INTO txs(txid,height,pos,app_type,signer,fee,time,n_in,n_out,coinbase)
+    const SQL_TX = `INSERT INTO txs(txid,height,pos,app_type,signer,fee,time,n_in,n_out,coinbase)
       VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(txid) DO UPDATE SET
       height=excluded.height, pos=excluded.pos, app_type=excluded.app_type, signer=excluded.signer,
-      fee=excluded.fee, time=excluded.time, n_in=excluded.n_in, n_out=excluded.n_out, coinbase=excluded.coinbase`);
-    const insOut = d.prepare(`INSERT INTO outputs(txid,vout,addr,value,height,spent_txid,spent_height)
-      VALUES(?,?,?,?,?,NULL,NULL) ON CONFLICT(txid,vout) DO UPDATE SET addr=excluded.addr, value=excluded.value, height=excluded.height`);
-    const spend = d.prepare(`UPDATE outputs SET spent_txid=?, spent_height=? WHERE txid=? AND vout=?`);
-    const lookupOut = d.prepare(`SELECT addr,value FROM outputs WHERE txid=? AND vout=?`);
-    const insHist = d.prepare(`INSERT OR IGNORE INTO address_history(addr,txid,height,pos,direction,delta) VALUES(?,?,?,?,?,?)`);
-    const insProp = d.prepare(`INSERT INTO proposals(txid,domain,payload_hash,uri,expires_epoch,proposer,fee,height,time)
+      fee=excluded.fee, time=excluded.time, n_in=excluded.n_in, n_out=excluded.n_out, coinbase=excluded.coinbase`;
+    const SQL_OUT = `INSERT INTO outputs(txid,vout,addr,value,height,spent_txid,spent_height)
+      VALUES(?,?,?,?,?,NULL,NULL) ON CONFLICT(txid,vout) DO UPDATE SET addr=excluded.addr, value=excluded.value, height=excluded.height`;
+    const SQL_SPEND = `UPDATE outputs SET spent_txid=?, spent_height=? WHERE txid=? AND vout=?`;
+    const SQL_LOOKUP = `SELECT addr,value FROM outputs WHERE txid=? AND vout=?`;
+    const SQL_HIST = `INSERT INTO address_history(addr,txid,height,pos,direction,delta) VALUES(?,?,?,?,?,?) ON CONFLICT DO NOTHING`;
+    const SQL_PROP = `INSERT INTO proposals(txid,domain,payload_hash,uri,expires_epoch,proposer,fee,height,time)
       VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(txid) DO UPDATE SET domain=excluded.domain, payload_hash=excluded.payload_hash,
-      uri=excluded.uri, expires_epoch=excluded.expires_epoch, proposer=excluded.proposer, fee=excluded.fee, height=excluded.height, time=excluded.time`);
-    const insAtt = d.prepare(`INSERT INTO attestations(txid,proposal_id,attester,score,confidence,fee,height,time)
+      uri=excluded.uri, expires_epoch=excluded.expires_epoch, proposer=excluded.proposer, fee=excluded.fee, height=excluded.height, time=excluded.time`;
+    const SQL_ATT = `INSERT INTO attestations(txid,proposal_id,attester,score,confidence,fee,height,time)
       VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(txid) DO UPDATE SET proposal_id=excluded.proposal_id, attester=excluded.attester,
-      score=excluded.score, confidence=excluded.confidence, fee=excluded.fee, height=excluded.height, time=excluded.time`);
+      score=excluded.score, confidence=excluded.confidence, fee=excluded.fee, height=excluded.height, time=excluded.time`;
 
-    blk.txs.forEach((t, pos) => {
+    for (let pos = 0; pos < blk.txs.length; pos++) {
+      const t = blk.txs[pos]!;
       const isCoinbase = pos === 0;
       const signer = deriveAddr(t.inputs?.[0]?.script_sig) ?? addrFromScriptPubkey(t.outputs?.[0]?.script_pubkey) ?? null;
       // resolve inputs against our own outputs → spends + input sum (skip coinbase)
@@ -78,58 +78,62 @@ export function writeBlock(b: rpc.RpcBlock): void {
       const ins = t.inputs ?? [];
       for (const inp of ins) {
         const prev = inp.prev_txid ?? inp.prevTxid;
-        if (!prev) continue; // coinbase input
+        // coinbase input: absent prev, or the all-zero txid + vout 0xFFFFFFFF marker. An
+        // all-zero txid can never exist, so skipping is exactly the old "lookup misses"
+        // behavior — and it keeps the 2^32-1 vout away from pg's int4 param inference.
+        if (!prev || /^(0x)?0+$/.test(prev)) continue;
         const vout = Number(inp.vout ?? 0);
-        const prevOut = lookupOut.get(prev, vout) as { addr: string | null; value: number } | undefined;
+        const prevOut = await d.get<{ addr: string | null; value: number }>(SQL_LOOKUP, prev, vout);
         if (prevOut) {
           sumIn += Number(prevOut.value ?? 0);
-          spend.run(t.txid, blk.height, prev, vout);
-          if (prevOut.addr) insHist.run(prevOut.addr, t.txid, blk.height, pos, "out", -Number(prevOut.value ?? 0));
+          await d.run(SQL_SPEND, t.txid, blk.height, prev, vout);
+          if (prevOut.addr) await d.run(SQL_HIST, prevOut.addr, t.txid, blk.height, pos, "out", -Number(prevOut.value ?? 0));
         }
       }
       // outputs
       let sumOut = 0;
-      (t.outputs ?? []).forEach((o, vout) => {
+      const outs = t.outputs ?? [];
+      for (let vout = 0; vout < outs.length; vout++) {
+        const o = outs[vout]!;
         const addr = addrFromScriptPubkey(o.script_pubkey);
         const val = Number(o.value ?? 0);
         sumOut += val;
-        insOut.run(t.txid, vout, addr, val, blk.height);
-        if (addr) insHist.run(addr, t.txid, blk.height, pos, "in", val);
-      });
+        await d.run(SQL_OUT, t.txid, vout, addr, val, blk.height);
+        if (addr) await d.run(SQL_HIST, addr, t.txid, blk.height, pos, "in", val);
+      }
       const fee = isCoinbase ? 0 : Math.max(0, sumIn - sumOut);
       const kind = appType(t, isCoinbase);
-      insTx.run(t.txid, blk.height, pos, kind, signer, fee, time, ins.length, (t.outputs ?? []).length, isCoinbase ? 1 : 0);
+      await d.run(SQL_TX, t.txid, blk.height, pos, kind, signer, fee, time, ins.length, outs.length, isCoinbase ? 1 : 0);
 
       if (kind === "Propose" && t.app) {
-        insProp.run(t.txid, String(t.app.domain ?? ""), String(t.app.payload_hash ?? ""), String(t.app.uri ?? ""),
+        await d.run(SQL_PROP, t.txid, String(t.app.domain ?? ""), String(t.app.payload_hash ?? ""), String(t.app.uri ?? ""),
           Number(t.app.expires_epoch ?? 0), signer, fee, blk.height, time);
       } else if (kind === "Attest" && t.app) {
-        insAtt.run(t.txid, String(t.app.proposal_id ?? ""), signer, Number(t.app.score ?? 0),
+        await d.run(SQL_ATT, t.txid, String(t.app.proposal_id ?? ""), signer, Number(t.app.score ?? 0),
           Number(t.app.confidence ?? 0), fee, blk.height, time);
       }
-    });
+    }
   });
 }
 
 /** Hard-delete every row strictly above `ancestor`, un-spending outputs orphaned by it. */
-export function unwindAbove(ancestor: number): void {
-  const d = db();
-  dbTx(() => {
+export async function unwindAbove(ancestor: number): Promise<void> {
+  await dbTx(async (d: Store) => {
     const h = ancestor;
     // un-spend outputs whose spender was orphaned (those spends no longer happened)
-    d.prepare(`UPDATE outputs SET spent_txid=NULL, spent_height=NULL WHERE spent_height>?`).run(h);
-    d.prepare(`DELETE FROM address_history WHERE height>?`).run(h);
-    d.prepare(`DELETE FROM proposals WHERE height>?`).run(h);
-    d.prepare(`DELETE FROM attestations WHERE height>?`).run(h);
-    d.prepare(`DELETE FROM outputs WHERE height>?`).run(h);
-    d.prepare(`DELETE FROM txs WHERE height>?`).run(h);
-    d.prepare(`DELETE FROM blocks WHERE height>?`).run(h);
+    await d.run(`UPDATE outputs SET spent_txid=NULL, spent_height=NULL WHERE spent_height>?`, h);
+    await d.run(`DELETE FROM address_history WHERE height>?`, h);
+    await d.run(`DELETE FROM proposals WHERE height>?`, h);
+    await d.run(`DELETE FROM attestations WHERE height>?`, h);
+    await d.run(`DELETE FROM outputs WHERE height>?`, h);
+    await d.run(`DELETE FROM txs WHERE height>?`, h);
+    await d.run(`DELETE FROM blocks WHERE height>?`, h);
   });
 }
 
 /** Stored canonical block hash at height, or null. */
-function storedHash(height: number): string | null {
-  const r = db().prepare("SELECT hash FROM blocks WHERE height=? AND orphaned=0").get(height) as { hash: string } | undefined;
+async function storedHash(height: number): Promise<string | null> {
+  const r = await store().get<{ hash: string }>("SELECT hash FROM blocks WHERE height=? AND orphaned=0", height);
   return r?.hash ?? null;
 }
 
@@ -146,22 +150,18 @@ function storedHash(height: number): string | null {
  */
 async function findReorgAncestor(newBlock: rpc.RpcBlock): Promise<number> {
   const prevH = newBlock.height - 1;
-  const storedPrev = storedHash(prevH);
+  const storedPrev = await storedHash(prevH);
   if (storedPrev == null) return -1;                       // nothing to link against (fresh / gap)
   if (storedPrev === (newBlock.header.prev ?? "")) return -1; // links cleanly — no reorg
   // diverged: walk back until node's hash matches what we stored (bounded by the scan floor)
   for (let h = prevH - 1; h >= CFG.scanFrom; h--) {
     const nodeBlk = await rpc.blockByHeight(h);
-    const ours = storedHash(h);
+    const ours = await storedHash(h);
     if (nodeBlk && ours && nodeBlk.hash === ours) return h;  // common ancestor
   }
   return CFG.scanFrom - 1;                                  // diverged below the floor → re-scan from scanFrom
 }
 
-/**
- * Index forward from where we left off up to (tip - 0); reorgs handled inline.
- * Returns a summary. Idempotent: re-running with no new blocks is a no-op.
- */
 /**
  * Reconcile the re-checkable tip window against the node BEFORE the forward scan. The forward scan
  * only ever detects a reorg when a TALLER block arrives whose prev mismatches — so a reorg that
@@ -173,7 +173,7 @@ async function findReorgAncestor(newBlock: rpc.RpcBlock): Promise<number> {
  * highest converged height. Returns the reorg depth (0 = nothing to do).
  */
 async function reconcileTipWindow(tip: number): Promise<number> {
-  const top = indexedHeight();
+  const top = await indexedHeight();
   if (top < CFG.scanFrom) return 0;
   const ceil = Math.min(top, tip);
   // Highest height ≤ ceil where our stored hash still matches the node. Fast path scans the
@@ -187,7 +187,7 @@ async function reconcileTipWindow(tip: number): Promise<number> {
   const fastFloor = Math.max(CFG.scanFrom, ceil - CFG.finalDepth);
   for (let h = ceil; h >= fastFloor; h--) {
     const nb = await rpc.blockByHeight(h);
-    const ours = storedHash(h);
+    const ours = await storedHash(h);
     if (nb && ours) {
       if (nb.hash === ours) { converged = h; break; }
       mismatched = true;
@@ -196,7 +196,7 @@ async function reconcileTipWindow(tip: number): Promise<number> {
   if (converged < 0) {                                     // deep divergence — walk on to the floor
     for (let h = fastFloor - 1; h >= CFG.scanFrom; h--) {
       const nb = await rpc.blockByHeight(h);
-      const ours = storedHash(h);
+      const ours = await storedHash(h);
       if (nb && ours) {
         if (nb.hash === ours) { converged = h; break; }
         mismatched = true;
@@ -212,12 +212,16 @@ async function reconcileTipWindow(tip: number): Promise<number> {
   if (converged < ceil && !mismatched) return 0;
   if (converged >= top) return 0;                          // consistent up to our tip — nothing to unwind
   const depth = top - converged;
-  unwindAbove(converged);
-  setMeta(TIP_KEY, String(converged));
+  await unwindAbove(converged);
+  await setMeta(TIP_KEY, String(converged));
   bus.emitEvent({ kind: "reorg", ancestor: converged, depth });
   return depth;
 }
 
+/**
+ * Index forward from where we left off up to (tip - 0); reorgs handled inline.
+ * Returns a summary. Idempotent: re-running with no new blocks is a no-op.
+ */
 export async function syncOnce(): Promise<IndexResult> {
   if (!(await rpc.reachable())) throw new Error("node RPC unreachable");
   const { height: tip } = await rpc.tip();
@@ -225,9 +229,9 @@ export async function syncOnce(): Promise<IndexResult> {
   // FIRST reconcile the tip window (catches an equal/lower-height reorg the forward scan can't).
   const reconciled = await reconcileTipWindow(tip);
   if (reconciled > 0) { reorgs++; reorgDepth = reconciled; }
-  let from = indexedHeight() + 1;
+  let from = (await indexedHeight()) + 1;
   if (from < CFG.scanFrom) from = CFG.scanFrom;
-  if (tip < from) return { from, to: indexedHeight(), tip, blocks, reorgs, reorgDepth };
+  if (tip < from) return { from, to: await indexedHeight(), tip, blocks, reorgs, reorgDepth };
 
   for (let h = from; h <= tip; h++) {
     const blk = await rpc.blockByHeight(h);
@@ -235,20 +239,20 @@ export async function syncOnce(): Promise<IndexResult> {
     // reorg check (only matters once we have a stored predecessor)
     const ancestor = await findReorgAncestor(blk);
     if (ancestor >= 0) {
-      const prevIndexed = indexedHeight();
-      unwindAbove(ancestor);
-      setMeta(TIP_KEY, String(ancestor));
+      const prevIndexed = await indexedHeight();
+      await unwindAbove(ancestor);
+      await setMeta(TIP_KEY, String(ancestor));
       reorgs++; reorgDepth = Math.max(reorgDepth, prevIndexed - ancestor);
       bus.emitEvent({ kind: "reorg", ancestor, depth: prevIndexed - ancestor });
       h = ancestor; // resume scanning from ancestor+1
       continue;
     }
-    writeBlock(blk);
-    setMeta(TIP_KEY, String(h));
+    await writeBlock(blk);
+    await setMeta(TIP_KEY, String(h));
     blocks++;
     emitBlockEvents(blk, tip);
   }
-  return { from, to: indexedHeight(), tip, blocks, reorgs, reorgDepth };
+  return { from, to: await indexedHeight(), tip, blocks, reorgs, reorgDepth };
 }
 
 // Emit streaming events only for blocks near the tip (don't flood the firehose during

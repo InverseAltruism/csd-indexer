@@ -28,34 +28,36 @@ await new Promise<void>((r) => origin.listen(0, "127.0.0.1", () => r()));
 const ORIGIN = `http://127.0.0.1:${(origin.address() as any).port}`;
 
 process.env.CSD_INDEX_DB = DB;
+process.env.CSD_INDEX_PG_SCHEMA = "t_registry";
 process.env.CSD_SWARM_GATEWAY = ORIGIN;
 
-const { db } = await import("../src/db.js");
+const { store: dbStore, resetStoreForTests, closeDb } = await import("../src/db.js");
 const registry = await import("../src/registry.js");
+await resetStoreForTests();
 
 const E = EPOCH_LEN;
 let seq = 0;
 const txid = () => "0x" + (seq++).toString(16).padStart(64, "0");
-function anchor(b: { domain: string; content: object; payloadHash: string }, proposer: string, fee: number, height: number, expiresEpoch = 0): string {
+async function anchor(b: { domain: string; content: object; payloadHash: string }, proposer: string, fee: number, height: number, expiresEpoch = 0): Promise<string> {
   store.set(b.payloadHash.toLowerCase(), JSON.stringify(b.content)); // "publish" content to the origin
   const id = txid();
-  db().prepare(`INSERT INTO proposals(txid,domain,payload_hash,uri,expires_epoch,proposer,fee,height,time) VALUES(?,?,?,?,?,?,?,?,0)`)
-    .run(id, b.domain, b.payloadHash, "", expiresEpoch, proposer.toLowerCase(), fee, height);
+  await dbStore().run(`INSERT INTO proposals(txid,domain,payload_hash,uri,expires_epoch,proposer,fee,height,time) VALUES(?,?,?,?,?,?,?,?,0)`,
+    id, b.domain, b.payloadHash, "", expiresEpoch, proposer.toLowerCase(), fee, height);
   return id;
 }
-function attest(proposalId: string, attester: string, fee: number, height: number) {
-  db().prepare(`INSERT INTO attestations(txid,proposal_id,attester,score,confidence,fee,height,time) VALUES(?,?,?,?,?,?,?,0)`)
-    .run(txid(), proposalId, attester.toLowerCase(), 100, 100, fee, height);
+async function attest(proposalId: string, attester: string, fee: number, height: number) {
+  await dbStore().run(`INSERT INTO attestations(txid,proposal_id,attester,score,confidence,fee,height,time) VALUES(?,?,?,?,?,?,?,0)`,
+    txid(), proposalId, attester.toLowerCase(), 100, 100, fee, height);
 }
 
 // give the resolver a tip so nowEpoch is realistic
-db().prepare(`INSERT INTO blocks(height,hash,prev,merkle,time,bits,nonce,version,tx_count,chainwork,orphaned) VALUES(?,?,?,?,0,0,0,1,1,'0',0)`)
-  .run(1000, "0x" + "ab".repeat(32), null, null);
+await dbStore().run(`INSERT INTO blocks(height,hash,prev,merkle,time,bits,nonce,version,tx_count,chainwork,orphaned) VALUES(?,?,?,?,0,0,0,1,1,'0',0)`,
+  1000, "0x" + "ab".repeat(32), null, null);
 
 test("GET /registry/peers resolves verified on-chain peer records", async () => {
   const a = keygen(), b = keygen();
-  anchor(buildPeerRecord({ priv: a.priv, peer_id: "PeerA", multiaddrs: ["/ip4/1.1.1.1/tcp/4001"], address: a.addr }), a.addr, 25e6, 990);
-  anchor(buildPeerRecord({ priv: b.priv, peer_id: "PeerB", multiaddrs: ["/ip4/2.2.2.2/tcp/4001"], address: b.addr }), b.addr, 200e6, 991);
+  await anchor(buildPeerRecord({ priv: a.priv, peer_id: "PeerA", multiaddrs: ["/ip4/1.1.1.1/tcp/4001"], address: a.addr }), a.addr, 25e6, 990);
+  await anchor(buildPeerRecord({ priv: b.priv, peer_id: "PeerB", multiaddrs: ["/ip4/2.2.2.2/tcp/4001"], address: b.addr }), b.addr, 200e6, 991);
   const peers = await registry.peers();
   assert.equal(peers.length, 2);
   assert.equal(peers[0]?.peer_id, "PeerB", "higher fee ranks first");
@@ -64,8 +66,8 @@ test("GET /registry/peers resolves verified on-chain peer records", async () => 
 
 test("GET /registry/gateways ranks fresh, attested gateways", async () => {
   const g = keygen(), at = keygen();
-  const id = anchor(buildGatewayRecord({ priv: g.priv, url: "https://gw1/content/0x{hash}", address: g.addr }), g.addr, 50e6, 992);
-  attest(id, at.addr, 5e6, 993);
+  const id = await anchor(buildGatewayRecord({ priv: g.priv, url: "https://gw1/content/0x{hash}", address: g.addr }), g.addr, 50e6, 992);
+  await attest(id, at.addr, 5e6, 993);
   const gws = await registry.gateways();
   assert.ok(gws.find((x: any) => x.url === "https://gw1/content/0x{hash}"), "the attested gateway resolves");
 });
@@ -73,8 +75,8 @@ test("GET /registry/gateways ranks fresh, attested gateways", async () => {
 test("identity resolves via commit-reveal; reverse works", async () => {
   const o = keygen();
   const salt = "salty";
-  anchor(buildIdentityCommit({ handle: "alice", salt, address: o.addr }), o.addr, 25e6, 31 * E); // epoch 31
-  anchor(buildIdentityReveal({ priv: o.priv, handle: "alice", salt, address: o.addr }), o.addr, 25e6, 32 * E); // epoch 32
+  await anchor(buildIdentityCommit({ handle: "alice", salt, address: o.addr }), o.addr, 25e6, 31 * E); // epoch 31
+  await anchor(buildIdentityReveal({ priv: o.priv, handle: "alice", salt, address: o.addr }), o.addr, 25e6, 32 * E); // epoch 32
   const who = await registry.identity("alice");
   assert.ok(who, "alice resolves");
   assert.equal(String(who?.address).toLowerCase(), o.addr.toLowerCase());
@@ -87,7 +89,7 @@ test("a TAMPERED content origin cannot poison resolution (indexer self-certifies
   // (uses a fresh key/peer_id, so a brand-new payload_hash that isn't in the cache)
   tamper = true;
   const c = keygen();
-  anchor(buildPeerRecord({ priv: c.priv, peer_id: "PeerTamper", multiaddrs: ["/ip4/9.9.9.9/tcp/1"], address: c.addr }), c.addr, 25e6, 994);
+  await anchor(buildPeerRecord({ priv: c.priv, peer_id: "PeerTamper", multiaddrs: ["/ip4/9.9.9.9/tcp/1"], address: c.addr }), c.addr, 25e6, 994);
   const peers = await registry.peers();
   assert.ok(!peers.find((p: any) => p.peer_id === "PeerTamper"), "tampered content is rejected by hash self-check");
   tamper = false;
@@ -106,4 +108,4 @@ test("a transient content-gateway failure does NOT permanently hide a record (se
   );
 });
 
-test.after(() => origin.close());
+test.after(async () => { origin.close(); await closeDb(); });

@@ -5,7 +5,7 @@
 // fetched (and cached) via the L1 swarm gateway / origin, self-certifying by hash.
 import { DOMAINS, resolvePeers, resolveGateways, resolveIdentity, reverseIdentity, epochOf, type ChainRecord, type ResolveOpts } from "@inversealtruism/csd-registry";
 import { payloadHash } from "@inversealtruism/csd-codec";
-import { db } from "./db.js";
+import { store } from "./db.js";
 import { tipHeight } from "./queries.js";
 import { CFG } from "./config.js";
 import { proofStatuses } from "./identity.js";
@@ -90,21 +90,21 @@ let recordsCache: { key: string; records: ChainRecord[] } | null = null;
 /** Build the ChainRecord set for the registry domains from indexed rows + fetched content. */
 export async function buildRegistryRecords(): Promise<ChainRecord[]> {
   const ph = REG_DOMAINS.map(() => "?").join(",");
-  const fp = db().prepare(
+  const fp = await store().get<{ p: number; a: number }>(
     `SELECT (SELECT COUNT(*) FROM proposals WHERE domain IN (${ph})) AS p,
             (SELECT COUNT(*) FROM attestations WHERE proposal_id IN (SELECT txid FROM proposals WHERE domain IN (${ph}))) AS a`,
-  ).get(...REG_DOMAINS, ...REG_DOMAINS) as { p: number; a: number };
-  const key = `${tipHeight()}:${fp.p}:${fp.a}`;
+    ...REG_DOMAINS, ...REG_DOMAINS) ?? { p: 0, a: 0 };
+  const key = `${await tipHeight()}:${fp.p}:${fp.a}`;
   if (recordsCache && recordsCache.key === key) return recordsCache.records;
-  const props = db().prepare(
+  const props = await store().all<any>(
     `SELECT txid, domain, payload_hash, proposer, fee, height, expires_epoch FROM proposals WHERE domain IN (${ph})`,
-  ).all(...REG_DOMAINS) as any[];
-  const attStmt = db().prepare(`SELECT attester, fee, score, confidence, height FROM attestations WHERE proposal_id=?`);
+    ...REG_DOMAINS);
 
   const out: ChainRecord[] = [];
   for (const p of props) {
     const content = await fetchContent(p.payload_hash);
-    const attestations = (attStmt.all(p.txid) as any[]).map((a) => ({ attester: a.attester, fee: a.fee, score: a.score, confidence: a.confidence, height: a.height }));
+    const attestations = (await store().all<any>(`SELECT attester, fee, score, confidence, height FROM attestations WHERE proposal_id=?`, p.txid))
+      .map((a) => ({ attester: a.attester, fee: Number(a.fee), score: Number(a.score), confidence: Number(a.confidence), height: Number(a.height) }));
     out.push({
       domain: p.domain, proposalId: p.txid, proposer: String(p.proposer || "").toLowerCase(),
       payloadHash: p.payload_hash, fee: Number(p.fee || 0), height: Number(p.height || 0),
@@ -116,18 +116,18 @@ export async function buildRegistryRecords(): Promise<ChainRecord[]> {
   return out;
 }
 
-function opts(): ResolveOpts { return { nowEpoch: epochOf(Math.max(0, tipHeight())), topK: 50 }; }
+async function opts(): Promise<ResolveOpts> { return { nowEpoch: epochOf(Math.max(0, await tipHeight())), topK: 50 }; }
 
 // Note: externalVerified is left default (signed-proof only) here; the P5.3 re-proof
 // workers will supply a liveness predicate once they're wired.
-export async function peers() { return resolvePeers(await buildRegistryRecords(), opts()); }
-export async function gateways() { return resolveGateways(await buildRegistryRecords(), opts()); }
-export async function reverse(addr: string) { return reverseIdentity(await buildRegistryRecords(), addr, opts()); }
+export async function peers() { return resolvePeers(await buildRegistryRecords(), await opts()); }
+export async function gateways() { return resolveGateways(await buildRegistryRecords(), await opts()); }
+export async function reverse(addr: string) { return reverseIdentity(await buildRegistryRecords(), addr, await opts()); }
 
 // name → address, enriched with live external-proof status (NIP-05 liveness on read).
 export async function identity(handle: string) {
   const records = await buildRegistryRecords();
-  const res = resolveIdentity(records, handle, opts());
+  const res = resolveIdentity(records, handle, await opts());
   if (!res) return null;
   const winner = records.find((r) => r.proposalId === res.proposalId);
   const proofs = winner ? await proofStatuses(winner) : [];

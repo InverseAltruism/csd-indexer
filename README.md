@@ -20,7 +20,7 @@ same node gets byte-for-byte identical data. There's nothing to take on faith.
 
 ```
 npm install
-CSD_RPC=http://127.0.0.1:8790 npm run run-all     # index the chain + serve the explorer/API
+CSD_RPC=http://127.0.0.1:8789 npm run run-all     # index the chain + serve the explorer/API
 # explorer + API on http://localhost:8793
 ```
 
@@ -28,13 +28,16 @@ Or with Docker:
 
 ```
 docker build -t csd-indexer .
-docker run -p 8793:8793 -v csd-index:/data -e CSD_RPC=http://host.docker.internal:8790 csd-indexer
+docker run -p 8793:8793 -v csd-index:/data -e CSD_RPC=http://host.docker.internal:8789 csd-indexer
 ```
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `CSD_RPC` | `http://127.0.0.1:8790` | the CSD node to read from |
+| `CSD_RPC` | `http://127.0.0.1:8789` | the CSD node to read from |
 | `CSD_INDEX_DB` | `./csd-index.db` | the database file (SQLite; no native build needed) |
+| `CSD_INDEX_PG` | *(unset)* | a Postgres URL — set it to use Postgres instead of SQLite (see below) |
+| `CSD_INDEX_PG_SCHEMA` | `public` | Postgres schema (namespace) for the tables |
+| `CSD_INDEX_PG_POOL` | `10` | Postgres connection-pool size |
 | `CSD_INDEX_LISTEN` | `127.0.0.1:8793` | where the explorer + API listen |
 | `CSD_SWARM_GATEWAY` | `http://127.0.0.1:8791` | a content server, for showing post contents (optional) |
 | `CSD_INDEX_FROM` | `0` | first block to index |
@@ -43,6 +46,26 @@ docker run -p 8793:8793 -v csd-index:/data -e CSD_RPC=http://host.docker.interna
 It tracks the chain continuously and handles reorgs safely - if the network reorganizes, the
 indexer rewinds the affected blocks and replays the correct ones, so the data always matches the
 real chain.
+
+### SQLite or Postgres?
+
+**SQLite (the default)** needs zero setup and is perfect for one operator, CI, or re-running the
+index to audit determinism. Its limit is concurrency: `node:sqlite` is synchronous, so every
+query blocks the event loop and concurrent API readers serialize behind each other (and behind
+the block writer). Fine for tens of users; not for hundreds.
+
+**Postgres (the scale path)** moves queries onto a connection pool — reads keep flowing while
+blocks are written. Cut over by re-indexing from genesis (it's fast; there is deliberately no
+sqlite→pg copy tool, because a fresh replay IS the integrity check):
+
+```
+createdb csd_index
+CSD_INDEX_PG=postgres://user:pass@127.0.0.1:5432/csd_index npx tsx src/cli.ts index   # backfill
+CSD_INDEX_PG=postgres://user:pass@127.0.0.1:5432/csd_index npm run run-all            # serve
+```
+
+Both backends produce identical API responses — the test suite runs the same 37 tests against
+each, and a from-genesis reindex of mainnet matches row-for-row across backends.
 
 ## The API
 

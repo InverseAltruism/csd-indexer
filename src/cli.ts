@@ -23,7 +23,7 @@ const cmd = process.argv[2] ?? "index";
 
 if (cmd === "index") {
   await indexLoop(false);
-  console.log(`[index] done at height ${indexedHeight()}`);
+  console.log(`[index] done at height ${await indexedHeight()}`);
   process.exit(0);
 } else if (cmd === "run") {
   // continuous indexer + API server (REST + SSE + WS) in one process

@@ -1,101 +1,243 @@
-// Relational store (node:sqlite — built into Node 22, no native dep). CSD's payload
-// is relational (per-attester rows, address history, domain rankings, UTXO spends),
-// which a relational engine models far better than a KV index — so we extend Cairn's
-// sqlite scanner rather than adopt electrs's RocksDB (see docs/ecosystem/03).
+// Relational store with two interchangeable backends behind ONE async interface:
+//
+//   - sqlite (node:sqlite, built into Node 22 — no native dep, no build step). The
+//     DEFAULT: zero-config, perfect for one operator / CI / third parties re-running
+//     the index to audit determinism.
+//   - Postgres (`pg` pool), selected by CSD_INDEX_PG=postgres://... — the scale path.
+//     node:sqlite is SYNCHRONOUS: every query blocks the event loop, so concurrent
+//     readers serialize behind each other and behind the block writer. Postgres moves
+//     queries off-loop onto a pool, which is what lets the API keep answering while
+//     blocks are being written.
+//
+// CSD's payload is relational (per-attester rows, address history, domain rankings,
+// UTXO spends), which a relational engine models far better than a KV index — so we
+// extend Cairn's sqlite scanner rather than adopt electrs's RocksDB (see docs/ecosystem/03).
 //
 // Reorg invariant: EVERY row carries `height`, so unwinding orphaned blocks is
 // `DELETE ... WHERE height > ancestor` + un-spending outputs whose spender was
 // orphaned. Nothing deeper than CONFIRMATIONS_FINAL is ever touched.
+//
+// Number policy (both backends): 64-bit integer columns are read EXACTLY — values
+// within Number.MAX_SAFE_INTEGER come back as `number`, anything past 2^53 comes back
+// as `bigint` (never silently truncated, never thrown). Callers that serialize amounts
+// use amt()-style helpers to keep JSON clean.
 import { DatabaseSync } from "node:sqlite";
+import { createRequire } from "node:module";
 import { CFG } from "./config.js";
 
-let _db: DatabaseSync | null = null;
+// CJS require shim for the lazy `pg` import (we run as ESM via tsx); keeps pg
+// optional at runtime for sqlite-only users.
+const require = createRequire(import.meta.url);
 
-export function db(): DatabaseSync {
-  if (_db) return _db;
-  const d = new DatabaseSync(CFG.db);
-  d.exec(`
-    PRAGMA journal_mode = WAL;
-    PRAGMA busy_timeout = 5000;
-    PRAGMA foreign_keys = OFF;
-
-    -- One row per canonical block. prev links the chain (reorg detection); merkle
-    -- is the header root that merkle proofs fold up to; orphaned marks a block that
-    -- was unwound (kept for audit, excluded from queries).
-    CREATE TABLE IF NOT EXISTS blocks (
-      height INTEGER PRIMARY KEY,
-      hash TEXT NOT NULL, prev TEXT, merkle TEXT,
-      time INTEGER, bits INTEGER, nonce INTEGER, version INTEGER,
-      tx_count INTEGER, chainwork TEXT, orphaned INTEGER DEFAULT 0
-    );
-
-    -- One row per tx. pos = position within the block (powers merkle proofs). app_type
-    -- is Propose/Attest/Coinbase/Transfer; signer = hash160(pubkey) from input[0]; fee
-    -- = sum(inputs)-sum(outputs), resolved against our own outputs table.
-    CREATE TABLE IF NOT EXISTS txs (
-      txid TEXT PRIMARY KEY, height INTEGER NOT NULL, pos INTEGER NOT NULL,
-      app_type TEXT, signer TEXT, fee INTEGER, time INTEGER, n_in INTEGER, n_out INTEGER, coinbase INTEGER DEFAULT 0
-    );
-
-    -- Every output ever created. spent_txid set when consumed (UTXO model). addr is
-    -- the p2pkh addr20. This backs /address/:a/utxo and fee resolution.
-    CREATE TABLE IF NOT EXISTS outputs (
-      txid TEXT NOT NULL, vout INTEGER NOT NULL, addr TEXT, value INTEGER,
-      height INTEGER NOT NULL, spent_txid TEXT, spent_height INTEGER,
-      PRIMARY KEY (txid, vout)
-    );
-
-    -- Every (address, txid) touch with a signed delta — backs /address/:a/txs.
-    -- direction: 'in' (received) or 'out' (spent). One row per output / per spent input.
-    CREATE TABLE IF NOT EXISTS address_history (
-      addr TEXT NOT NULL, txid TEXT NOT NULL, height INTEGER NOT NULL,
-      pos INTEGER, direction TEXT, delta INTEGER,
-      PRIMARY KEY (addr, txid, direction, delta, pos)
-    );
-
-    -- Propose events (full, not aggregate).
-    CREATE TABLE IF NOT EXISTS proposals (
-      txid TEXT PRIMARY KEY, domain TEXT, payload_hash TEXT, uri TEXT,
-      expires_epoch INTEGER, proposer TEXT, fee INTEGER, height INTEGER, time INTEGER
-    );
-
-    -- The per-attester data the node deliberately omits (aggregate-only on-chain).
-    CREATE TABLE IF NOT EXISTS attestations (
-      txid TEXT PRIMARY KEY, proposal_id TEXT, attester TEXT, score INTEGER,
-      confidence INTEGER, fee INTEGER, height INTEGER, time INTEGER
-    );
-
-    CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
-
-    CREATE INDEX IF NOT EXISTS idx_txs_height       ON txs(height);
-    CREATE INDEX IF NOT EXISTS idx_txs_signer       ON txs(signer);
-    CREATE INDEX IF NOT EXISTS idx_out_addr         ON outputs(addr);
-    CREATE INDEX IF NOT EXISTS idx_out_spent        ON outputs(spent_txid);
-    CREATE INDEX IF NOT EXISTS idx_addrhist_addr    ON address_history(addr, height);
-    CREATE INDEX IF NOT EXISTS idx_prop_domain      ON proposals(domain);
-    CREATE INDEX IF NOT EXISTS idx_att_proposal     ON attestations(proposal_id);
-    CREATE INDEX IF NOT EXISTS idx_att_attester     ON attestations(attester);
-  `);
-  _db = d;
-  return d;
+/** number when exact, bigint when past 2^53 — never lossy. */
+function exact(v: bigint): number | bigint {
+  return v <= BigInt(Number.MAX_SAFE_INTEGER) && v >= BigInt(Number.MIN_SAFE_INTEGER) ? Number(v) : v;
 }
 
-// node:sqlite's DatabaseSync has no .transaction() helper (unlike better-sqlite3),
-// so wrap BEGIN/COMMIT/ROLLBACK by hand. Synchronous: fn must not await.
-export function tx<T>(fn: () => T): T {
-  const d = db();
-  d.exec("BEGIN");
-  try { const r = fn(); d.exec("COMMIT"); return r; }
-  catch (e) { try { d.exec("ROLLBACK"); } catch { /* already rolled back */ } throw e; }
+export interface Store {
+  /** Run DDL / multiple statements (no params, no result). */
+  exec(sql: string): Promise<void>;
+  /** Run one statement with params; no result rows. */
+  run(sql: string, ...params: unknown[]): Promise<void>;
+  /** First row or undefined. */
+  get<T = Record<string, unknown>>(sql: string, ...params: unknown[]): Promise<T | undefined>;
+  /** All rows. */
+  all<T = Record<string, unknown>>(sql: string, ...params: unknown[]): Promise<T[]>;
+  /** Serialized read-modify-write transaction. fn runs against the SAME connection. */
+  tx<T>(fn: (s: Store) => Promise<T>): Promise<T>;
+  /** Backend-specific maintenance (WAL checkpoint on sqlite; no-op on pg). */
+  checkpoint(): Promise<void>;
+  close(): Promise<void>;
+  readonly backend: "sqlite" | "postgres";
 }
 
-export function closeDb(): void { if (_db) { _db.close(); _db = null; } }
-export function checkpoint(): void { try { db().exec("PRAGMA wal_checkpoint(TRUNCATE);"); } catch { /* busy */ } }
+// ── shared DDL (kept to the dialect intersection; BIGINT where a value can pass 2^31) ──
+const DDL = `
+  CREATE TABLE IF NOT EXISTS blocks (
+    height BIGINT PRIMARY KEY,
+    hash TEXT NOT NULL, prev TEXT, merkle TEXT,
+    time BIGINT, bits BIGINT, nonce BIGINT, version INTEGER,
+    tx_count INTEGER, chainwork TEXT, orphaned INTEGER DEFAULT 0
+  );
+  CREATE TABLE IF NOT EXISTS txs (
+    txid TEXT PRIMARY KEY, height BIGINT NOT NULL, pos INTEGER NOT NULL,
+    app_type TEXT, signer TEXT, fee BIGINT, time BIGINT, n_in INTEGER, n_out INTEGER, coinbase INTEGER DEFAULT 0
+  );
+  CREATE TABLE IF NOT EXISTS outputs (
+    txid TEXT NOT NULL, vout INTEGER NOT NULL, addr TEXT, value BIGINT,
+    height BIGINT NOT NULL, spent_txid TEXT, spent_height BIGINT,
+    PRIMARY KEY (txid, vout)
+  );
+  CREATE TABLE IF NOT EXISTS address_history (
+    addr TEXT NOT NULL, txid TEXT NOT NULL, height BIGINT NOT NULL,
+    pos INTEGER, direction TEXT, delta BIGINT,
+    PRIMARY KEY (addr, txid, direction, delta, pos)
+  );
+  CREATE TABLE IF NOT EXISTS proposals (
+    txid TEXT PRIMARY KEY, domain TEXT, payload_hash TEXT, uri TEXT,
+    expires_epoch BIGINT, proposer TEXT, fee BIGINT, height BIGINT, time BIGINT
+  );
+  CREATE TABLE IF NOT EXISTS attestations (
+    txid TEXT PRIMARY KEY, proposal_id TEXT, attester TEXT, score BIGINT,
+    confidence BIGINT, fee BIGINT, height BIGINT, time BIGINT
+  );
+  CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
 
-export function getMeta(k: string): string | null {
-  const r = db().prepare("SELECT value FROM meta WHERE key=?").get(k) as { value: string } | undefined;
+  CREATE INDEX IF NOT EXISTS idx_txs_height       ON txs(height);
+  CREATE INDEX IF NOT EXISTS idx_txs_signer       ON txs(signer);
+  CREATE INDEX IF NOT EXISTS idx_out_addr         ON outputs(addr);
+  CREATE INDEX IF NOT EXISTS idx_out_spent        ON outputs(spent_txid);
+  CREATE INDEX IF NOT EXISTS idx_addrhist_addr    ON address_history(addr, height);
+  CREATE INDEX IF NOT EXISTS idx_prop_domain      ON proposals(domain);
+  CREATE INDEX IF NOT EXISTS idx_att_proposal     ON attestations(proposal_id);
+  CREATE INDEX IF NOT EXISTS idx_att_attester     ON attestations(attester);
+`;
+
+// ── sqlite backend ──
+class SqliteStore implements Store {
+  readonly backend = "sqlite" as const;
+  private d: DatabaseSync;
+  constructor(file: string) {
+    this.d = new DatabaseSync(file);
+    this.d.exec(`PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = OFF;`);
+    this.d.exec(DDL);
+  }
+  // node:sqlite THROWS ERR_OUT_OF_RANGE reading an integer past 2^53 as a Number, so we
+  // ALWAYS read integers as BigInt and convert back per-value (exact, never throws).
+  private rows<T>(sql: string, params: unknown[]): T[] {
+    const st = this.d.prepare(sql);
+    st.setReadBigInts(true);
+    const raw = st.all(...(params as never[])) as Record<string, unknown>[];
+    return raw.map((r) => {
+      const o: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(r)) o[k] = typeof v === "bigint" ? exact(v) : v;
+      return o as T;
+    });
+  }
+  async exec(sql: string): Promise<void> { this.d.exec(sql); }
+  async run(sql: string, ...params: unknown[]): Promise<void> {
+    this.d.prepare(sql).run(...(params as never[]));
+  }
+  async get<T>(sql: string, ...params: unknown[]): Promise<T | undefined> {
+    return this.rows<T>(sql, params)[0];
+  }
+  async all<T>(sql: string, ...params: unknown[]): Promise<T[]> {
+    return this.rows<T>(sql, params);
+  }
+  // DatabaseSync is synchronous, so the BEGIN..COMMIT window contains no awaits in
+  // practice — but fn is typed async for interface parity (it must not interleave
+  // OTHER store calls from outside; the indexer is the only writer).
+  async tx<T>(fn: (s: Store) => Promise<T>): Promise<T> {
+    this.d.exec("BEGIN");
+    try { const r = await fn(this); this.d.exec("COMMIT"); return r; }
+    catch (e) { try { this.d.exec("ROLLBACK"); } catch { /* already rolled back */ } throw e; }
+  }
+  async checkpoint(): Promise<void> { try { this.d.exec("PRAGMA wal_checkpoint(TRUNCATE);"); } catch { /* busy */ } }
+  async close(): Promise<void> { this.d.close(); }
+}
+
+// ── postgres backend ──
+// `?` placeholders are translated to $1..$n so call sites stay dialect-free.
+function toPg(sql: string): string {
+  let n = 0;
+  return sql.replace(/\?/g, () => `$${++n}`);
+}
+
+class PgStore implements Store {
+  readonly backend = "postgres" as const;
+  private pool!: import("pg").Pool;
+  private ready!: Promise<void>;
+  constructor(url: string, schema: string) {
+    const { Pool, types } = require("pg") as typeof import("pg");
+    // Exact integer reads, same policy as the sqlite backend: int8 (OID 20) and the
+    // NUMERIC (OID 1700) that SUM(bigint) yields come back as number within 2^53,
+    // bigint past it (the sums here are integral — sats, counts, heights).
+    const exactParser = (v: string) => exact(BigInt(v));
+    const perPool = {
+      getTypeParser: (oid: number, format?: string) =>
+        oid === 20 || oid === 1700 ? exactParser : (types.getTypeParser as (o: number, f?: string) => unknown)(oid, format),
+    } as unknown as import("pg").CustomTypesConfig;
+    this.pool = new Pool({ connectionString: url, max: CFG.pgPoolSize, types: perPool });
+    const s = schema.replace(/[^a-zA-Z0-9_]/g, "");
+    this.ready = (async () => {
+      const c = await this.pool.connect();
+      try {
+        await c.query(`CREATE SCHEMA IF NOT EXISTS ${s}`);
+        await c.query(`SET search_path TO ${s}`);
+        await c.query(DDL);
+      } finally { c.release(); }
+      // every pooled connection joins the schema
+      this.pool.on("connect", (client) => { void client.query(`SET search_path TO ${s}`); });
+    })();
+  }
+  async exec(sql: string): Promise<void> { await this.ready; await this.pool.query(sql); }
+  async run(sql: string, ...params: unknown[]): Promise<void> {
+    await this.ready; await this.pool.query(toPg(sql), params as unknown[]);
+  }
+  async get<T>(sql: string, ...params: unknown[]): Promise<T | undefined> {
+    await this.ready;
+    const r = await this.pool.query(toPg(sql), params as unknown[]);
+    return r.rows[0] as T | undefined;
+  }
+  async all<T>(sql: string, ...params: unknown[]): Promise<T[]> {
+    await this.ready;
+    const r = await this.pool.query(toPg(sql), params as unknown[]);
+    return r.rows as T[];
+  }
+  async tx<T>(fn: (s: Store) => Promise<T>): Promise<T> {
+    await this.ready;
+    const c = await this.pool.connect();
+    const cs: Store = {
+      backend: "postgres",
+      exec: async (sql) => { await c.query(sql); },
+      run: async (sql, ...p) => { await c.query(toPg(sql), p as unknown[]); },
+      get: async (sql, ...p) => (await c.query(toPg(sql), p as unknown[])).rows[0],
+      all: async (sql, ...p) => (await c.query(toPg(sql), p as unknown[])).rows,
+      tx: () => { throw new Error("nested tx"); },
+      checkpoint: async () => {},
+      close: async () => {},
+    };
+    try {
+      await c.query("BEGIN");
+      const r = await fn(cs);
+      await c.query("COMMIT");
+      return r;
+    } catch (e) {
+      try { await c.query("ROLLBACK"); } catch { /* connection gone */ }
+      throw e;
+    } finally { c.release(); }
+  }
+  async checkpoint(): Promise<void> { /* autovacuum's job */ }
+  async close(): Promise<void> { await this.pool.end(); }
+}
+
+let _store: Store | null = null;
+
+export function store(): Store {
+  if (_store) return _store;
+  _store = CFG.pg ? new PgStore(CFG.pg, CFG.pgSchema) : new SqliteStore(CFG.db);
+  return _store;
+}
+
+/** Serialized read-modify-write transaction (see Store.tx). */
+export function tx<T>(fn: (s: Store) => Promise<T>): Promise<T> { return store().tx(fn); }
+
+export async function closeDb(): Promise<void> { if (_store) { await _store.close(); _store = null; } }
+export async function checkpoint(): Promise<void> { await store().checkpoint(); }
+
+/** TEST ONLY: drop every table so a suite starts from nothing (works on both backends). */
+export async function resetStoreForTests(): Promise<void> {
+  const s = store();
+  for (const t of ["address_history", "attestations", "proposals", "outputs", "txs", "blocks", "meta"]) {
+    await s.exec(`DROP TABLE IF EXISTS ${t}`);
+  }
+  await s.exec(DDL);
+}
+
+export async function getMeta(k: string): Promise<string | null> {
+  const r = await store().get<{ value: string }>("SELECT value FROM meta WHERE key=?", k);
   return r?.value ?? null;
 }
-export function setMeta(k: string, v: string): void {
-  db().prepare("INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(k, v);
+export async function setMeta(k: string, v: string): Promise<void> {
+  await store().run("INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", k, v);
 }
