@@ -6,3 +6,16 @@ node_modules/
 dist/
 .DS_Store
 .npmrc
+
+# secrets — NEVER commit env (CSD_INDEX_PG connection string), keys, or tokens
+.env
+.env.*
+**/*key*.json
+**/keystore*.json
+**/*.priv
+**/*.pem
+secret*
+config.local.json
+.idea/
+.vscode/
+.claude/
