@@ -121,7 +121,10 @@ export function buildApp() {
   });
 
   // ── miner / holder / supply analytics (read-only aggregates; see src/analytics.ts) ──
-  app.get("/analytics/miners", (req, res) => res.json(analytics.miners(String(req.query.window ?? "1d"))));
+  app.get("/analytics/miners", (req, res) => {
+    try { res.json(analytics.miners(String(req.query.window ?? "1d"))); }
+    catch (e) { res.status(500).json({ error: String((e as Error).message) }); }
+  });
   app.get("/analytics/richlist", (req, res) => res.json(analytics.richlist(Number(req.query.limit ?? 100))));
   app.get("/analytics/supply", (_req, res) => res.json(analytics.supply()));
 
@@ -148,12 +151,12 @@ export function buildApp() {
       const to = setTimeout(() => ctrl.abort(), 5000);
       let buf: Buffer;
       try {
-        const r = await fetch(`${CFG.swarmGateway}/content/${hash}`, { signal: ctrl.signal });
+        // explicit byte cap, enforced WHILE streaming (don't rely on the gateway's object limit
+        // for our own memory safety — abort the read the moment the body crosses the cap)
+        const r = await registry.fetchCapped(`${CFG.swarmGateway}/content/${hash}`, ctrl.signal, 4 * 1024 * 1024);
         if (!r.ok) return res.status(r.status).json({ error: "content unavailable via swarm gateway" });
-        const ab = await r.arrayBuffer();
-        // explicit byte cap (don't rely on the gateway's object limit for our own memory safety)
-        if (ab.byteLength > 4 * 1024 * 1024) return res.status(502).json({ error: "content exceeds size cap" });
-        buf = Buffer.from(ab);
+        if (r.oversize) return res.status(502).json({ error: "content exceeds size cap" });
+        buf = Buffer.from(r.body);
       } finally { clearTimeout(to); }
       // SELF-CERTIFY before serving: the swarm gateway is an untrusted transport, and a buggy/
       // hostile one (or a cache in front) could hand back wrong bytes. We assert integrity

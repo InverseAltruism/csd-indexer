@@ -25,12 +25,16 @@ function buildChain(tags: string[]): B[] {
   tags.forEach((tag, i) => { const b = blk(i, tag, prev, tag.startsWith("P") ? { propTxid: h32(`prop-${tag}`), domain: `dom-${tag}` } : {}); out.push(b); prev = b.hash; });
   return out;
 }
+let BLOCKS_DOWN = false; // L10 fault injection: /tip answers but every /block/height fails
 const server: Server = createServer((req, res) => {
   const u = req.url || "";
   res.setHeader("content-type", "application/json");
   if (u === "/tip") { const t = CHAIN[CHAIN.length - 1]; return res.end(JSON.stringify({ ok: true, tip: t?.hash ?? "", height: t?.height ?? 0, chainwork: t?.chainwork ?? "0" })); }
   const m = u.match(/^\/block\/height\/(\d+)$/);
-  if (m) { const b = CHAIN[Number(m[1])]; return b ? res.end(JSON.stringify({ ok: true, ...b })) : (res.statusCode = 404, res.end("{}")); }
+  if (m) {
+    if (BLOCKS_DOWN) { res.statusCode = 500; return res.end("{}"); }
+    const b = CHAIN[Number(m[1])]; return b ? res.end(JSON.stringify({ ok: true, ...b })) : (res.statusCode = 404, res.end("{}"));
+  }
   res.statusCode = 404; res.end("{}");
 });
 await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
@@ -123,6 +127,30 @@ test("D-I1 DEEP EQUAL-height reorg (> finalDepth, node tip == ours): converges, 
   assert.equal(storedHash(11), h32("blk-Pu2"), "tip block swapped to the canonical deep branch");
   assert.equal(propCount("dom-Pf"), 0, "orphaned deep proposal (old height 5) gone — no ghost");
   assert.equal(propCount("dom-Po"), 1, "new branch proposal (height 5) indexed");
+});
+
+// ── L10 regression: an ALL-NULL window (node serves /tip but every /block/height fails) must be
+// treated as "node unhealthy → abort reconcile, retry next poll", NOT "diverged below the floor"
+// (the old code unwound the ENTIRE index in that case). Only a CONFIRMED hash mismatch at a height
+// the node actually returned may unwind.
+test("L10 all-null window: /tip up but every /block/height failing does NOT wipe the index", async () => {
+  CHAIN = buildChain(["g", "Pa", "Pb", "Pc"]); // fresh canonical 0..3
+  BLOCKS_DOWN = false;
+  await syncOnce();
+  assert.equal(indexedHeight(), 3);
+  const rowsBefore = (db().prepare("SELECT COUNT(*) n FROM blocks WHERE orphaned=0").get() as any).n;
+  // node degrades: /tip still answers, every /block/height now 500s
+  BLOCKS_DOWN = true;
+  const r = await syncOnce();
+  assert.equal(r.reorgs, 0, "no reorg signalled on an all-null window");
+  assert.equal(indexedHeight(), 3, "indexed height untouched (reconcile aborted, no unwind)");
+  const rowsAfter = (db().prepare("SELECT COUNT(*) n FROM blocks WHERE orphaned=0").get() as any).n;
+  assert.equal(rowsAfter, rowsBefore, "no rows deleted — index intact through the blip");
+  // node recovers → next poll proceeds normally with the index still in place
+  BLOCKS_DOWN = false;
+  await syncOnce();
+  assert.equal(indexedHeight(), 3);
+  assert.equal(storedHash(3), h32("blk-Pc"), "canonical tip block still present after recovery");
 });
 
 test.after(() => server.close());

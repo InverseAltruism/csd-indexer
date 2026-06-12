@@ -45,24 +45,29 @@ export function miners(window: string): unknown {
   const span = WINDOWS[window] ?? 0; // 0 / unknown → all-time
   const from = span ? Math.max(0, tip.height - span) : 0;
 
-  const rows = db().prepare(`
+  // setReadBigInts: integer SUMs past 2^53 make node:sqlite THROW (same hazard the fixed
+  // supply()/richlist() paths guard against) — read exact, convert small columns back to Number.
+  const rowsSt = db().prepare(`
     SELECT signer AS addr, COUNT(*) AS blocks, MAX(height) AS last_height, MAX(time) AS last_time,
            SUM(fee) AS fees_collected
     FROM txs WHERE coinbase=1 AND height > ? AND height <= ?
     GROUP BY signer ORDER BY blocks DESC, addr ASC
-  `).all(from, tip.height) as Array<{ addr: string; blocks: number; last_height: number; last_time: number; fees_collected: number }>;
+  `);
+  rowsSt.setReadBigInts(true);
+  const rows = rowsSt.all(from, tip.height) as Array<{ addr: string; blocks: bigint; last_height: bigint; last_time: bigint; fees_collected: bigint | null }>;
 
-  const total = rows.reduce((s, r) => s + r.blocks, 0);
+  const total = rows.reduce((s, r) => s + Number(r.blocks), 0);
   const hr = windowHashrate(from === 0 ? (db().prepare("SELECT MIN(height) h FROM blocks WHERE orphaned=0").get() as { h: number }).h : from, tip.height);
 
   const miners = rows.map((r) => {
-    const share = total ? r.blocks / total : 0;
+    const blocks = Number(r.blocks);
+    const share = total ? blocks / total : 0;
     return {
-      addr: r.addr, blocks: r.blocks, share,
-      last_height: r.last_height, last_time: r.last_time,
-      fees_collected: r.fees_collected ?? 0,
+      addr: r.addr, blocks, share,
+      last_height: Number(r.last_height), last_time: Number(r.last_time),
+      fees_collected: amt(r.fees_collected ?? 0n),
       est_hashrate: hr ? share * hr.hashrate : null,
-      est_rel_err: r.blocks > 0 ? 1 / Math.sqrt(r.blocks) : null, // Poisson ±1σ
+      est_rel_err: blocks > 0 ? 1 / Math.sqrt(blocks) : null, // Poisson ±1σ
     };
   });
 
@@ -70,16 +75,21 @@ export function miners(window: string): unknown {
   const top3 = miners.slice(0, 3).reduce((s, m) => s + m.share, 0);
   const hhi = miners.reduce((s, m) => s + m.share * m.share, 0);
 
-  const agg = db().prepare(`
+  const aggSt = db().prepare(`
     SELECT COUNT(*) AS blocks, SUM(tx_count) AS txs, MIN(time) AS t0, MAX(time) AS t1
     FROM blocks WHERE orphaned=0 AND height > ? AND height <= ?
-  `).get(from, tip.height) as { blocks: number; txs: number; t0: number; t1: number };
-  const fees = db().prepare("SELECT SUM(fee) AS f FROM txs WHERE coinbase=0 AND height > ? AND height <= ?").get(from, tip.height) as { f: number };
+  `);
+  aggSt.setReadBigInts(true);
+  const agg = aggSt.get(from, tip.height) as { blocks: bigint; txs: bigint | null; t0: bigint | null; t1: bigint | null };
+  const feesSt = db().prepare("SELECT SUM(fee) AS f FROM txs WHERE coinbase=0 AND height > ? AND height <= ?");
+  feesSt.setReadBigInts(true);
+  const fees = feesSt.get(from, tip.height) as { f: bigint | null };
+  const nBlocks = Number(agg.blocks);
 
   return {
     ok: true, window: span ? window : "all", from_height: from, to_height: tip.height,
-    blocks: agg.blocks, total_txs: agg.txs ?? 0, total_fees: fees.f ?? 0,
-    avg_interval_secs: agg.blocks > 1 ? (agg.t1 - agg.t0) / (agg.blocks - 1) : null,
+    blocks: nBlocks, total_txs: amt(agg.txs ?? 0n), total_fees: amt(fees.f ?? 0n),
+    avg_interval_secs: nBlocks > 1 ? (Number(agg.t1) - Number(agg.t0)) / (nBlocks - 1) : null,
     network_hashrate: hr?.hashrate ?? null,
     miner_count: miners.length,
     concentration: { top1, top3, hhi },

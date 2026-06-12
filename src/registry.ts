@@ -17,6 +17,43 @@ const MAX_CONTENT_BYTES = 4 * 1024 * 1024; // hard cap on a fetched content body
 // are immutable by hash, so once fetched they never change.
 const contentCache = new Map<string, any>();
 
+/**
+ * Fetch a URL enforcing a byte cap WHILE STREAMING (L9): refuse on a declared oversize
+ * Content-Length before reading anything, then read via a reader loop and abort the moment the
+ * body crosses the cap — never buffer-then-check, so a hostile/misconfigured gateway can't make
+ * us hold an unbounded body in memory. Shared by /content proxying (server.ts) and fetchContent.
+ */
+export async function fetchCapped(url: string, signal: AbortSignal, cap: number):
+  Promise<{ status: number; ok: boolean; oversize: boolean; body: Uint8Array }> {
+  const r = await fetch(url, { signal });
+  if (!r.ok || !r.body) {
+    await r.body?.cancel().catch(() => {});
+    return { status: r.status, ok: r.ok, oversize: false, body: new Uint8Array(0) };
+  }
+  const declared = Number(r.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > cap) {
+    await r.body.cancel().catch(() => {});
+    return { status: r.status, ok: true, oversize: true, body: new Uint8Array(0) };
+  }
+  const reader = r.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > cap) { // past the cap → stop reading NOW and drop what we have
+      await reader.cancel().catch(() => {});
+      return { status: r.status, ok: true, oversize: true, body: new Uint8Array(0) };
+    }
+    chunks.push(value);
+  }
+  const body = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) { body.set(c, off); off += c.byteLength; }
+  return { status: r.status, ok: true, oversize: false, body };
+}
+
 async function fetchContent(hash: string): Promise<any> {
   const key = hash.toLowerCase();
   if (contentCache.has(key)) return contentCache.get(key);
@@ -24,17 +61,14 @@ async function fetchContent(hash: string): Promise<any> {
   const ctrl = new AbortController();
   const to = setTimeout(() => ctrl.abort(), 5000); // hard timeout so a hung gateway can't stall request handlers
   try {
-    const r = await fetch(`${CFG.swarmGateway}/content/${key}`, { signal: ctrl.signal });
-    if (r.ok) {
-      // Explicit byte cap: don't depend on the gateway's object limit for our own memory safety
-      // (a misconfigured/hostile gateway could otherwise hand back an unbounded body to JSON.parse).
-      const buf = await r.arrayBuffer();
-      if (buf.byteLength <= MAX_CONTENT_BYTES) {
-        const obj = JSON.parse(new TextDecoder().decode(buf));
-        // self-certify: only accept content that actually hashes to the on-chain
-        // payload_hash — the indexer trusts neither the origin nor the gateway for bytes.
-        if (payloadHash(obj).toLowerCase() === key) parsed = obj;
-      }
+    // Explicit byte cap, enforced WHILE streaming: don't depend on the gateway's object limit for
+    // our own memory safety (a misconfigured/hostile gateway can't hand an unbounded body to JSON.parse).
+    const r = await fetchCapped(`${CFG.swarmGateway}/content/${key}`, ctrl.signal, MAX_CONTENT_BYTES);
+    if (r.ok && !r.oversize) {
+      const obj = JSON.parse(new TextDecoder().decode(r.body));
+      // self-certify: only accept content that actually hashes to the on-chain
+      // payload_hash — the indexer trusts neither the origin nor the gateway for bytes.
+      if (payloadHash(obj).toLowerCase() === key) parsed = obj;
     }
   } catch { /* unresolved / late-published / oversized / unparseable — leave null */ }
   finally { clearTimeout(to); }

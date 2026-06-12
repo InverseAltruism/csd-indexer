@@ -183,20 +183,33 @@ async function reconcileTipWindow(tip: number): Promise<number> {
   // returned 0 here when the node tip was ≥ ours, leaving the forward scan to throw every poll and
   // wedge the loop on a deep taller/equal-height reorg (finding D-I1).
   let converged = -1;
+  let mismatched = false; // saw a height where the node RETURNED a block whose hash differs from ours
   const fastFloor = Math.max(CFG.scanFrom, ceil - CFG.finalDepth);
   for (let h = ceil; h >= fastFloor; h--) {
     const nb = await rpc.blockByHeight(h);
     const ours = storedHash(h);
-    if (nb && ours && nb.hash === ours) { converged = h; break; }
+    if (nb && ours) {
+      if (nb.hash === ours) { converged = h; break; }
+      mismatched = true;
+    }
   }
   if (converged < 0) {                                     // deep divergence — walk on to the floor
     for (let h = fastFloor - 1; h >= CFG.scanFrom; h--) {
       const nb = await rpc.blockByHeight(h);
       const ours = storedHash(h);
-      if (nb && ours && nb.hash === ours) { converged = h; break; }
+      if (nb && ours) {
+        if (nb.hash === ours) { converged = h; break; }
+        mismatched = true;
+      }
     }
     if (converged < 0) converged = CFG.scanFrom - 1;       // no match even at the floor → full re-scan
   }
+  // Never unwind on ABSENCE of evidence (finding L10): if we dropped below the window only because
+  // every /block/height call failed (blockByHeight nulls — node serves /tip but not blocks), the
+  // node is unhealthy, not diverged. Abort this reconcile and retry next poll; a real reorg always
+  // shows a CONFIRMED hash mismatch at a height the node actually returned (or a lowered node tip
+  // we matched at, in which case converged === ceil and this guard doesn't fire).
+  if (converged < ceil && !mismatched) return 0;
   if (converged >= top) return 0;                          // consistent up to our tip — nothing to unwind
   const depth = top - converged;
   unwindAbove(converged);
