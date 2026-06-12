@@ -80,6 +80,10 @@
   .chip{display:inline-block;font-size:10px;padding:1px 6px;border-radius:4px;border:1px solid #3a3414;background:#171304;color:var(--amber);margin-left:6px;vertical-align:1px}
   .action{font-size:15px;line-height:1.6;padding:4px 0 10px}
   .action .what{color:var(--fg)}
+  /* a CairnX record the resolver REFUSED: strike the claim + tag it "no effect" so it never reads as a successful mint/transfer */
+  .cx-void{opacity:.55;text-decoration:line-through;text-decoration-color:rgba(255,107,107,.5)}
+  .cx-void .what,.cx-void b{color:var(--dim2)!important}
+  .cx-noeffect{display:inline-block;margin-left:6px;font-size:10px;text-transform:uppercase;letter-spacing:.4px;color:var(--red);border:1px solid #4d1f1f;background:#1a0b0b;border-radius:3px;padding:1px 6px;vertical-align:1px;text-decoration:none;cursor:help;white-space:nowrap}
   .flow{display:flex;flex-wrap:wrap;gap:8px 22px;font-size:13px;padding:8px 0 2px}
   .flow .f{color:var(--dim2)} .flow b{color:var(--fg)}
   .flow .out b{color:var(--red)} .flow .in b{color:var(--green)}
@@ -176,7 +180,9 @@ async function verifyInclusion(txid,pos,branch,root){
 
 // ── router ──
 window.addEventListener('hashchange',route);
-warmDecimals();
+// (no eager warmDecimals() here — `let DEC` is declared below, so an eager call would hit its
+// temporal dead zone and reject before its first await, doing nothing. Every render path awaits
+// warmDecimals()/warmVerdicts() itself, which is where the actual warming happens.)
 async function route(){
   const h=location.hash.slice(1)||'/';
   const v=$('#view');v.innerHTML='<div class="loading">loading…</div>';
@@ -212,6 +218,21 @@ const fmtAmt=(v,dec)=>{try{const n=BigInt(v);const d=BigInt(10)**BigInt(dec||0);
 let DEC=null;
 async function warmDecimals(){ if(DEC) return DEC; DEC={}; const t=await jx(SIB.cairnx,'/tokens'); for(const x of (t||[])) DEC[x.ticker]=x.decimals; return DEC; }
 const amt=(v,ticker)=> DEC&&DEC[ticker]!=null ? fmtAmt(v,DEC[ticker]) : `${esc(v)} <span class="dim">base units</span>`;
+// CairnX VERDICT map (txid → {applied, note}) from the resolver's applied-event log, warmed
+// fresh per page (verdicts change as blocks land). Lets us show that a record the resolver
+// REFUSED (mint past supply, mint by a non-issuer, deploy with an unpaid fee, an underfunded
+// transfer…) had NO on-chain effect — instead of rendering it as if it succeeded.
+let VER=null;
+async function warmVerdicts(){ VER={}; try{ const log=await jx(SIB.cairnx,'/log?limit=5000'); for(const e of (log||[])) VER[String(e.id).toLowerCase()]={applied:e.ok,note:e.note}; }catch{} return VER; }
+// Wrap a decoded record line with its resolver verdict. A refused record is struck through and
+// tagged "no effect" with the reason — the tx is real and paid its anchor fee, but the CairnX
+// action was a no-op that anyone re-running the open resolver reproduces.
+function cxVerdict(body,verdict){
+  if(body==null) return body;
+  if(verdict&&verdict.applied===false)
+    return `<span class="cx-void">${body}</span> <span class="cx-noeffect" title="The CairnX resolver REJECTED this record — it has no effect on token state, and anyone re-running the open resolver gets the same result. The transaction is real and paid its anchor fee; only the CairnX action was a no-op.">✕ no effect${verdict.note?` — ${esc(verdict.note)}`:''}</span>`;
+  return body;
+}
 function describeCairnx(rec){
   try{
     const giveTok = rec.give&&rec.give.ticker, giveName = rec.give&&rec.give.name;
@@ -239,8 +260,8 @@ function describeCairnx(rec){
     }
   }catch{return null;}
 }
-function describeDomainRecord(domain,uri){
-  if(domain==='cairnx:v1'){ try{ return describeCairnx(JSON.parse(uri)); }catch{ return null; } }
+function describeDomainRecord(domain,uri,verdict){
+  if(domain==='cairnx:v1'){ try{ return cxVerdict(describeCairnx(JSON.parse(uri)),verdict); }catch{ return null; } }
   if(domain==='csd:anchor:base'){ try{ const a=JSON.parse(uri); return `⚓ <span class="what">Anchored Base block <b>${Number(a.height??a.number??0).toLocaleString()}</b></span> into CSD (cross-chain checkpoint)`; }catch{ return null; } }
   if(domain==='csd:bridge:deploy'){ return `📜 <span class="what">Bridge deployment registry record</span> - the canonical contract addresses, verifiable against any node`; }
   return null;
@@ -398,7 +419,10 @@ async function txPage(v,id){
     let line=null;
     if(tx.app_type==='Propose'){
       const prop=await j('/proposal/'+tx.txid).catch(()=>null);
-      if(prop) line=describeDomainRecord(prop.domain,prop.uri)
+      // precise per-record verdict for the detail page (authoritative even past a bounded log page)
+      const vr=await jx(SIB.cairnx,'/record/'+tx.txid).catch(()=>null);
+      const verdict=vr&&typeof vr.applied==='boolean'?vr:null;
+      if(prop) line=describeDomainRecord(prop.domain,prop.uri,verdict)
         || `📌 <span class="what">Anchored a proposal</span> in ${link('/domain/'+encodeURIComponent(prop.domain),prop.domain)}`;
     } else if(tx.app_type==='Attest'){
       // the attested proposal id lives in the tx app payload - ask the node (cairn front door only)
@@ -463,7 +487,7 @@ async function txPage(v,id){
 }
 
 async function addrPage(v,a){
-  await warmDecimals();
+  await warmDecimals(); await warmVerdicts();
   const [info,utxos,txs]=await Promise.all([j('/address/'+a),j('/address/'+a+'/utxo'),j('/address/'+a+'/txs')]);
   const s=info.chain_stats;
   v.innerHTML='';
@@ -511,7 +535,7 @@ async function addrPage(v,a){
       if(d) d.outerHTML=`<td class="${delta>=0?'green':'red'}">${delta>=0?'+':''}${fmtCSD(delta)}</td>`;
       if(full.app_type==='Propose'){
         const prop=await j('/proposal/'+t.txid).catch(()=>null);
-        const line=prop&&(describeDomainRecord(prop.domain,prop.uri)||`📌 proposal in ${esc(prop.domain)}`);
+        const line=prop&&(describeDomainRecord(prop.domain,prop.uri,VER&&VER[t.txid.toLowerCase()])||`📌 proposal in ${esc(prop.domain)}`);
         const slot=$('#act-'+i); if(slot&&line) slot.innerHTML=line;
       } else if(full.app_type==='Attest'&&SIB.node){
         const nf=await jx(SIB.node,'/tx/'+t.txid);
@@ -528,20 +552,21 @@ async function addrPage(v,a){
 }
 
 async function domainPage(v,d){
-  await warmDecimals();
+  await warmDecimals(); await warmVerdicts();
   const props=await j('/domain/'+encodeURIComponent(d)+'/proposals');
   v.innerHTML='';
   v.appendChild(el(`<div class="panel"><h2>domain <span class="amber">${esc(d)}</span></h2>
     <div class="muted">${props.length} proposal(s). Rankings are a derived, recomputable view - not consensus-signed.</div>
     <div class="scroll-x"><table style="margin-top:10px"><thead><tr><th>proposal</th><th>action</th><th class="opt">proposer</th><th class="opt">fee</th><th>height</th></tr></thead>
-    <tbody>${props.map(p=>`<tr><td>${link('/proposal/'+p.txid,short(p.txid,10),'mono')}</td><td class="act">${describeDomainRecord(d,p.uri)||'<span class="dim">-</span>'}</td><td class="opt">${addrLink(p.proposer)}</td><td class="opt">${fmtCSD(p.fee)}</td><td>${link('/block/'+p.height,p.height)}</td></tr>`).join('')}</tbody></table></div></div>`));
+    <tbody>${props.map(p=>`<tr><td>${link('/proposal/'+p.txid,short(p.txid,10),'mono')}</td><td class="act">${describeDomainRecord(d,p.uri,VER&&VER[p.txid.toLowerCase()])||'<span class="dim">-</span>'}</td><td class="opt">${addrLink(p.proposer)}</td><td class="opt">${fmtCSD(p.fee)}</td><td>${link('/block/'+p.height,p.height)}</td></tr>`).join('')}</tbody></table></div></div>`));
 }
 
 async function proposalPage(v,id){
   await warmDecimals();
   const p=await j('/proposal/'+id);
   v.innerHTML='';
-  const human=describeDomainRecord(p.domain,p.uri);
+  const vr=await jx(SIB.cairnx,'/record/'+id).catch(()=>null);
+  const human=describeDomainRecord(p.domain,p.uri,vr&&typeof vr.applied==='boolean'?vr:null);
   if(human) v.appendChild(el(`<div class="panel"><h2>what happened</h2><div class="action">${human}</div></div>`));
   v.appendChild(el(`<div class="panel"><h2>proposal <span id="cibadge" class="badge pend">checking content…</span></h2><div class="kv">
     <div>txid</div><div class="v mono green">${esc(p.txid)}</div>
