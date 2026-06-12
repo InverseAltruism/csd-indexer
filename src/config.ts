@@ -2,8 +2,9 @@
 // so a third party can point it at their own node + paths and run an identical
 // indexer (determinism is the audit — see the roadmap's honest limits).
 export const CFG = {
-  // Node RPC (the source of truth). 8790 = miner node (primary), 8789 = node.
-  rpc: env("CSD_RPC", "http://127.0.0.1:8790"),
+  // Node RPC (the source of truth). 8789 = the node itself. (8790 was the MINER's RPC —
+  // the miner is disabled since 2026-06-12; never default to it.)
+  rpc: env("CSD_RPC", "http://127.0.0.1:8789"),
   // sqlite file. node:sqlite (built into Node 22) — no native dep, no build step.
   db: env("CSD_INDEX_DB", "./csd-index.db"),
   // HTTP bind for the REST + streaming API (8789 node, 8790 miner, 8791 swarm, 7777 cairn).
