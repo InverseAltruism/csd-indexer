@@ -30,6 +30,11 @@ export const CFG = {
   batch: num("CSD_INDEX_BATCH", 200),
   // Poll interval (seconds) for the continuous indexer loop.
   pollSecs: num("CSD_INDEX_POLL", 15),
+  // Wall-clock seconds since the tip block's timestamp before /health reports stale=true.
+  // A healthy chain rarely goes this long without a block (target spacing is 120s); a stale
+  // flag tells a load balancer / failover client NOT to route value actions here. The raw
+  // seconds_since_tip is always exposed so a consumer can apply its own threshold.
+  staleSecs: num("CSD_STALE_SECS", 600),
 };
 
 export function host(): string { return CFG.listen.split(":")[0] || "127.0.0.1"; }

@@ -39,7 +39,28 @@ export function buildApp() {
     (req: Req, res: Response) => { fn(req, res).catch((e) => { if (!res.headersSent) res.status(500).json({ error: String((e as Error).message) }); }); };
 
   // ── health / status ──
-  app.get("/health", h(async (_req, res) => res.json({ ok: true, indexed_height: await indexedHeight(), ...(await q.counts()) })));
+  // Freshness surface (added for multi-host failover): a load balancer or failover client
+  // routes/refuses on tip_hash + chainwork + seconds_since_tip, NOT just height — two hosts
+  // can sit at equal height on different forks, and a wedged node serves a stale-but-answering
+  // tip. All original fields (ok, indexed_height, counts) are preserved; the rest are additive.
+  app.get("/health", h(async (_req, res) => {
+    const indexed_height = await indexedHeight();
+    const tipH = await q.tipHeight();
+    const tip = await q.blockByHeight(tipH);
+    const now = Math.floor(Date.now() / 1000);
+    const seconds_since_tip = tip ? now - Number(tip.time) : null;
+    res.json({
+      ok: true,
+      indexed_height,
+      tip_height: tipH,
+      tip_hash: tip?.hash ?? null,
+      chainwork: tip?.chainwork ?? null,           // decimal string; compare with BigInt across hosts
+      seconds_since_tip,                            // wall-clock age of the tip block
+      stale: seconds_since_tip == null ? true : seconds_since_tip > CFG.staleSecs,
+      final_depth: CFG.finalDepth,
+      ...(await q.counts()),
+    });
+  }));
 
   // ── streaming (SSE firehoses; WebSocket is attached in serve()) ──
   app.get("/stream/all", sseHandler());
