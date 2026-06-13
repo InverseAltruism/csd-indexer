@@ -201,3 +201,48 @@ test("D-I2: re-writing a height with FEWER txs leaves no stale rows (writeBlock 
   assert.equal(Number((await store().get<any>("SELECT COUNT(*) n FROM outputs WHERE txid=?", propTxid))!.n), 0, "stale output removed");
   assert.equal(Number((await store().get<any>("SELECT COUNT(*) n FROM address_history WHERE txid=?", propTxid))!.n), 0, "stale address_history removed");
 });
+
+test("redteam F1: a fractional output value from a hostile/buggy node is floored, never a REAL that crashes analytics", async () => {
+  const { supply, richlist } = await import("../src/analytics.js");
+  // OLD bug: Number(1.5) stored as a sqlite REAL → SUM(value) returned a fractional, and BigInt(3.5)
+  // threw RangeError → 500 on /analytics/supply, /analytics/richlist and /address chain-wide. The fix
+  // floors output values to a non-negative integer at ingest.
+  const fracCb = {
+    txid: txid("fracCb"), version: 1, locktime: 0, inputs: [{}],
+    outputs: [{ script_pubkey: spk(ADDR_A), value: 1.5 }],
+  };
+  await writeBlock(mkBlock(9000, "0x" + "00".repeat(32), [fracCb]));
+  const o = await store().get<any>("SELECT value FROM outputs WHERE txid=?", txid("fracCb"));
+  assert.equal(Number(o.value), 1, "fractional 1.5 floored to integer 1");
+  assert.ok(Number.isInteger(Number(o.value)), "stored value is an integer, not a REAL");
+  // the analytics SUMs that crashed before now succeed (no BigInt(REAL) RangeError)
+  await assert.doesNotReject(() => supply() as Promise<unknown>, "supply() no longer throws on a once-fractional value");
+  await assert.doesNotReject(() => richlist() as Promise<unknown>, "richlist() no longer throws");
+});
+
+test("redteam F2: merkleProof returns the CONSENSUS header root, so a lying node's proof fails to fold (not trusted)", async () => {
+  // honest block (header.merkle == merkleRoot(txids)): the proof folds AND merkle_root == header root
+  const cbA = coinbase("f2cbA", ADDR_A);
+  const cbB = coinbase("f2cbB", ADDR_B);
+  const honest = mkBlock(9100, "0x" + "00".repeat(32), [cbA, cbB]);
+  await writeBlock(honest);
+  const pH = (await merkleProof(cbB.txid))!;
+  assert.equal(pH.merkle_root, honest.header.merkle, "served merkle_root == the block's header merkle");
+  assert.ok(verifyMerkleProof(cbB.txid, pH.pos, pH.merkle, pH.merkle_root), "honest proof folds to the header root");
+
+  // hostile block: header.merkle is a LIE (≠ merkleRoot(txids)). Pre-fix, merkleProof recomputed a
+  // SELF-CONSISTENT root, so a consumer trusting merkle_root accepted a proof for a block whose real
+  // root the node lied about. Post-fix, merkleProof returns the (lying) header root, so the branch —
+  // built from the real txids — folds to merkleRoot(txids) ≠ that root → verification FAILS.
+  const cbC = coinbase("f2cbC", ADDR_A);
+  const cbD = coinbase("f2cbD", ADDR_B);
+  const liar = mkBlock(9101, "0x" + "00".repeat(32), [cbC, cbD]);
+  liar.header.merkle = "0x" + "fa".repeat(32); // the node lies about its own merkle root
+  await writeBlock(liar);
+  const pL = (await merkleProof(cbD.txid))!;
+  assert.equal(pL.merkle_root, "0x" + "fa".repeat(32), "served root is the (lying) header root, not a self-recomputed one");
+  assert.ok(!verifyMerkleProof(cbD.txid, pL.pos, pL.merkle, pL.merkle_root), "a lying header's proof does NOT fold → consumer rejects it");
+  // the branch itself is honest — it folds to the REAL tx-list root; the header is the lie the
+  // consumer now detects (instead of being handed a self-consistent root that hid the lie).
+  assert.ok(verifyMerkleProof(cbD.txid, pL.pos, pL.merkle, merkleRoot([cbC.txid, cbD.txid])), "branch folds to the real tx-list root");
+});

@@ -106,7 +106,13 @@ export async function writeBlock(b: rpc.RpcBlock): Promise<void> {
       for (let vout = 0; vout < outs.length; vout++) {
         const o = outs[vout]!;
         const addr = addrFromScriptPubkey(o.script_pubkey);
-        const val = Number(o.value ?? 0);
+        // Output values are integer base units. A malformed (fractional / NaN / negative) value from
+        // a buggy or hostile node would otherwise be stored as a REAL and later crash BigInt() in
+        // address-stats and analytics SUMs — violating "one poisoned row must never 500 a whole
+        // endpoint". Floor to a non-negative integer (conservative: garbage under-reports, never
+        // crashes; an honest node always serves integers so this is a no-op for real data).
+        const rawVal = Number(o.value ?? 0);
+        const val = Number.isFinite(rawVal) && rawVal > 0 ? Math.floor(rawVal) : 0;
         sumOut += val;
         await d.run(SQL_OUT, t.txid, vout, addr, val, blk.height);
         if (addr) await d.run(SQL_HIST, addr, t.txid, blk.height, pos, "in", val);
