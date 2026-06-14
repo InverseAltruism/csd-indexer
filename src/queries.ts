@@ -92,8 +92,26 @@ export async function proposalsByDomain(domain: string, limit = 100, from?: numb
   }
   return jsonSafeAll(await store().all("SELECT * FROM proposals WHERE domain=? ORDER BY height DESC, txid ASC LIMIT ?", domain, lim));
 }
-export async function attestationsFor(proposalId: string): Promise<any[]> {
-  return jsonSafeAll(await store().all("SELECT proposal_id, attester, score, confidence, fee, txid, height, time FROM attestations WHERE proposal_id=? ORDER BY height, txid", proposalId));
+export async function attestationsFor(
+  proposalId: string,
+  opts: { limit?: number; afterHeight?: number; afterTxid?: string } = {},
+): Promise<any[]> {
+  // Bound the row count PER REQUEST (a hot proposal can accrue unlimited attests; inlined into
+  // /proposal/:id one popular item could balloon every response). But the CairnX resolver REQUIRES the
+  // COMPLETE list to replay fills/cancels/partial-fills deterministically — a silent truncation would
+  // diverge ledger state — so this also supports a keyset cursor (afterHeight, afterTxid) over the same
+  // (height, txid) ASC order, letting a consumer page through ALL rows in bounded chunks. txids are
+  // lowercase 0x-hex, so byte-wise `txid > ?` matches the ORDER BY under every collation.
+  const n = Number(opts.limit);
+  const lim = Math.min(Math.max(1, Number.isFinite(n) ? Math.floor(n) : 5_000), 50_000); // 0/NaN→5000, <1→1
+  const cols = "proposal_id, attester, score, confidence, fee, txid, height, time";
+  if (opts.afterHeight !== undefined && opts.afterTxid !== undefined) {
+    return jsonSafeAll(await store().all(
+      `SELECT ${cols} FROM attestations WHERE proposal_id=? AND (height > ? OR (height = ? AND txid > ?)) ORDER BY height, txid LIMIT ?`,
+      proposalId, Math.floor(Number(opts.afterHeight)), Math.floor(Number(opts.afterHeight)), String(opts.afterTxid), lim));
+  }
+  return jsonSafeAll(await store().all(
+    `SELECT ${cols} FROM attestations WHERE proposal_id=? ORDER BY height, txid LIMIT ?`, proposalId, lim));
 }
 export async function attestationsBy(addr: string, limit = 200): Promise<any[]> {
   return jsonSafeAll(await store().all("SELECT * FROM attestations WHERE attester=? ORDER BY height DESC, txid ASC LIMIT ?", addr.toLowerCase(), limit));

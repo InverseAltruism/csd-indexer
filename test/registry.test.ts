@@ -108,4 +108,27 @@ test("a transient content-gateway failure does NOT permanently hide a record (se
   );
 });
 
+// The CairnX resolver pages /proposal/:id/attestations to get the COMPLETE list (a truncated list
+// would diverge ledger state). Prove the keyset cursor reconstructs the full list with no dup/skip,
+// including across the (height,txid) tiebreak — independent of any per-request LIMIT.
+test("attestationsFor: keyset pagination returns the COMPLETE ordered list with no dup/skip", async () => {
+  const q = await import("../src/queries.js");
+  const pid = txid();
+  const heights = [10, 10, 10, 11, 11, 12, 12, 12, 13, 13, 14, 14]; // dup heights exercise the txid tiebreak
+  for (const h of heights) await attest(pid, "0x" + "cc".repeat(20), 5e6, h);
+  const all = await q.attestationsFor(pid, { limit: 1000 });
+  assert.equal(all.length, heights.length, "ground-truth single-page list has every attest");
+  const paged: any[] = [];
+  let afterHeight: number | undefined, afterTxid: string | undefined;
+  for (let i = 0; i < 100; i++) {
+    const page = await q.attestationsFor(pid, { limit: 3, afterHeight, afterTxid }); // tiny page forces ≥4 pages
+    paged.push(...page);
+    if (page.length < 3) break;
+    const last = page[page.length - 1];
+    afterHeight = Number(last.height); afterTxid = last.txid;
+  }
+  assert.deepEqual(paged.map((a) => a.txid), all.map((a) => a.txid), "paged union equals the full list, same order");
+  assert.equal(new Set(paged.map((a) => a.txid)).size, paged.length, "no row appears twice across pages");
+});
+
 test.after(async () => { origin.close(); await closeDb(); });

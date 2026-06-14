@@ -23,6 +23,19 @@ function clampInt(v: unknown): number {
   return n > Number.MAX_SAFE_INTEGER ? Number.MAX_SAFE_INTEGER : n;
 }
 
+// Output value parse — TYPE-HONEST (F20). CSD's max supply (~1e17 sats) exceeds 2^53, so a
+// single legitimate UTXO value can be past JS's safe-integer range. Going through Number()
+// would silently round it (corrupting the row AND every SUM it feeds). So parse exactly: prefer
+// the node's string/number as a BigInt, return a bigint when past 2^53 (the store binds bigint
+// to the BIGINT column and reads it back exact, both backends), a number when it fits. A
+// malformed (fractional / NaN / negative) value still degrades to 0n — never a lossy REAL.
+function safeValue(v: unknown): bigint {
+  if (typeof v === "bigint") return v >= 0n ? v : 0n;
+  if (typeof v === "number") return Number.isFinite(v) && v > 0 ? BigInt(Math.floor(v)) : 0n;
+  if (typeof v === "string" && /^[0-9]+$/.test(v.trim())) { try { return BigInt(v.trim()); } catch { return 0n; } }
+  return 0n;
+}
+
 const TIP_KEY = "indexed_height";
 
 export interface IndexResult { from: number; to: number; tip: number; blocks: number; reorgs: number; reorgDepth: number; }
@@ -84,7 +97,7 @@ export async function writeBlock(b: rpc.RpcBlock): Promise<void> {
       const isCoinbase = pos === 0;
       const signer = deriveAddr(t.inputs?.[0]?.script_sig) ?? addrFromScriptPubkey(t.outputs?.[0]?.script_pubkey) ?? null;
       // resolve inputs against our own outputs → spends + input sum (skip coinbase)
-      let sumIn = 0;
+      let sumIn = 0n;
       const ins = t.inputs ?? [];
       for (const inp of ins) {
         const prev = inp.prev_txid ?? inp.prevTxid;
@@ -93,31 +106,30 @@ export async function writeBlock(b: rpc.RpcBlock): Promise<void> {
         // behavior — and it keeps the 2^32-1 vout away from pg's int4 param inference.
         if (!prev || /^(0x)?0+$/.test(prev)) continue;
         const vout = Number(inp.vout ?? 0);
-        const prevOut = await d.get<{ addr: string | null; value: number }>(SQL_LOOKUP, prev, vout);
+        const prevOut = await d.get<{ addr: string | null; value: number | bigint }>(SQL_LOOKUP, prev, vout);
         if (prevOut) {
-          sumIn += Number(prevOut.value ?? 0);
+          const pv = safeValue(prevOut.value); // exact (may exceed 2^53)
+          sumIn += pv;
           await d.run(SQL_SPEND, t.txid, blk.height, prev, vout);
-          if (prevOut.addr) await d.run(SQL_HIST, prevOut.addr, t.txid, blk.height, pos, "out", -Number(prevOut.value ?? 0));
+          if (prevOut.addr) await d.run(SQL_HIST, prevOut.addr, t.txid, blk.height, pos, "out", -pv);
         }
       }
       // outputs
-      let sumOut = 0;
+      let sumOut = 0n;
       const outs = t.outputs ?? [];
       for (let vout = 0; vout < outs.length; vout++) {
         const o = outs[vout]!;
         const addr = addrFromScriptPubkey(o.script_pubkey);
-        // Output values are integer base units. A malformed (fractional / NaN / negative) value from
-        // a buggy or hostile node would otherwise be stored as a REAL and later crash BigInt() in
-        // address-stats and analytics SUMs — violating "one poisoned row must never 500 a whole
-        // endpoint". Floor to a non-negative integer (conservative: garbage under-reports, never
-        // crashes; an honest node always serves integers so this is a no-op for real data).
-        const rawVal = Number(o.value ?? 0);
-        const val = Number.isFinite(rawVal) && rawVal > 0 ? Math.floor(rawVal) : 0;
+        // Output values are integer base units, and a single legitimate CSD value can exceed 2^53
+        // (max supply ~1e17 sats). safeValue() parses it EXACTLY as a bigint (never via lossy
+        // Number()), so neither the stored row nor any SUM it feeds is silently corrupted; a
+        // malformed (fractional / NaN / negative) value still degrades to 0n, never a lossy REAL.
+        const val = safeValue(o.value);
         sumOut += val;
         await d.run(SQL_OUT, t.txid, vout, addr, val, blk.height);
         if (addr) await d.run(SQL_HIST, addr, t.txid, blk.height, pos, "in", val);
       }
-      const fee = isCoinbase ? 0 : Math.max(0, sumIn - sumOut);
+      const fee = isCoinbase ? 0n : (sumIn > sumOut ? sumIn - sumOut : 0n);
       const kind = appType(t, isCoinbase);
       await d.run(SQL_TX, t.txid, blk.height, pos, kind, signer, fee, time, ins.length, outs.length, isCoinbase ? 1 : 0);
 

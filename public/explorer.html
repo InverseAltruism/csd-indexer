@@ -121,7 +121,7 @@
 </header>
 <main id="view"><div class="loading">loading…</div></main>
 <footer>
-  CSD Explorer · a <b>derived, untrusted view</b> - inclusion is re-verified in your browser against the PoW header.
+  CSD Explorer · a <b>derived, untrusted view</b> - inclusion is folded in your browser against the indexer's own block header (a consistency check, NOT a PoW/consensus proof; for that, run the L0 light client).
   <a href="https://github.com/InverseAltruism/csd-indexer" target="_blank">source</a>
 </footer>
 <script>
@@ -164,7 +164,8 @@ const ago = (t)=>{const s=Math.max(0,Math.floor(Date.now()/1000-t));if(s<60)retu
 const j = async(p)=>{const r=await fetch(API+p);if(!r.ok)throw new Error(p+' → '+r.status);return r.json();};
 const txt = async(p)=>{const r=await fetch(API+p);if(!r.ok)throw new Error(p+' → '+r.status);return r.text();};
 
-// ── client-side trustless verification (SubtleCrypto, no deps) ──
+// ── client-side merkle fold (SubtleCrypto, no deps). A consistency check against the
+//    indexer's own header — NOT a trustless proof (no PoW/checkpoint verification here). ──
 const hexToBytes = (h)=>{h=h.replace(/^0x/,'');const a=new Uint8Array(h.length/2);for(let i=0;i<a.length;i++)a[i]=parseInt(h.substr(i*2,2),16);return a;};
 const bytesToHex = (b)=>'0x'+[...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,'0')).join('');
 async function sha256(b){return new Uint8Array(await crypto.subtle.digest('SHA-256',b));}
@@ -470,18 +471,20 @@ async function txPage(v,id){
       <td class="opt">${o.spent_txid?`<span class="dim">spent by ${txidLink(o.spent_txid)}</span>`:'<span class="badge ok">unspent</span>'}</td></tr>`).join('')}</tbody></table></div></div>`));
   if(proof){
     v.appendChild(el(`<div class="panel"><h2>merkle inclusion proof</h2>
-      <div class="muted">This proof is served by an <i>untrusted</i> indexer. Your browser folds it to the block's merkle root below - that root lives in the PoW-verified header, so a correct fold is trustless proof of inclusion.</div>
+      <div class="muted">This proof is served by an <i>untrusted</i> indexer, and so is the block header below. Your browser folds the branch and checks it equals the indexer's stated merkle root - a <b>consistency check</b> that the proof matches the header this same indexer reports. It is <b>NOT</b> a PoW/consensus proof: nothing here verifies the header's proof-of-work or that it is on the canonical chain. For a trustless inclusion proof, fold against a header obtained from the L0 light client (which checks PoW + checkpoints).</div>
       <div class="kv" style="margin-top:10px">
         <div>block height</div><div class="v">${proof.block_height}</div>
         <div>position</div><div class="v">${proof.pos}</div>
         <div>merkle root</div><div class="v mono dim">${esc(proof.merkle_root)}</div>
         <div>branch (${proof.merkle.length})</div><div class="v mono dim">${proof.merkle.map(short).join(' · ')||'<i>single-tx block</i>'}</div>
       </div></div>`));
-    // verify in-browser against the block header's merkle root (the node's, not the indexer's claim)
+    // Fold the branch against the block's merkle root. NOTE: that root comes from the SAME
+    // untrusted indexer (no PoW/header verification here), so a matching fold proves only that
+    // the proof is CONSISTENT with the header this indexer reports — not consensus inclusion.
     try{
       const blk=await j('/block/'+await j('/block-height/'+proof.block_height));
       const ok=await verifyInclusion(tx.txid,proof.pos,proof.merkle,blk.merkle);
-      const b=$('#inclbadge');b.textContent=ok?'✓ inclusion verified in-browser':'✗ inclusion FAILED';b.className='badge '+(ok?'ok':'bad');
+      const b=$('#inclbadge');b.textContent=ok?'✓ consistent with indexer header (not PoW-verified)':'✗ inclusion FAILED';b.className='badge '+(ok?'ok':'bad');
     }catch(e){const b=$('#inclbadge');b.textContent='inclusion: '+e.message;b.className='badge bad';}
   } else {$('#inclbadge').textContent='no proof';$('#inclbadge').className='badge pend';}
 }

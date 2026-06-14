@@ -22,6 +22,7 @@ const HASH = /^0x[0-9a-f]{64}$/;
 export function buildApp() {
   const app = express();
   app.set("etag", false);
+  app.disable("x-powered-by"); // don't advertise Express/version (fingerprinting surface)
   app.use((_req, res, next) => { res.setHeader("Access-Control-Allow-Origin", "*"); next(); });
 
   const bad = (res: Response, msg: string) => res.status(400).json({ error: msg });
@@ -144,7 +145,17 @@ export function buildApp() {
     const atts = await q.attestationsFor(req.params.id!);
     res.json({ ...p, attestation_count: atts.length, attestations: atts });
   }));
-  app.get("/proposal/:id/attestations", h(async (req, res) => res.json(await q.attestationsFor(req.params.id!))));
+  // Keyset-paginated so a consumer (the CairnX resolver) can fetch the COMPLETE attestation list in
+  // bounded pages: pass ?after_height=&after_txid= from the last row of the previous page until a page
+  // returns < limit rows. Without a cursor it returns the first `limit` (default 5k) in (height,txid) order.
+  app.get("/proposal/:id/attestations", h(async (req, res) => {
+    const num = (v: unknown) => (v !== undefined && Number.isFinite(Number(v)) ? Number(v) : undefined);
+    res.json(await q.attestationsFor(req.params.id!, {
+      limit: num(req.query.limit),
+      afterHeight: num(req.query.after_height),
+      afterTxid: req.query.after_txid !== undefined ? String(req.query.after_txid) : undefined,
+    }));
+  }));
   app.get("/address/:a/reputation", h(async (req, res) => {
     const atts = await q.attestationsBy(req.params.a!);
     const n = atts.length;

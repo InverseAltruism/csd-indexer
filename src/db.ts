@@ -89,7 +89,11 @@ const DDL = `
   CREATE INDEX IF NOT EXISTS idx_out_spent        ON outputs(spent_txid);
   CREATE INDEX IF NOT EXISTS idx_addrhist_addr    ON address_history(addr, height);
   CREATE INDEX IF NOT EXISTS idx_prop_domain      ON proposals(domain);
-  CREATE INDEX IF NOT EXISTS idx_att_proposal     ON attestations(proposal_id);
+  -- Composite (proposal_id, height, txid) matches /proposal/:id/attestations' ORDER BY + keyset cursor,
+  -- so the resolver's pagination is index-ordered SEEKS, not a per-page temp-B-tree re-sort (it also
+  -- fully serves the old proposal_id-only lookups, so the single-column index is dropped below).
+  CREATE INDEX IF NOT EXISTS idx_att_proposal_hk  ON attestations(proposal_id, height, txid);
+  DROP INDEX IF EXISTS idx_att_proposal;
   CREATE INDEX IF NOT EXISTS idx_att_attester     ON attestations(attester);
 `;
 
