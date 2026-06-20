@@ -36,14 +36,32 @@ export function buildApp() {
   // async handlers: express 4 doesn't catch a rejected promise, so wrap every handler.
   // Params are typed as plain strings (the routes below only read params they declare).
   type Req = Request<Record<string, string>, unknown, unknown, Record<string, string | undefined>>;
+  // CAIRN-IDX-ERR-1: never leak the raw error to a public client — a thrown error here can carry a
+  // pg connection string, the failing SQL/schema, or a sqlite file path. Log the full error
+  // server-side and return a generic, stable body. Status stays 500 (clients branch on status).
+  const fail = (res: Response, e: unknown) => {
+    console.error("[csd-indexer] handler error:", e);
+    if (!res.headersSent) res.status(500).json({ error: "internal error" });
+  };
   const h = (fn: (req: Req, res: Response) => Promise<unknown>) =>
-    (req: Req, res: Response) => { fn(req, res).catch((e) => { if (!res.headersSent) res.status(500).json({ error: String((e as Error).message) }); }); };
+    (req: Req, res: Response) => { fn(req, res).catch((e) => fail(res, e)); };
 
   // ── health / status ──
   // Freshness surface (added for multi-host failover): a load balancer or failover client
   // routes/refuses on tip_hash + chainwork + seconds_since_tip, NOT just height — two hosts
   // can sit at equal height on different forks, and a wedged node serves a stale-but-answering
   // tip. All original fields (ok, indexed_height, counts) are preserved; the rest are additive.
+  //
+  // CAIRN-IDX-FAILOVER-1 — TRUST CAVEAT (READ BEFORE ROUTING ON THESE FIELDS):
+  // tip_hash / chainwork / tip_height / seconds_since_tip are NODE-REPORTED and are NOT
+  // PoW-verified by the indexer. seconds_since_tip is derived from `header.time`, which we
+  // store verbatim from the node (indexer.ts writeBlock), so a wedged-but-answering node can
+  // forge a fresh-looking tip by lying about chainwork and/or the header timestamp (future- or
+  // back-dated). These fields are an OPERATIONAL liveness HINT, not a consensus signal: any
+  // consumer that uses them to choose where to route VALUE actions MUST independently cross-check
+  // the winning tip against the L0 light client (header PoW + chainwork comparison) and reject a
+  // header whose time fails an MTP / max-future-drift sanity bound. Treat a single indexer's
+  // /health as untrusted for fork selection.
   app.get("/health", h(async (_req, res) => {
     const indexed_height = await indexedHeight();
     const tipH = await q.tipHeight();
@@ -70,7 +88,12 @@ export function buildApp() {
     e.kind === "reorg" || (e.kind === "proposal" && e.domain === req.params.d!))(req, res));
 
   // ── Esplora core ──
-  app.get("/blocks/tip/height", h(async (_req, res) => res.json(await q.tipHeight())));
+  // CAIRN-IDX-ERR-3: tipHeight() is -1 on an empty index (nothing indexed yet / pg not yet seeded).
+  // Serving the literal -1 as a height misleads clients; report "not ready" (503) instead.
+  app.get("/blocks/tip/height", h(async (_req, res) => {
+    const tip = await q.tipHeight();
+    return tip < 0 ? res.status(503).json({ error: "index not ready" }) : res.json(tip);
+  }));
   app.get("/blocks/tip/hash", h(async (_req, res) => { const b = await q.blockByHeight(await q.tipHeight()); return b ? res.json(b.hash) : nf(res); }));
 
   app.get("/block-height/:h", h(async (req, res) => {
@@ -91,7 +114,7 @@ export function buildApp() {
     const txids = await q.blockTxids(b.height);
     // filter(Boolean): on pg a concurrent reorg can unwind a txid between the list query
     // and the row fetch — drop the hole rather than emit a null element (sqlite: impossible)
-    res.json((await Promise.all(txids.map((t) => q.tx(t)))).filter(Boolean).map((t) => withVio(t!)));
+    res.json((await Promise.all(txids.map((t) => q.tx(t)))).filter(Boolean));
   }));
 
   // ── tx ──
@@ -99,13 +122,17 @@ export function buildApp() {
     if (!TXID.test(req.params.id!)) return bad(res, "want /tx/0x<64-hex>");
     const t = await q.tx(req.params.id!);
     if (!t) return nf(res, "unknown tx");
-    res.json({ ...withVio(t), outputs: await q.txOutputs(t.txid) });
+    res.json({ ...t, outputs: await q.txOutputs(t.txid) });
   }));
   app.get("/tx/:id/status", h(async (req, res) => {
     const t = await q.tx(req.params.id!);
     if (!t) return nf(res, "unknown tx");
     const tip = await q.tipHeight();
-    res.json({ confirmed: true, block_height: t.height, confirmations: tip - t.height + 1, final: tip - t.height + 1 >= CFG.finalDepth });
+    // CAIRN-IDX-ERR-3: only report confirmations when the tip is at/above the tx's height.
+    // tipHeight() is -1 on an empty index, and an in-flight reorg can briefly leave tip<height —
+    // either way `tip - height + 1` would be a misleading large-negative count, so clamp to null.
+    const confs = tip >= t.height ? tip - t.height + 1 : null;
+    res.json({ confirmed: true, block_height: t.height, confirmations: confs, final: confs != null && confs >= CFG.finalDepth });
   }));
   // CSD keystone: merkle inclusion proof (Electrum format) for the L0 light client.
   app.get("/tx/:id/merkle-proof", h(async (req, res) => {
@@ -122,12 +149,21 @@ export function buildApp() {
   app.get("/address/:a/txs", h(async (req, res) => {
     if (!ADDR.test(req.params.a!.toLowerCase())) return bad(res, "want /address/0x<40-hex>");
     const ids = await q.addressTxids(req.params.a!, null);
-    res.json((await Promise.all(ids.map((r) => q.tx(r.txid)))).filter(Boolean).map((t) => withVio(t!)));
+    res.json((await Promise.all(ids.map((r) => q.tx(r.txid)))).filter(Boolean));
   }));
   app.get("/address/:a/txs/chain/:last", h(async (req, res) => {
-    const before = Number(req.params.last!);
-    const ids = await q.addressTxids(req.params.a!, Number.isFinite(before) ? before : null);
-    res.json((await Promise.all(ids.map((r) => q.tx(r.txid)))).filter(Boolean).map((t) => withVio(t!)));
+    // Esplora `/address/:addr/txs/chain/:last_seen_txid` — page by the last-seen TXID (not a raw height).
+    // CAIRN-IDX PAGINATION-DATALOSS-1 + PG-2/PGDIV-1: the prior impl used `Number(:last)` as a height-only
+    // cursor, which (a) dropped same-height txids past the page limit and (b) on Postgres raised a 500 for a
+    // fractional/out-of-range value. Resolving the cursor txid's height and paging the full (height, txid)
+    // keyset fixes both; an unknown/ill-formed cursor returns an empty page (end-of-pages), never a crash.
+    if (!ADDR.test(req.params.a!.toLowerCase())) return bad(res, "want /address/0x<40-hex>");
+    const last = String(req.params.last!).toLowerCase();
+    if (!TXID.test(last)) return bad(res, "want /address/0x<40-hex>/txs/chain/<last-seen txid 0x-64hex>");
+    const h0 = await q.addressTxidHeight(req.params.a!, last);
+    if (h0 == null) return res.json([]); // cursor txid not in this address's history → no further pages
+    const ids = await q.addressTxids(req.params.a!, { height: h0, txid: last });
+    res.json((await Promise.all(ids.map((r) => q.tx(r.txid)))).filter(Boolean));
   }));
   app.get("/address/:a/utxo", h(async (req, res) => {
     if (!ADDR.test(req.params.a!.toLowerCase())) return bad(res, "want /address/0x<40-hex>");
@@ -171,17 +207,19 @@ export function buildApp() {
   app.get("/analytics/supply", h(async (_req, res) => res.json(await analytics.supply())));
 
   // ── L3 registry resolvers (deterministic; clients can recompute via csd-registry) ──
-  app.get("/registry/peers", async (_req, res) => { try { res.json(await registry.peers()); } catch (e) { res.status(500).json({ error: String((e as Error).message) }); } });
-  app.get("/registry/gateways", async (_req, res) => { try { res.json(await registry.gateways()); } catch (e) { res.status(500).json({ error: String((e as Error).message) }); } });
-  app.get("/identity/:handle", async (req, res) => {
-    try { const r = await registry.identity(req.params.handle!); return r ? res.json(r) : nf(res, "no verified binding for handle"); }
-    catch (e) { res.status(500).json({ error: String((e as Error).message) }); }
-  });
-  app.get("/address/:a/identity", async (req, res) => {
+  // CAIRN-IDX-ERR-1: routed through the same h() wrapper so a thrown error is logged server-side
+  // and surfaces as a generic 500 body (no pg DSN / SQL / schema / file-path leak).
+  app.get("/registry/peers", h(async (_req, res) => res.json(await registry.peers())));
+  app.get("/registry/gateways", h(async (_req, res) => res.json(await registry.gateways())));
+  app.get("/identity/:handle", h(async (req, res) => {
+    const r = await registry.identity(req.params.handle!);
+    return r ? res.json(r) : nf(res, "no verified binding for handle");
+  }));
+  app.get("/address/:a/identity", h(async (req, res) => {
     if (!ADDR.test(req.params.a!.toLowerCase())) return bad(res, "want /address/0x<40-hex>/identity");
-    try { const r = await registry.reverse(req.params.a!); return r ? res.json(r) : nf(res, "no primary name for address"); }
-    catch (e) { res.status(500).json({ error: String((e as Error).message) }); }
-  });
+    const r = await registry.reverse(req.params.a!);
+    return r ? res.json(r) : nf(res, "no primary name for address");
+  }));
 
   // Content join: resolve canonical bytes by payload_hash via the L1 swarm gateway
   // (self-certifying — the gateway re-checks sha256==hash; we just proxy).
@@ -196,7 +234,10 @@ export function buildApp() {
         // explicit byte cap, enforced WHILE streaming (don't rely on the gateway's object limit
         // for our own memory safety — abort the read the moment the body crosses the cap)
         const r = await registry.fetchCapped(`${CFG.swarmGateway}/content/${hash}`, ctrl.signal, 4 * 1024 * 1024);
-        if (!r.ok) return res.status(r.status).json({ error: "content unavailable via swarm gateway" });
+        // CAIRN-IDX-ERR-5: the swarm gateway is an untrusted upstream — normalize its failure status
+        // to a fixed 502 (as the sibling oversize/verify/unreachable branches do) rather than
+        // forwarding an attacker-influenceable raw r.status to our clients.
+        if (!r.ok) return res.status(502).json({ error: "content unavailable via swarm gateway" });
         if (r.oversize) return res.status(502).json({ error: "content exceeds size cap" });
         buf = Buffer.from(r.body);
       } finally { clearTimeout(to); }
@@ -218,10 +259,6 @@ export function buildApp() {
 
   return app;
 }
-
-// Attach a "violation" flag if a tx references something impossible — currently a
-// passthrough; reserved for future consistency annotations (kept for shape stability).
-function withVio<T>(t: T): T { return t; }
 
 /** Build the app + HTTP server with WebSocket streaming attached, and start listening. */
 export function serve(p = port(), h = host()): Server {

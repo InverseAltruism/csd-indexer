@@ -19,23 +19,83 @@ const GIST_HOSTS = new Set(["gist.github.com", "gist.githubusercontent.com", "ra
 const FETCH_TIMEOUT_MS = 5000;
 const MAX_PROOF_BYTES = 256 * 1024;
 
+// IPv4 literal in private/loopback/link-local/CGNAT/multicast ranges.
+function isReservedIpv4(a: number, b: number): boolean {
+  if (a === 10 || a === 127 || a === 0 || a >= 224) return true; // 10/8,127/8,0/8,224+/multicast+reserved
+  if (a === 169 && b === 254) return true;     // link-local incl. 169.254.169.254 metadata
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT
+  return false;
+}
+
 function isPrivateHost(host: string): boolean {
   const h = host.toLowerCase();
   if (h === "localhost" || h.endsWith(".localhost") || h.endsWith(".internal") || h.endsWith(".local")) return true;
-  // IPv4 literal in private/loopback/link-local/CGNAT ranges
+  // IPv4 literal
   const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (m) {
-    const [a, b] = [Number(m[1]), Number(m[2])];
-    if (a === 10 || a === 127 || a === 0 || a >= 224) return true;
-    if (a === 169 && b === 254) return true;     // link-local incl. 169.254.169.254 metadata
-    if (a === 172 && b >= 16 && b <= 31) return true;
-    if (a === 192 && b === 168) return true;
-    if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT
-    return false;
+  if (m) return isReservedIpv4(Number(m[1]), Number(m[2]));
+  // IPv6 literal (also catches bracketed forms). CAIRN-SSRF-IDENT-1: the prior prefix-string
+  // checks (fc/fd/fe80/::ffff:) missed several reserved ranges (NAT64, site-local, 6to4,
+  // multicast). Canonicalize to the 8 hextets and test the reserved CIDRs explicitly; an
+  // embedded-IPv4 form (::ffff:a.b.c.d / ::a.b.c.d) is routed through the IPv4 reserved check.
+  if (h.includes(":")) {
+    const h6 = h.replace(/^\[|\]$/g, "").split("%")[0]!; // strip brackets + zone id
+    return isReservedIpv6(h6);
   }
-  // IPv6 loopback / ULA / link-local (also catches bracketed forms)
-  const h6 = h.replace(/^\[|\]$/g, "");
-  if (h6 === "::1" || h6 === "::" || h6.startsWith("fc") || h6.startsWith("fd") || h6.startsWith("fe80") || h6.startsWith("::ffff:")) return true;
+  return false;
+}
+
+// Expand an IPv6 literal to its 8 16-bit hextets (numbers), or null if unparseable. Handles "::"
+// compression and a trailing dotted-quad (::ffff:1.2.3.4 → last two hextets from the v4 octets).
+function ipv6Hextets(addr: string): number[] | null {
+  let s = addr.toLowerCase();
+  if (s === "::") return [0, 0, 0, 0, 0, 0, 0, 0];
+  // a trailing embedded IPv4 ("…:1.2.3.4") becomes two hextets
+  const v4 = s.match(/(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (v4) {
+    const [a, b, c, d] = [Number(v4[1]), Number(v4[2]), Number(v4[3]), Number(v4[4])];
+    if ([a, b, c, d].some((n) => n > 255)) return null;
+    s = s.slice(0, v4.index) + (((a << 8) | b)).toString(16) + ":" + (((c << 8) | d)).toString(16);
+  }
+  const dbl = s.split("::");
+  if (dbl.length > 2) return null;
+  const parse = (part: string) => (part === "" ? [] : part.split(":").map((x) => parseInt(x, 16)));
+  let head: number[], tail: number[];
+  if (dbl.length === 2) {
+    head = parse(dbl[0]!); tail = parse(dbl[1]!);
+    const fill = 8 - head.length - tail.length;
+    if (fill < 0) return null;
+    head = head.concat(Array(fill).fill(0));
+  } else { head = parse(s); tail = []; }
+  const all = head.concat(tail);
+  if (all.length !== 8 || all.some((n) => !Number.isInteger(n) || n < 0 || n > 0xffff)) return null;
+  return all;
+}
+
+// Reserved/internal IPv6 ranges that an SSRF target must never reach.
+function isReservedIpv6(addr: string): boolean {
+  const x = ipv6Hextets(addr);
+  if (!x) return true;                                   // unparseable → fail closed
+  const [h0, h1] = x;
+  // v4-mapped (::ffff:a.b.c.d → hextets 0..4 == 0, hextet 5 == 0xffff) and v4-compat
+  // (::a.b.c.d → hextets 0..5 == 0, excluding :: / ::1) carry an embedded IPv4 in the last two
+  // hextets — route those octets through the IPv4 reserved check so e.g. ::ffff:127.0.0.1 and
+  // ::ffff:169.254.169.254 are rejected. (Node normalizes these to hex, so we test by position.)
+  const v4mapped = x.slice(0, 5).every((n) => n === 0) && x[5] === 0xffff;
+  const v4compat = x.slice(0, 6).every((n) => n === 0) && (x[6]! !== 0 || x[7]! > 1);
+  if (v4mapped || v4compat) {
+    // isReservedIpv4 only inspects the first two octets, both held in hextet 6.
+    return isReservedIpv4((x[6]! >> 8) & 0xff, x[6]! & 0xff);
+  }
+  if (x.every((n) => n === 0)) return true;              // ::            (unspecified)
+  if (x.slice(0, 7).every((n) => n === 0) && x[7] === 1) return true; // ::1 (loopback)
+  if ((h0! & 0xfe00) === 0xfc00) return true;            // fc00::/7      (ULA)
+  if ((h0! & 0xffc0) === 0xfe80) return true;            // fe80::/10     (link-local)
+  if ((h0! & 0xffc0) === 0xfec0) return true;            // fec0::/10     (deprecated site-local)
+  if ((h0! & 0xff00) === 0xff00) return true;            // ff00::/8      (multicast)
+  if (h0 === 0x2002) return true;                        // 2002::/16     (6to4)
+  if (h0 === 0x0064 && h1 === 0xff9b) return true;       // 64:ff9b::/96  (NAT64 well-known)
   return false;
 }
 

@@ -12,6 +12,10 @@ import { bus, type IndexEvent } from "./events.js";
 const MAX_SSE = Number(process.env.CSD_INDEX_MAX_SSE ?? 500);
 const MAX_WS = Number(process.env.CSD_INDEX_MAX_WS ?? 500);
 const MAX_SUB_KEYS = Number(process.env.CSD_INDEX_MAX_SUB ?? 1000); // per WS client, per category
+// CAIRN-IDX-SSE-1: per-connection outbound buffer cap. A slow-loris client that stops reading lets
+// res.write() queue frames in the kernel/Node socket buffer unbounded; once the in-flight estimate
+// crosses this bound we drop the connection rather than grow memory. Tunable via env.
+const MAX_SSE_BUFFER = Number(process.env.CSD_INDEX_MAX_SSE_BUFFER ?? 4 * 1024 * 1024);
 let sseOpen = 0, wsOpen = 0;
 
 // ── SSE: GET /stream/all and /stream/domain/:d ──
@@ -24,13 +28,25 @@ export function sseHandler(filter?: (e: IndexEvent) => boolean) {
     res.setHeader("Connection", "keep-alive");
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.flushHeaders?.();
-    res.write(`event: hello\ndata: {"ok":true}\n\n`);
-    const ping = setInterval(() => res.write(`: ping\n\n`), 25000);
+    let closed = false;
+    const cleanup = () => { if (closed) return; closed = true; clearInterval(ping); off(); sseOpen--; };
+    // CAIRN-IDX-SSE-1: write a frame only while the socket is draining. res.write() returns false
+    // once the outbound buffer fills; res.writableLength is Node's in-flight byte estimate. If the
+    // client isn't reading and the buffer crosses MAX_SSE_BUFFER, end the connection (cleanup runs
+    // via the 'close' handler) instead of buffering without bound.
+    const send = (s: string) => {
+      if (closed) return;
+      res.write(s);
+      if (res.writableLength > MAX_SSE_BUFFER) { try { res.end(); } catch { /* already closing */ } }
+    };
+    send(`event: hello\ndata: {"ok":true}\n\n`);
+    const ping = setInterval(() => send(`: ping\n\n`), 25000);
     const off = bus.onEvent((e) => {
       if (filter && !filter(e)) return;
-      res.write(`event: ${e.kind}\ndata: ${JSON.stringify(e)}\n\n`);
+      send(`event: ${e.kind}\ndata: ${JSON.stringify(e)}\n\n`);
     });
-    req.on("close", () => { clearInterval(ping); off(); sseOpen--; });
+    req.on("close", cleanup);
+    res.on("close", cleanup);
   };
 }
 
@@ -40,9 +56,14 @@ const capAdd = (set: Set<string>, items: Iterable<string>) => { for (const x of 
 type Sub = { domains: Set<string>; addresses: Set<string>; proposals: Set<string>; all: boolean };
 
 function matches(sub: Sub, e: IndexEvent): boolean {
-  if (sub.all) return true;
-  if (e.kind === "reorg") return true; // everyone needs reorgs
-  if (e.kind === "block") return sub.all;
+  if (sub.all) return true;             // track-all clients get every event (handled above)
+  if (e.kind === "reorg") return true;  // everyone needs reorgs, even with a narrow subscription
+  // CAIRN-IDX-WS-2: block events are intentionally NOT delivered to non-track-all WS clients.
+  // There is no per-block WS subscription, and a narrow client (track-domain/address/proposal)
+  // only wants the matching proposal/attestation/reorg stream. A client that wants every block
+  // sends {track-all:true} (returns above) or uses the SSE GET /stream/blocks firehose. (Was
+  // `return sub.all` here, dead since sub.all is already false at this point — made explicit.)
+  if (e.kind === "block") return false;
   if (e.kind === "proposal") return sub.domains.has(e.domain);
   if (e.kind === "attestation") return sub.proposals.has(e.proposal_id) || sub.addresses.has(e.attester.toLowerCase());
   return false;

@@ -12,7 +12,9 @@ COPY tsconfig.json ./
 COPY src ./src
 COPY public ./public
 
-ENV CSD_RPC=http://host.docker.internal:8790 \
+# CAIRN-IDX-DOCKER-RPC-1: 8789 = the node's RPC (the source of truth). 8790 was the MINER's RPC,
+# disabled since 2026-06-12 — never default to it (matches src/config.ts).
+ENV CSD_RPC=http://host.docker.internal:8789 \
     CSD_INDEX_DB=/data/csd-index.db \
     CSD_INDEX_LISTEN=0.0.0.0:8793 \
     CSD_SWARM_GATEWAY=http://host.docker.internal:8791

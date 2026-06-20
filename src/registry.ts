@@ -96,8 +96,11 @@ export async function buildRegistryRecords(): Promise<ChainRecord[]> {
     ...REG_DOMAINS, ...REG_DOMAINS) ?? { p: 0, a: 0 };
   const key = `${await tipHeight()}:${fp.p}:${fp.a}`;
   if (recordsCache && recordsCache.key === key) return recordsCache.records;
+  // CAIRN-IDX-REGISTRY-1: deterministic feed order. The resolver's tie-break on an EXACT weight tie depends
+  // on iteration order; without ORDER BY the winner = first DB row = unspecified, so the same indexer could
+  // flip a reverse-resolved primary name across restarts/backends. (height, txid) is the canonical anchor order.
   const props = await store().all<any>(
-    `SELECT txid, domain, payload_hash, proposer, fee, height, expires_epoch FROM proposals WHERE domain IN (${ph})`,
+    `SELECT txid, domain, payload_hash, proposer, fee, height, expires_epoch FROM proposals WHERE domain IN (${ph}) ORDER BY height, txid`,
     ...REG_DOMAINS);
 
   const out: ChainRecord[] = [];

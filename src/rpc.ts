@@ -39,6 +39,9 @@ export async function blockByHeight(h: number): Promise<RpcBlock | null> {
   } catch { return null; }
 }
 
+// NOTE (audit dead-code): no in-repo caller — the indexer derives every tx from the block bodies
+// returned by blockByHeight(), never by single-tx fetch. Kept as part of the thin RPC client's
+// public surface (a third party running this indexer may call it); remove if that ever changes.
 export async function getTx(txid: string): Promise<RpcTx | null> {
   try { const j = await getJson(`/tx/${txid}`); return (j.tx ?? j) as RpcTx; } catch { return null; }
 }

@@ -66,4 +66,38 @@ test("SSRF: a dns proof pointing at a private/loopback/metadata host is rejected
   }
 });
 
+// CAIRN-SSRF-IDENT-1: the IPv6 deny-list previously missed several reserved ranges. A dns proof
+// targeting any of these (or their v4-mapped forms) must be rejected BEFORE any network call.
+test("SSRF: reserved IPv6 ranges (NAT64/site-local/6to4/multicast/ULA/link-local/mapped) are rejected", async () => {
+  const ssrfFetch: typeof fetch = async () => new Response(`address ${o.addr} handle ${handle}`, { status: 200 });
+  const reserved = [
+    "[::1]",                       // loopback
+    "[::]",                        // unspecified
+    "[fc00::1]", "[fd12:3456::1]", // ULA fc00::/7
+    "[fe80::1]",                   // link-local
+    "[fec0::1]",                   // deprecated site-local fec0::/10
+    "[ff02::1]", "[ff00::1]",      // multicast ff00::/8
+    "[2002:c0a8:0101::1]",         // 6to4 2002::/16
+    "[64:ff9b::7f00:1]",           // NAT64 64:ff9b::/96 wrapping 127.0.0.1
+    "[::ffff:127.0.0.1]",          // v4-mapped loopback
+    "[::ffff:169.254.169.254]",    // v4-mapped cloud metadata
+    "[::ffff:10.0.0.1]",           // v4-mapped private
+    "[::ffff:192.168.0.1]",        // v4-mapped private
+  ];
+  for (const domain of reserved) {
+    const r = revealWith([{ type: "dns", domain, path: "/.well-known/csd.json" }]);
+    assert.equal((await proofStatuses(r, ssrfFetch))[0]?.ok, false, `dns proof to ${domain} must be rejected as reserved IPv6`);
+  }
+});
+
+// Guardrail: a normal PUBLIC IPv6 literal must NOT be over-blocked (the deny-list is precise).
+test("SSRF: a public IPv6 literal is not over-blocked by the reserved-range check", async () => {
+  // 2606:4700:4700::1111 is Cloudflare's public resolver — global unicast, not reserved. The mock
+  // fetch asserts the address so an ok:true proves the host check let it THROUGH (we don't hit the
+  // real network — the injected fetch is the boundary).
+  const okFetch: typeof fetch = async () => new Response(`address ${o.addr} handle ${handle}`, { status: 200 });
+  const r = revealWith([{ type: "dns", domain: "[2606:4700:4700::1111]", path: "/.well-known/csd.json" }]);
+  assert.equal((await proofStatuses(r, okFetch))[0]?.ok, true, "a public global-unicast IPv6 literal must pass the SSRF host check");
+});
+
 test.after(() => host.close());

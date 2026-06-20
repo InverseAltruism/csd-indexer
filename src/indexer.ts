@@ -176,17 +176,27 @@ async function storedHash(height: number): Promise<string | null> {
  * following it is correct AND keeps the loop making forward progress. The old code threw here,
  * which wedged syncOnce on every poll for any deep reorg at/above the tip (finding D-I1).
  */
+// findReorgAncestor sentinel: the node WITHHELD the blocks needed to locate the ancestor, so we have no
+// evidence of how deep the divergence runs. Distinct from -1 (no reorg). syncOnce must ABORT+retry, never
+// unwind, on this — wiping on absence of evidence is CAIRN-IDXREORG-1/2.
+const REORG_ABORT = -2;
+
 async function findReorgAncestor(newBlock: rpc.RpcBlock): Promise<number> {
   const prevH = newBlock.height - 1;
   const storedPrev = await storedHash(prevH);
   if (storedPrev == null) return -1;                       // nothing to link against (fresh / gap)
   if (storedPrev === (newBlock.header.prev ?? "")) return -1; // links cleanly — no reorg
   // diverged: walk back until node's hash matches what we stored (bounded by the scan floor)
+  let sawNodeAbsence = false;
   for (let h = prevH - 1; h >= CFG.scanFrom; h--) {
     const nodeBlk = await rpc.blockByHeight(h);
+    if (!nodeBlk) { sawNodeAbsence = true; continue; }      // node didn't answer — absence, not divergence
     const ours = await storedHash(h);
-    if (nodeBlk && ours && nodeBlk.hash === ours) return h;  // common ancestor
+    if (ours && nodeBlk.hash === ours) return h;            // common ancestor
   }
+  // CAIRN-IDXREORG-2: only fall to the scan floor on CONFIRMED divergence. If the walk-back found no match
+  // because the node withheld deeper blocks, abort+retry instead of wiping the index down to the floor.
+  if (sawNodeAbsence) return REORG_ABORT;
   return CFG.scanFrom - 1;                                  // diverged below the floor → re-scan from scanFrom
 }
 
@@ -212,11 +222,13 @@ async function reconcileTipWindow(tip: number): Promise<number> {
   // wedge the loop on a deep taller/equal-height reorg (finding D-I1).
   let converged = -1;
   let mismatched = false; // saw a height where the node RETURNED a block whose hash differs from ours
+  let sawNodeAbsence = false; // node returned null (didn't answer) for a height in the walk — absence ≠ divergence
   const fastFloor = Math.max(CFG.scanFrom, ceil - CFG.finalDepth);
   for (let h = ceil; h >= fastFloor; h--) {
     const nb = await rpc.blockByHeight(h);
+    if (!nb) { sawNodeAbsence = true; continue; }
     const ours = await storedHash(h);
-    if (nb && ours) {
+    if (ours) {
       if (nb.hash === ours) { converged = h; break; }
       mismatched = true;
     }
@@ -224,13 +236,22 @@ async function reconcileTipWindow(tip: number): Promise<number> {
   if (converged < 0) {                                     // deep divergence — walk on to the floor
     for (let h = fastFloor - 1; h >= CFG.scanFrom; h--) {
       const nb = await rpc.blockByHeight(h);
+      if (!nb) { sawNodeAbsence = true; continue; }
       const ours = await storedHash(h);
-      if (nb && ours) {
+      if (ours) {
         if (nb.hash === ours) { converged = h; break; }
         mismatched = true;
       }
     }
-    if (converged < 0) converged = CFG.scanFrom - 1;       // no match even at the floor → full re-scan
+    // CAIRN-IDXREORG-1: only unwind to the floor on CONFIRMED contiguous divergence — i.e. the node ANSWERED
+    // every height down to scanFrom and they all mismatched. If we never converged because the node WITHHELD
+    // deeper blocks (sawNodeAbsence), that is absence of evidence, NOT a reorg: abort and retry next poll
+    // instead of hard-DELETEing the entire index to genesis. The original L10 guard below only caught the
+    // FULLY-all-null case; a single latched mismatch at the tip + deeper-block withholding bypassed it.
+    if (converged < 0) {
+      if (sawNodeAbsence) return 0;
+      converged = CFG.scanFrom - 1;                        // no match even at the floor → full re-scan
+    }
   }
   // Never unwind on ABSENCE of evidence (finding L10): if we dropped below the window only because
   // every /block/height call failed (blockByHeight nulls — node serves /tip but not blocks), the
@@ -266,6 +287,7 @@ export async function syncOnce(): Promise<IndexResult> {
     if (!blk) break; // gap — stop; next poll retries
     // reorg check (only matters once we have a stored predecessor)
     const ancestor = await findReorgAncestor(blk);
+    if (ancestor === REORG_ABORT) break; // node withheld deeper blocks — retry next poll; never act on absence
     if (ancestor >= 0) {
       const prevIndexed = await indexedHeight();
       await unwindAbove(ancestor);

@@ -12,5 +12,40 @@ jobs:
       - run: npm ci
       - name: typecheck
         run: npm run typecheck
-      - name: test (offline, deterministic)
-        run: npx tsx --test test/decode.test.ts test/indexer.test.ts test/reorg-e2e.test.ts test/stream.test.ts test/registry.test.ts test/identity.test.ts
+      # CAIRN-IDX CI-1: use `npm test` (globs test/*.test.ts) so a new test file is NEVER silently dropped.
+      # The old hand-listed set omitted analytics.test.ts — exactly the emission/supply money-math that the
+      # DUP-ANALYTICS lockstep guard now lives in.
+      - name: test (offline, deterministic — glob, no hand-listing)
+        run: npm test
+      # CAIRN-IDX-LOCKSTEP-1: the determinism-bearing codec/registry MUST be exact-pinned to the ecosystem
+      # lockstep version (no caret → no silent float on a fresh install; the stale 0.1.2/0.1.1 was the fork seam).
+      - name: determinism deps exact-pinned (no caret)
+        run: |
+          node -e '
+            const p = require("./package.json");
+            for (const k of ["@inversealtruism/csd-codec", "@inversealtruism/csd-registry"]) {
+              const v = p.dependencies[k];
+              if (!v || /^[\^~]/.test(v)) { console.error(`::error::${k} must be EXACT-pinned to the lockstep version, got ${v}`); process.exit(1); }
+              console.log(`${k} exact-pinned at ${v}`);
+            }
+          '
+  # CAIRN-IDX-PG-1: the entire Postgres scale-path (toPg, int8/numeric exactParser, schema sanitize, reorg
+  # under pg, analytics money-math) shipped with ZERO CI coverage. Re-run the same suites with CSD_INDEX_PG set.
+  test-postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_PASSWORD: postgres, POSTGRES_DB: csdidx }
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      CSD_INDEX_PG: postgres://postgres:postgres@127.0.0.1:5432/csdidx
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - run: npm ci
+      - name: test on the Postgres backend
+        run: npm test

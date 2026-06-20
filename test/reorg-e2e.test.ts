@@ -26,13 +26,14 @@ function buildChain(tags: string[]): B[] {
   return out;
 }
 let BLOCKS_DOWN = false; // L10 fault injection: /tip answers but every /block/height fails
+let WITHHOLD_BELOW = -1; // IDXREORG-1 fault injection: serve heights >= this, 500 below it (partial withhold)
 const server: Server = createServer((req, res) => {
   const u = req.url || "";
   res.setHeader("content-type", "application/json");
   if (u === "/tip") { const t = CHAIN[CHAIN.length - 1]; return res.end(JSON.stringify({ ok: true, tip: t?.hash ?? "", height: t?.height ?? 0, chainwork: t?.chainwork ?? "0" })); }
   const m = u.match(/^\/block\/height\/(\d+)$/);
   if (m) {
-    if (BLOCKS_DOWN) { res.statusCode = 500; return res.end("{}"); }
+    if (BLOCKS_DOWN || (WITHHOLD_BELOW >= 0 && Number(m[1]) < WITHHOLD_BELOW)) { res.statusCode = 500; return res.end("{}"); }
     const b = CHAIN[Number(m[1])]; return b ? res.end(JSON.stringify({ ok: true, ...b })) : (res.statusCode = 404, res.end("{}"));
   }
   res.statusCode = 404; res.end("{}");
@@ -153,6 +154,35 @@ test("L10 all-null window: /tip up but every /block/height failing does NOT wipe
   await syncOnce();
   assert.equal(await indexedHeight(), 3);
   assert.equal(await storedHash(3), h32("blk-Pc"), "canonical tip block still present after recovery");
+});
+
+// ── CAIRN-IDXREORG-1 regression: a depth-1 tip mismatch (latches mismatched=true) COMBINED with the node
+// withholding every DEEPER block must NOT wipe the index. The old L10 guard `converged<ceil && !mismatched`
+// only fired when NOTHING mismatched; a single confirmed tip mismatch + deeper withholding bypassed it, so
+// converged fell to scanFrom-1 and unwindAbove(-1) hard-DELETEd the ENTIRE index to genesis. The fix tracks
+// node-absence in the DEPTH decision: never unwind to the floor unless the node ANSWERED every height down to
+// scanFrom with confirmed mismatches.
+test("IDXREORG-1 tip-mismatch + deeper-withhold does NOT over-unwind the index", async () => {
+  CHAIN = buildChain(["g", "Pa", "Pb", "Pc", "Pd", "Pe", "Pf", "Pg", "Ph", "Pi", "Pj"]); // 0..10
+  BLOCKS_DOWN = false; WITHHOLD_BELOW = -1;
+  await syncOnce();
+  assert.equal(await indexedHeight(), 10);
+  const rowsBefore = Number(((await store().get("SELECT COUNT(*) n FROM blocks WHERE orphaned=0")) as any).n);
+  // depth-1 reorg: ONLY height 10 changes (new block, still links to the unchanged height-9 hash) …
+  CHAIN = buildChain(["g", "Pa", "Pb", "Pc", "Pd", "Pe", "Pf", "Pg", "Ph", "Pi", "Pj2"]); // tip swapped at 10
+  // … AND the node withholds every block below the tip (serves /tip + height 10, 500s heights 0..9).
+  WITHHOLD_BELOW = 10;
+  const r = await syncOnce();
+  assert.equal(r.reorgs, 0, "no reorg signalled — deeper-block withholding is absence of evidence, not divergence");
+  assert.equal(await indexedHeight(), 10, "indexed height untouched — did NOT unwind to genesis");
+  const rowsAfter = Number(((await store().get("SELECT COUNT(*) n FROM blocks WHERE orphaned=0")) as any).n);
+  assert.equal(rowsAfter, rowsBefore, "no rows deleted despite the latched tip mismatch + withhold");
+  // node recovers → the genuine depth-1 reorg now reconciles cleanly (ancestor 9, height 10 replaced)
+  WITHHOLD_BELOW = -1;
+  await syncOnce();
+  assert.equal(await indexedHeight(), 10);
+  assert.equal(await storedHash(9), h32("blk-Pi"), "common ancestor height 9 preserved");
+  assert.equal(await storedHash(10), h32("blk-Pj2"), "height 10 swapped to the canonical block after recovery");
 });
 
 test.after(async () => { server.close(); await closeDb(); });

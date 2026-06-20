@@ -56,13 +56,30 @@ export async function txOutputs(txid: string): Promise<OutRow[]> {
   return rows.map((r) => ({ ...r, value: amt(r.value as never) }));
 }
 
-// Esplora-style address tx list: distinct txids touching addr, newest-first, cursor by height.
-export async function addressTxids(addr: string, beforeHeight: number | null, limit = 25): Promise<{ txid: string; height: number }[]> {
+// Esplora-style address tx list: distinct txids touching addr, newest-first.
+// CAIRN-IDX PAGINATION-DATALOSS-1: the keyset cursor is the FULL (height, txid) tuple matching the
+// `height DESC, txid ASC` order — a height-only cursor silently DROPS the remaining same-height txids when
+// one block has more than `limit` txids touching the address (a busy treasury/faucet/exchange address):
+// page 1 fills with `limit` rows all at height H, the next page `height < H` skips the rest of H forever.
+// Mirrors the (height, txid) keyset attestationsFor already uses.
+export async function addressTxids(
+  addr: string,
+  cursor: { height: number; txid: string } | null,
+  limit = 25,
+): Promise<{ txid: string; height: number }[]> {
   const a = addr.toLowerCase();
-  if (beforeHeight == null) {
+  if (cursor == null) {
     return await store().all("SELECT DISTINCT txid, height FROM address_history WHERE addr=? ORDER BY height DESC, txid LIMIT ?", a, limit) as never;
   }
-  return await store().all("SELECT DISTINCT txid, height FROM address_history WHERE addr=? AND height<? ORDER BY height DESC, txid LIMIT ?", a, beforeHeight, limit) as never;
+  return await store().all(
+    "SELECT DISTINCT txid, height FROM address_history WHERE addr=? AND (height < ? OR (height = ? AND txid > ?)) ORDER BY height DESC, txid LIMIT ?",
+    a, cursor.height, cursor.height, cursor.txid.toLowerCase(), limit) as never;
+}
+// Height at which a given txid touches an address (for resolving an Esplora last-seen-txid page cursor).
+export async function addressTxidHeight(addr: string, txid: string): Promise<number | null> {
+  const r = await store().get<{ height: number }>(
+    "SELECT height FROM address_history WHERE addr=? AND txid=? LIMIT 1", addr.toLowerCase(), txid.toLowerCase());
+  return r ? Number(r.height) : null;
 }
 export async function addressUtxos(addr: string): Promise<OutRow[]> {
   // bounded result; value already arrives exact (number or bigint) from the store

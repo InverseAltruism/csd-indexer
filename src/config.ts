@@ -25,8 +25,13 @@ export const CFG = {
   // Blocks deeper than this are treated as final and never unwound (reorg bound).
   finalDepth: num("CSD_CONFIRMATIONS_FINAL", 6),
   // Blocks at/under this depth are "confirmed" for display; the tip stays tentative.
+  // NOTE (audit dead-key): currently UNCONSULTED — the API derives finality from `finalDepth`
+  // and per-event tentative/confirmed status. Kept (not removed) to preserve the env surface for
+  // a future display tier; reading the env var here is harmless. Do not assume it gates anything.
   displayDepth: num("CSD_CONFIRMATIONS_DISPLAY", 3),
   // Blocks per persisted scan chunk.
+  // NOTE (audit dead-key): currently UNCONSULTED — the indexer loop walks block-by-block, so this
+  // knob does not change behavior. Kept to preserve the env surface; do not assume it tunes batching.
   batch: num("CSD_INDEX_BATCH", 200),
   // Poll interval (seconds) for the continuous indexer loop.
   pollSecs: num("CSD_INDEX_POLL", 15),

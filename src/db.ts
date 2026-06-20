@@ -166,6 +166,10 @@ class PgStore implements Store {
   private pool!: import("pg").Pool;
   private schemaSafe: string;
   private _ready: Promise<void> | null = null;
+  // CAIRN-IDX-POOL-1 / PG-7: hard cap on the pending-acquire queue (pg-pool has no native one).
+  // Sized as the pool max + a modest burst buffer; beyond it we fast-fail rather than let a flood
+  // park thousands of waiters and balloon memory/latency.
+  private readonly maxWaiting = Math.max(64, CFG.pgPoolSize * 8);
   constructor(url: string, schema: string) {
     const { Pool, types } = require("pg") as typeof import("pg");
     // Exact integer reads, same policy as the sqlite backend: int8 (OID 20) and the
@@ -178,10 +182,15 @@ class PgStore implements Store {
     } as unknown as import("pg").CustomTypesConfig;
     this.pool = new Pool({
       connectionString: url, max: CFG.pgPoolSize, types: perPool,
-      // never queue forever: a saturated pool should error a request, not hang it
+      // CAIRN-IDX-POOL-1 / PG-7: per-acquire timeout — any single acquire fails after 10s rather
+      // than hanging. NOTE: this bounds how long ONE waiter waits, not how MANY can wait; pg-pool
+      // 3.x has no built-in maxWaitingClients, so the queue length is bounded explicitly below in
+      // acquireGuard() (the prior comment claimed "never queue forever" but the queue was unbounded).
       connectionTimeoutMillis: 10_000,
-      // server-side guards: no runaway query can starve the block writer, and an
-      // abandoned BEGIN can't hold locks forever
+      // server-side guards: statement_timeout (30s) caps any single query so no runaway read
+      // starves the block writer; idle_in_transaction_session_timeout (60s) keeps an abandoned
+      // BEGIN from holding locks. Both exceed connectionTimeoutMillis by design — the acquire
+      // timeout fails fast; these bound work that is already running on a connection.
       options: "-c statement_timeout=30000 -c idle_in_transaction_session_timeout=60000",
     });
     // pg-pool EMITS 'error' for connection failures on IDLE pooled clients (server
@@ -209,22 +218,30 @@ class PgStore implements Store {
     p.catch(() => { if (this._ready === p) this._ready = null; });
     return p;
   }
-  async exec(sql: string): Promise<void> { await this.ready(); await this.pool.query(sql); }
+  // Bound the pending-acquire queue: if more than maxWaiting requests are already parked waiting
+  // for a connection, fast-fail this one rather than join an unbounded line. (Each pg.query that
+  // can't get an idle client enters the same _pendingQueue, so checking waitingCount covers
+  // query() and connect() alike.)
+  private acquireGuard(): void {
+    if (this.pool.waitingCount >= this.maxWaiting)
+      throw new Error("indexer db pool saturated (too many concurrent requests)");
+  }
+  async exec(sql: string): Promise<void> { await this.ready(); this.acquireGuard(); await this.pool.query(sql); }
   async run(sql: string, ...params: unknown[]): Promise<void> {
-    await this.ready(); await this.pool.query(toPg(sql), params as unknown[]);
+    await this.ready(); this.acquireGuard(); await this.pool.query(toPg(sql), params as unknown[]);
   }
   async get<T>(sql: string, ...params: unknown[]): Promise<T | undefined> {
-    await this.ready();
+    await this.ready(); this.acquireGuard();
     const r = await this.pool.query(toPg(sql), params as unknown[]);
     return r.rows[0] as T | undefined;
   }
   async all<T>(sql: string, ...params: unknown[]): Promise<T[]> {
-    await this.ready();
+    await this.ready(); this.acquireGuard();
     const r = await this.pool.query(toPg(sql), params as unknown[]);
     return r.rows as T[];
   }
   async tx<T>(fn: (s: Store) => Promise<T>): Promise<T> {
-    await this.ready();
+    await this.ready(); this.acquireGuard();
     const c = await this.pool.connect();
     const cs: Store = {
       backend: "postgres",
