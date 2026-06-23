@@ -437,12 +437,13 @@ async function txPage(v,id){
           let rec=null; try{rec=JSON.parse(prop.uri);}catch{}
           const me=(tx.signer||'').toLowerCase();
           const paid=(tx.outputs||[]).filter(o=>(o.addr||'').toLowerCase()!==me).reduce((s,o)=>s+o.value,0);
+          const what=(rec&&rec.t==='offer')?(rec.give.name?`name <b class="green">${esc(rec.give.name)}.csd</b>`:`<b class="amber">${esc(rec.give.ticker)}</b>`):'';
           if(score===0) line=`✕ <span class="what">Cancelled</span> ${rec&&rec.t==='bid'?'a bid':'an offer'} - ${link('/proposal/'+pidHex,short(pidHex,10),'mono')}`;
           else if(conf===1000000&&rec) line=`⇄ <span class="what">Token swap fill</span> - took the offer ${link('/proposal/'+pidHex,short(pidHex,10),'mono')} (${esc(rec.give&&rec.give.amount)} ${esc(rec.give&&rec.give.ticker)} for ${esc(rec.want&&rec.want.amount)} ${esc(rec.want&&rec.want.ticker)}, paid in tokens - no CSD moves)`;
-          else if(rec&&rec.t==='offer'){
-            const what=rec.give.name?`name <b class="green">${esc(rec.give.name)}.csd</b>`:`<b class="amber">${esc(rec.give.ticker)}</b>`;
-            line=`🤝 <span class="what">Bought ${what}</span> for <b>${fmtCSD(paid)}</b> (payment + fill in ONE atomic tx) - offer ${link('/proposal/'+pidHex,short(pidHex,10),'mono')}`;
-          }
+          /* v1.7 open-lane CLAIM (Attest score=SCORE_CLAIM=50, no payment): a free reservation, NOT a purchase.
+             Must NOT read as "Bought … for 0 CSD" — the fill (score=100) comes later. */
+          else if(rec&&rec.t==='offer'&&score===50) line=`📌 <span class="what">Reserved ${what}</span> <span class="muted">(open offer — claimed; the purchase completes after a short reorg-safe wait)</span> - offer ${link('/proposal/'+pidHex,short(pidHex,10),'mono')}`;
+          else if(rec&&rec.t==='offer'&&score===100) line=`🤝 <span class="what">Bought ${what}</span> for <b>${fmtCSD(paid)}</b> (payment + fill in ONE atomic tx) - offer ${link('/proposal/'+pidHex,short(pidHex,10),'mono')}`;
           else line=`⭐ <span class="what">Attested</span> score ${score} on ${link('/proposal/'+pidHex,short(pidHex,10),'mono')}`;
         } else if(prop){
           line=`⭐ <span class="what">Attested</span> score ${score} on ${link('/proposal/'+pidHex,short(pidHex,10),'mono')} in ${link('/domain/'+encodeURIComponent(prop.domain),prop.domain)}`;
@@ -546,7 +547,7 @@ async function addrPage(v,a){
         if(pid){const prop=await j('/proposal/'+pid).catch(()=>null);
           if(prop&&prop.domain==='cairnx:v1'){let rec=null;try{rec=JSON.parse(prop.uri);}catch{}
             const slot=$('#act-'+i);
-            if(slot) slot.innerHTML=nf.tx.app.score===0?'✕ cancelled an offer/bid':(rec&&rec.t==='offer'?`🤝 fill - ${rec.give.name?esc(rec.give.name)+'.csd':esc(rec.give.ticker)}`:'⭐ attested');
+            if(slot){ const sc=nf.tx.app.score, wn=rec&&rec.give?(rec.give.name?esc(rec.give.name)+'.csd':esc(rec.give.ticker)):''; slot.innerHTML = sc===0?'✕ cancelled an offer/bid':(rec&&rec.t==='offer'&&sc===50?`📌 reserved ${wn}`:(rec&&rec.t==='offer'&&sc===100?`🤝 bought ${wn}`:(rec&&rec.t==='offer'?`🤝 fill - ${wn}`:'⭐ attested'))); }
           }}
       } else if(full.coinbase){const slot=$('#act-'+i); if(slot) slot.innerHTML='⛏ block reward';}
       else if(full.app_type==='Transfer'||full.app_type==='None'){const slot=$('#act-'+i); if(slot) slot.innerHTML='💸 CSD transfer';}
