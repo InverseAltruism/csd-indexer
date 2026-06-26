@@ -35,7 +35,7 @@ docker run -p 8793:8793 -v csd-index:/data -e CSD_RPC=http://host.docker.interna
 |---|---|---|
 | `CSD_RPC` | `http://127.0.0.1:8789` | the CSD node to read from |
 | `CSD_INDEX_DB` | `./csd-index.db` | the database file (SQLite; no native build needed) |
-| `CSD_INDEX_PG` | *(unset)* | a Postgres URL — set it to use Postgres instead of SQLite (see below) |
+| `CSD_INDEX_PG` | *(unset)* | a Postgres URL, set it to use Postgres instead of SQLite (see below) |
 | `CSD_INDEX_PG_SCHEMA` | `public` | Postgres schema (namespace) for the tables |
 | `CSD_INDEX_PG_POOL` | `10` | Postgres connection-pool size |
 | `CSD_INDEX_LISTEN` | `127.0.0.1:8793` | where the explorer + API listen |
@@ -54,7 +54,7 @@ index to audit determinism. Its limit is concurrency: `node:sqlite` is synchrono
 query blocks the event loop and concurrent API readers serialize behind each other (and behind
 the block writer). Fine for tens of users; not for hundreds.
 
-**Postgres (the scale path)** moves queries onto a connection pool — reads keep flowing while
+**Postgres (the scale path)** moves queries onto a connection pool, reads keep flowing while
 blocks are written. Cut over by re-indexing from genesis (it's fast; there is deliberately no
 sqlite→pg copy tool, because a fresh replay IS the integrity check):
 
@@ -64,7 +64,7 @@ CSD_INDEX_PG=postgres://user:pass@127.0.0.1:5432/csd_index npx tsx src/cli.ts in
 CSD_INDEX_PG=postgres://user:pass@127.0.0.1:5432/csd_index npm run run-all            # serve
 ```
 
-Both backends produce identical API responses — the test suite runs the same 37 tests against
+Both backends produce identical API responses, the test suite runs the same 37 tests against
 each, and a from-genesis reindex of mainnet matches row-for-row across backends.
 
 ## The API
