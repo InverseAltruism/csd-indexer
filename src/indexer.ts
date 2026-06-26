@@ -17,6 +17,10 @@ import { bus } from "./events.js";
 // DETERMINISTICALLY (NaN/negative → 0, >2^53-1 → 2^53-1): sqlite would store junk as
 // REAL and pg would reject "1e+21" as an int8 param — wedging the sync loop on that
 // block forever. Consensus data (heights, values, time) is NOT clamped — only app JSON.
+// NOTE: clampInt is for app ints the resolver compares against SMALL EXACT ENUMS (score vs
+// SCORE_FILL, confidence vs CONF_TOKEN_FILL) — saturating to 2^53-1 cannot change those branch
+// outcomes, so it cannot fork. A consensus-bound app int that feeds an arithmetic/range comparison
+// (expires_epoch) must use safeValue() instead — saturation there WOULD fork (GRX-WIRE-CLAMP-1).
 function clampInt(v: unknown): number {
   const n = Math.floor(Number(v ?? 0));
   if (!Number.isFinite(n) || n <= 0) return 0;
@@ -34,6 +38,22 @@ function safeValue(v: unknown): bigint {
   if (typeof v === "number") return Number.isFinite(v) && v > 0 ? BigInt(Math.floor(v)) : 0n;
   if (typeof v === "string" && /^[0-9]+$/.test(v.trim())) { try { return BigInt(v.trim()); } catch { return 0n; } }
   return 0n;
+}
+
+// expires_epoch parse for the proposals row. It is a CONSENSUS field (drives offer/bid expiry) AND an
+// attacker-chosen u64. Two failure modes to avoid: (1) clampInt's old bug — saturating >2^53 to a SAFE int
+// (2^53-1) made the indexer-fed resolver (Granus) ACCEPT what an SPV replayer reading the raw u64 REJECTS via
+// Number.isSafeInteger → canonicalState fork (GRX-WIRE-CLAMP-1, un-masked once V22 removes the duration cap);
+// (2) preserving the raw bigint unbounded — a u64 >= 2^63 OVERFLOWS the signed-64-bit BIGINT bind (int64 in
+// sqlite, int8 in pg), throws inside writeBlock, never advances the tip, and re-poisons the block every poll
+// (permanent indexer wedge). The resolver rejects EVERY value > MAX_SAFE_INTEGER regardless of magnitude, so
+// exactness past 2^53 is pointless here: preserve the JS-safe range exactly, and clamp anything above it to a
+// fixed NON-safe sentinel (still > MAX_SAFE_INTEGER → Number() stays non-safe → the fork-guard fires IDENTICALLY
+// on Granus and SPV) that always fits the column. (Unlike safeValue for UTXO output values, which DO feed SUMs.)
+const EXPIRES_EPOCH_SENTINEL = BigInt(Number.MAX_SAFE_INTEGER) + 1n; // 2^53 — smallest non-safe int, well within int64
+function safeEpoch(v: unknown): bigint {
+  const n = safeValue(v);
+  return n > BigInt(Number.MAX_SAFE_INTEGER) ? EXPIRES_EPOCH_SENTINEL : n;
 }
 
 const TIP_KEY = "indexed_height";
@@ -134,8 +154,14 @@ export async function writeBlock(b: rpc.RpcBlock): Promise<void> {
       await d.run(SQL_TX, t.txid, blk.height, pos, kind, signer, fee, time, ins.length, outs.length, isCoinbase ? 1 : 0);
 
       if (kind === "Propose" && t.app) {
+        // expires_epoch via safeEpoch() (see above): preserves the JS-safe range exactly, clamps anything
+        // > MAX_SAFE_INTEGER to a non-safe sentinel that (a) the resolver's isSafeInteger guard rejects
+        // IDENTICALLY on Granus and SPV (no fork, GRX-WIRE-CLAMP-1) and (b) always fits the BIGINT column
+        // (no int64/int8 overflow → no writeBlock throw → no indexer wedge). Behavior-identical for every
+        // real epoch (< 2^53). Must NOT be clampInt (would saturate to a SAFE int → fork) nor an unbounded
+        // bigint (a u64 >= 2^63 would overflow the bind).
         await d.run(SQL_PROP, t.txid, String(t.app.domain ?? ""), String(t.app.payload_hash ?? ""), String(t.app.uri ?? ""),
-          clampInt(t.app.expires_epoch), signer, fee, blk.height, time);
+          safeEpoch(t.app.expires_epoch), signer, fee, blk.height, time);
       } else if (kind === "Attest" && t.app) {
         await d.run(SQL_ATT, t.txid, String(t.app.proposal_id ?? ""), signer, clampInt(t.app.score),
           clampInt(t.app.confidence), fee, blk.height, time);

@@ -246,3 +246,52 @@ test("redteam F2: merkleProof returns the CONSENSUS header root, so a lying node
   // consumer now detects (instead of being handed a self-consistent root that hid the lie).
   assert.ok(verifyMerkleProof(cbD.txid, pL.pos, pL.merkle, merkleRoot([cbC.txid, cbD.txid])), "branch folds to the real tx-list root");
 });
+
+test("GRX-WIRE-CLAMP-1: an over-2^53 consensus expires_epoch is stored as a NON-safe sentinel (fork-guard fires identically on Granus and SPV) AND never overflows the BIGINT bind (no indexer wedge)", async () => {
+  // Two failure modes safeEpoch() must avoid: (1) clampInt's old bug — saturating >2^53 to a SAFE int (2^53-1)
+  // made Granus ACCEPT what an SPV replayer reading the raw u64 REJECTS via Number.isSafeInteger → canonicalState
+  // fork (un-masked once V22 removes the cap); (2) preserving the raw bigint unbounded — a u64 >= 2^63 overflows
+  // the signed-64-bit BIGINT bind, throws in writeBlock, and permanently wedges the indexer. safeEpoch clamps
+  // anything > MAX_SAFE_INTEGER to a non-safe sentinel that the resolver rejects identically AND that fits int64.
+  const big = (1n << 53n) + 1n; // 2^53 + 1 — NOT a JS safe integer
+  const propTxid = txid("clamp-prop");
+  const propose = {
+    txid: propTxid, version: 1, locktime: 0,
+    inputs: [{ prev_txid: txid("clamp-cb"), vout: 0, script_sig: sigFor("02" + "cd".repeat(32)) }],
+    outputs: [{ script_pubkey: spk(ADDR_B), value: 1_000_000 }],
+    app: { type: "Propose", domain: "clamp:domain", payload_hash: "0x" + "33".repeat(32), uri: "csd:v1:clamp", expires_epoch: big.toString() },
+  };
+  await writeBlock(mkBlock(9200, "0x" + "00".repeat(32), [coinbase("clamp-cb", ADDR_A), propose]));
+  const row = (await store().get<{ expires_epoch: number | bigint }>("SELECT expires_epoch FROM proposals WHERE txid=?", propTxid))!;
+  // stored value is > MAX_SAFE_INTEGER (so the fork-guard fires) but NOT the old saturated 2^53-1, and fits int64
+  assert.ok(BigInt(row.expires_epoch) > BigInt(Number.MAX_SAFE_INTEGER), "stored value stays > MAX_SAFE_INTEGER (not saturated to a safe int)");
+  assert.ok(BigInt(row.expires_epoch) <= (1n << 63n) - 1n, "stored value fits a signed-64-bit column (no overflow)");
+  assert.ok(!Number.isSafeInteger(Number(row.expires_epoch)), "Granus read path Number(expires_epoch) is NOT a safe integer → resolver rejects, matching an SPV replayer reading the raw u64 → no fork");
+
+  // V22-IDX-OVERFLOW-1: a raw u64 up to 2^64-1 must NOT overflow the BIGINT bind / throw / wedge the indexer
+  const u64max = (1n << 64n) - 1n; // 18446744073709551615 — would have thrown ERR_INVALID_ARG_VALUE if stored raw
+  const ovTxid = txid("clamp-ov");
+  const ovProp = {
+    txid: ovTxid, version: 1, locktime: 0,
+    inputs: [{ prev_txid: txid("clamp-cb-ov"), vout: 0, script_sig: sigFor("02" + "cf".repeat(32)) }],
+    outputs: [{ script_pubkey: spk(ADDR_B), value: 1_000_000 }],
+    app: { type: "Propose", domain: "clamp:domain", payload_hash: "0x" + "55".repeat(32), uri: "csd:v1:clampov", expires_epoch: u64max.toString() },
+  };
+  await assert.doesNotReject(() => writeBlock(mkBlock(9202, "0x" + "00".repeat(32), [coinbase("clamp-cb-ov", ADDR_A), ovProp])), "a 2^64-1 expires_epoch must not overflow the BIGINT bind (no indexer wedge)");
+  const ovRow = (await store().get<{ expires_epoch: number | bigint }>("SELECT expires_epoch FROM proposals WHERE txid=?", ovTxid))!;
+  assert.ok(BigInt(ovRow.expires_epoch) <= (1n << 63n) - 1n, "2^64-1 clamped to fit int64");
+  assert.ok(!Number.isSafeInteger(Number(ovRow.expires_epoch)), "2^64-1 reads back non-safe → resolver rejects");
+
+  // behavior-preserving control: a normal (<2^53) epoch is unchanged and stays a safe integer (accepted)
+  const okTxid = txid("clamp-ok");
+  const okProp = {
+    txid: okTxid, version: 1, locktime: 0,
+    inputs: [{ prev_txid: txid("clamp-cb2"), vout: 0, script_sig: sigFor("02" + "ce".repeat(32)) }],
+    outputs: [{ script_pubkey: spk(ADDR_B), value: 1_000_000 }],
+    app: { type: "Propose", domain: "clamp:domain", payload_hash: "0x" + "44".repeat(32), uri: "csd:v1:clampok", expires_epoch: 9826 },
+  };
+  await writeBlock(mkBlock(9201, "0x" + "00".repeat(32), [coinbase("clamp-cb2", ADDR_A), okProp]));
+  const okRow = (await store().get<{ expires_epoch: number | bigint }>("SELECT expires_epoch FROM proposals WHERE txid=?", okTxid))!;
+  assert.equal(Number(okRow.expires_epoch), 9826, "a normal epoch is stored unchanged");
+  assert.ok(Number.isSafeInteger(Number(okRow.expires_epoch)), "normal epoch reads back as a safe integer (accepted)");
+});
