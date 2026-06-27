@@ -95,6 +95,12 @@ export function buildApp() {
     return tip < 0 ? res.status(503).json({ error: "index not ready" }) : res.json(tip);
   }));
   app.get("/blocks/tip/hash", h(async (_req, res) => { const b = await q.blockByHeight(await q.tipHeight()); return b ? res.json(b.hash) : nf(res); }));
+  // Recent blocks in ONE call (newest-first) — replaces a client tip→N×(height→hash→block) waterfall.
+  // Backed by the existing q.recentBlocks(); rows carry height/hash/tx_count/time for the explorer feed.
+  app.get("/blocks/recent", h(async (req, res) => {
+    const limit = Math.min(50, Math.max(1, Math.floor(Number(req.query.limit ?? 12)) || 12));
+    res.json(await q.recentBlocks(limit));
+  }));
 
   app.get("/block-height/:h", h(async (req, res) => {
     const b = await q.blockByHeight(Number(req.params.h!));

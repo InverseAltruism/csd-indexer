@@ -25,8 +25,8 @@
   form.search button{background:var(--panel2);border:1px solid var(--line);border-left:0;color:var(--green);padding:0 14px;border-radius:0 6px 6px 0;cursor:pointer;font-family:inherit}
   .stats{display:flex;gap:14px;color:var(--dim2);font-size:12px;flex-wrap:wrap}
   .stats b{color:var(--fg)}
-  main{max-width:1080px;margin:0 auto;padding:18px}
-  .panel{background:linear-gradient(180deg,var(--panel),#080a09);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:16px;position:relative;transition:border-color .15s}
+  main{max-width:1140px;margin:0 auto;padding:22px 20px}
+  .panel{background:linear-gradient(180deg,var(--panel),#080a09);border:1px solid var(--line);border-radius:12px;padding:18px;margin-bottom:18px;position:relative;transition:border-color .15s}
   .panel:hover{border-color:#242a27}
   h2{margin:.2em 0 .6em;font-size:12px;color:var(--amber);font-weight:600;text-transform:uppercase;letter-spacing:1.5px}
   /* chain-pulse hero */
@@ -46,7 +46,7 @@
   .coin .meta{display:flex;gap:14px;margin-top:8px;font-size:12px;color:var(--dim2);flex-wrap:wrap}
   .coin .meta b{color:var(--fg)}
   .bar{height:4px;background:#101513;border-radius:3px;margin-top:10px;overflow:hidden}
-  .bar i{display:block;height:100%;background:linear-gradient(90deg,#2a6,var(--green))}
+  .bar i{display:block;height:100%;background:linear-gradient(90deg,#2a6,var(--green));transition:width .6s ease-out}
   table{width:100%;border-collapse:collapse;font-size:13px}
   th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:280px}
   th{color:var(--dim);font-weight:500}
@@ -66,6 +66,9 @@
   .muted{color:var(--dim);font-size:12px;margin-top:10px}
   .row{display:flex;gap:16px;flex-wrap:wrap}.row>.panel{flex:1;min-width:280px}
   .loading{color:var(--dim);padding:20px;text-align:center}
+  .skel{background:linear-gradient(90deg,#0d0f0e,#16241c,#0d0f0e);background-size:200% 100%;border-radius:6px;height:14px;margin:10px 0;animation:shimmer 1.4s ease-in-out infinite}
+  @keyframes shimmer{to{background-position:-200% 0}}
+  @media (prefers-reduced-motion: reduce){ .dot,.feed-row,.skel{animation:none!important} }
   @media (prefers-reduced-motion: no-preference){
     .panel,.pu,.coin{animation:rise .35s ease-out backwards}
     .panel:nth-child(2){animation-delay:.05s}.panel:nth-child(3){animation-delay:.1s}
@@ -92,6 +95,18 @@
   .cxbal .tk{border:1px solid var(--line);border-radius:8px;padding:6px 12px;font-size:13px}
   .cxbal .tk b{color:var(--amber)}
   .cxbal .nm{border:1px solid #1f4d2e;border-radius:8px;padding:6px 12px;font-size:13px;color:var(--green)}
+  .addrl.hasname{color:var(--green)}
+  .namehdr{display:flex;gap:14px;align-items:center}
+  .navatar{display:inline-grid;place-items:center;width:46px;height:46px;border-radius:12px;border:1px solid var(--line);font-size:20px;font-weight:700;color:#eafff0;flex:none}
+  .tabs{display:flex;gap:6px;margin:2px 0 10px}
+  .tab{background:var(--panel2);border:1px solid var(--line);color:var(--dim2);padding:4px 12px;border-radius:6px;cursor:pointer;font-family:inherit;font-size:12px}
+  .tab.on{color:var(--green);border-color:#1f4d2e;background:#0b1a10}
+  .actrow{display:flex;justify-content:space-between;align-items:center;gap:12px;border-bottom:1px solid var(--line);padding:2px 0}
+  .actrow:last-child{border-bottom:none}
+  .spark{padding:6px 0}
+  .chart-wrap{position:relative}
+  .ch-tip{position:absolute;pointer-events:none;background:#000;border:1px solid var(--green);padding:4px 9px;font-size:11px;color:var(--fg);white-space:nowrap;opacity:0;transform:translate(-50%,-135%);transition:opacity .1s;z-index:6}
+  .tok-search{width:100%;background:var(--panel);border:1px solid var(--line);color:var(--fg);padding:8px 10px;border-radius:6px;font-family:inherit;font-size:14px}
   td.act{max-width:340px}
   /* ── mobile ── */
   @media (max-width:720px){
@@ -114,7 +129,7 @@
 <header>
   <a class="brand" href="#/" title="explorer home"><span class="dot"></span>CSD&nbsp;<b>Explorer</b></a>
   <form class="search" onsubmit="return doSearch(event)">
-    <input id="q" placeholder="search: block height · 0x<txid> · 0x<address> · domain" autocomplete="off"/>
+    <input id="q" aria-label="search the chain" placeholder="search: name.csd · block height · 0x txid · 0x address" autocomplete="off"/>
     <button>↵</button>
   </form>
   <div class="stats" id="stats"><span class="dim">connecting…</span></div>
@@ -159,7 +174,8 @@ const esc = (s)=> String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'
 const short = (s,n=10)=> { s=esc(s); return s? (s.length>2*n? s.slice(0,n)+'…'+s.slice(-6): s):''; };
 // short() is only ever called on hex (txid/hash/addr) so escaping is a no-op there, but it keeps
 // the helper safe-by-default if ever pointed at free-form text.
-const fmtCSD = (v)=> (Number(v)/1e8).toLocaleString(undefined,{maximumFractionDigits:8})+' CSD';
+// BigInt-safe: max_supply (~1.05e16 sats) exceeds 2^53, so divide in BigInt before going to Number
+const fmtCSD = (v)=>{ const s=String(v); const sats=/^\d+$/.test(s)?BigInt(s):BigInt(Math.round(Number(v)||0)); const neg=sats<0n, a=neg?-sats:sats; const whole=a/100000000n, frac=a%100000000n; const fracStr=frac===0n?'':'.'+frac.toString().padStart(8,'0').replace(/0+$/,''); return (neg?'-':'')+Number(whole).toLocaleString()+fracStr+' CSD'; };
 const ago = (t)=>{const s=Math.max(0,Math.floor(Date.now()/1000-t));if(s<60)return s+'s ago';if(s<3600)return (s/60|0)+'m ago';if(s<86400)return (s/3600|0)+'h ago';return (s/86400|0)+'d ago';};
 const j = async(p)=>{const r=await fetch(API+p);if(!r.ok)throw new Error(p+' → '+r.status);return r.json();};
 const txt = async(p)=>{const r=await fetch(API+p);if(!r.ok)throw new Error(p+' → '+r.status);return r.text();};
@@ -186,7 +202,8 @@ window.addEventListener('hashchange',route);
 // warmDecimals()/warmVerdicts() itself, which is where the actual warming happens.)
 async function route(){
   const h=location.hash.slice(1)||'/';
-  const v=$('#view');v.innerHTML='<div class="loading">loading…</div>';
+  document.title = (h==='/'||h==='') ? 'CSD Explorer' : 'CSD Explorer · '+h.slice(1).replace('/',' ');
+  const v=$('#view');v.innerHTML='<div class="panel"><div class="skel" style="width:38%"></div><div class="skel"></div><div class="skel" style="width:72%"></div></div>';
   try{
     if(h==='/'||h==='')          await home(v);
     else if(h.startsWith('/block/'))    await blockPage(v,h.slice(7));
@@ -195,14 +212,19 @@ async function route(){
     else if(h.startsWith('/domain/'))   await domainPage(v,decodeURIComponent(h.slice(8)));
     else if(h.startsWith('/proposal/')) await proposalPage(v,h.slice(10));
     else if(h.startsWith('/token/'))     await tokenPage(v,decodeURIComponent(h.slice(7)));
+    else if(h.startsWith('/name/'))      await namePage(v,decodeURIComponent(h.slice(6)));
     else v.innerHTML='<div class="panel">unknown route</div>';
   }catch(e){v.innerHTML='<div class="panel red">error: '+esc(e.message)+'</div>';}
+  paintNames(v);
 }
 
 function doSearch(e){e.preventDefault();let q=$('#q').value.trim();if(!q)return false;
-  if(/^[0-9]+$/.test(q))location.hash='/block/'+q;            // height
+  const csd=/\.csd$/i.test(q), bare=q.replace(/\.csd$/i,'');
+  if(csd&&/^[a-z0-9][a-z0-9-]{0,30}$/i.test(bare))location.hash='/name/'+bare.toLowerCase();  // explicit name.csd
+  else if(/^[0-9]+$/.test(q))location.hash='/block/'+q;            // bare number → height
   else if(/^0x[0-9a-f]{64}$/i.test(q))location.hash='/tx/'+q.toLowerCase();
   else if(/^0x[0-9a-f]{40}$/i.test(q))location.hash='/address/'+q.toLowerCase();
+  else if(/^[a-z0-9][a-z0-9-]{0,30}$/i.test(q))location.hash='/name/'+q.toLowerCase();         // bare word → .csd name
   else location.hash='/domain/'+encodeURIComponent(q);
   $('#q').value='';return false;}
 
@@ -210,10 +232,103 @@ function doSearch(e){e.preventDefault();let q=$('#q').value.trim();if(!q)return 
 // chain string like a domain). Both go through esc to block attribute/markup breakout.
 const link=(href,label,cls='')=>`<a class="${esc(cls)}" href="#${esc(href)}">${esc(label)}</a>`;
 const txidLink=(t)=>link('/tx/'+t,short(t,10),'mono');
-const addrLink=(a)=>a&&a!=='0x?'?link('/address/'+a,short(a,8),'mono')+(labelOf(a)?`<span class="chip">${esc(labelOf(a))}</span>`:''):'<span class="dim">-</span>';
+// addrLink renders short-hex by default; the `data-name-addr` marker lets paintNames() upgrade it
+// in place to the address's primary .csd name (reverse resolution) once resolved. The curated
+// operational LABELS chip (treasury/faucet/miner/…) is kept alongside any resolved name.
+const addrLink=(a)=>{
+  if(!a||a==='0x?') return '<span class="dim">-</span>';
+  const lbl=labelOf(a);
+  return `<a class="mono addrl" data-name-addr="${esc(a)}" href="#/address/${esc(a)}">${short(a,8)}</a>`+(lbl?`<span class="chip">${esc(lbl)}</span>`:'');
+};
+// ── reverse name resolution (DISPLAY ONLY; front-door only — needs the CairnX sibling proxy) ──
+// addr(lowercase) → primary .csd name | null, batched against /cairnx/primaries (cap 64/req) and
+// memoized for the session. Standalone (no SIB.cairnx) stays hex — graceful degradation. This is a
+// reverse view of nset round-trips; it is never used to route a payment, only to label addresses.
+const NAMECACHE=new Map();
+async function resolveNames(addrs){
+  if(!SIB.cairnx) return;
+  const want=[...new Set((addrs||[]).map(a=>String(a||'').toLowerCase()).filter(a=>/^0x[0-9a-f]{40}$/.test(a)&&!NAMECACHE.has(a)))];
+  for(let i=0;i<want.length;i+=64){
+    const chunk=want.slice(i,i+64);
+    const r=await jx(SIB.cairnx,'/primaries?addrs='+chunk.join(','));
+    const pri=(r&&r.primaries)||{};
+    for(const a of chunk) NAMECACHE.set(a, typeof pri[a]==='string'?pri[a]:null);
+  }
+}
+// Upgrade every not-yet-named addr link under `root` to its primary .csd name, in place.
+async function paintNames(root){
+  if(!SIB.cairnx||!root) return;
+  const els=[...root.querySelectorAll('a.addrl[data-name-addr]:not([data-named])')];
+  if(!els.length) return;
+  await resolveNames(els.map(e=>e.getAttribute('data-name-addr')));
+  for(const e of els){
+    e.setAttribute('data-named','1');
+    const nm=NAMECACHE.get((e.getAttribute('data-name-addr')||'').toLowerCase());
+    if(nm){ e.textContent=nm+'.csd'; e.classList.add('hasname'); e.title=e.getAttribute('data-name-addr'); }
+  }
+}
+// ── .csd name page helpers ──
+// 1 epoch = 30 blocks ≈ 1 hour, so an epoch count reads as hours; roll up to days/months.
+const epochsToHuman=(e)=>{e=Math.max(0,Math.round(e));if(e<48)return e+'h';if(e<24*60)return Math.round(e/24)+'d';return Math.round(e/24/30.4)+'mo';};
+const KIND_LABEL={ncommit:'🔒 sealed a commitment',name:'📛 claimed',nset:'📍 set address',nxfer:'🎁 transferred',nrenew:'♻️ renewed lease',offer:'🏷 listed for sale',ocancel:'✕ cancelled listing',bid:'🙋 bid',claim:'📌 reserved (open offer)',fill:'🤝 bought / sold (fill)',cancel:'✕ cancelled'};
+const kindLabel=(k)=>KIND_LABEL[k]||esc(k||'record');
+// deterministic name-hash colour + initial, so a name has a recognisable "face" (cheap, no deps)
+const nameHue=(s)=>{let h=0;for(let i=0;i<s.length;i++)h=(h*31+s.charCodeAt(i))>>>0;return h%360;};
+const nameAvatar=(label)=>{const hue=nameHue(label);return `<span class="navatar" style="background:linear-gradient(135deg,hsl(${hue} 60% 22%),hsl(${(hue+40)%360} 55% 13%));border-color:hsl(${hue} 60% 42%)">${esc((label[0]||'?').toUpperCase())}</span>`;};
+// tiny inline-SVG sparkline (no deps); values:number[] → responsive <svg> string
+function sparkline(values,{w=240,h=40,stroke='var(--green)',fill=true}={}){
+  const v=values.filter(x=>isFinite(x)); if(v.length<2) return '';
+  const lo=Math.min(...v),hi=Math.max(...v),span=(hi-lo)||1;
+  const pts=v.map((y,i)=>[(i/(v.length-1))*(w-2)+1, h-1-((y-lo)/span)*(h-2)]);
+  const d='M'+pts.map(p=>p[0].toFixed(1)+','+p[1].toFixed(1)).join(' L');
+  const area=fill?`<path d="${d} L${(w-1).toFixed(1)},${h-1} L1,${h-1} Z" fill="${stroke}" opacity=".12"/>`:'';
+  return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" style="display:block;width:100%;height:${h}px">${area}<path d="${d}" fill="none" stroke="${stroke}" stroke-width="1.5" vector-effect="non-scaling-stroke"/></svg>`;
+}
+// deterministic CSD emission curve (50 CSD initial reward, halving every 1,051,200 blocks)
+function emittedAt(H){const HALVE=1051200;let total=0,reward=50e8,h=0;while(h<H&&reward>0){const end=Math.min(H,h+HALVE);total+=(end-h)*reward;h=end;reward=Math.floor(reward/2);}return total;}
+// ── human-readable chain fields ──
+function bitsToTarget(bits){const exp=(bits>>>24)&0xff, mant=BigInt(bits&0xffffff); return exp<=3?(mant>>BigInt(8*(3-exp))):(mant<<BigInt(8*(exp-3)));}
+function difficultyOf(bits){const t=bitsToTarget(bits>>>0); if(t<=0n)return 0; const d1=0xffffn*(2n**208n); return Number(d1*1000n/t)/1000;} // relative to difficulty-1
+function compactNum(n){n=Number(n)||0;const u=['','K','M','G','T','P','E','Z','Y'];let i=0;while(Math.abs(n)>=1000&&i<u.length-1){n/=1000;i++;}return (Math.abs(n)<10?n.toFixed(2):Math.abs(n)<100?n.toFixed(1):Math.round(n))+u[i];}
+const DOMAIN_LABEL={'cairnx:v1':'CairnX · tokens · names · DEX','csd:anchor:base':'Base anchors','csd:bridge:deploy':'Bridge registry'};
+const domainLabel=(d)=>DOMAIN_LABEL[d]||d;
+// interactive SVG chart (line or bars) with hover crosshair + tooltip. pts:[{y,tip}] (tip is HTML and
+// must be pre-escaped by the caller; here all callers pass numeric-only content). opts: kind/h/yfmt/xticks/mark.
+function chart(host,pts,{kind='line',h=130,stroke='var(--green)',yfmt=(v)=>String(v),xticks=[],mark=null,yMax=null,refY=null,refLabel=''}={}){
+  if(!host) return;
+  if(!pts||pts.length<2){host.innerHTML='<div class="muted">not enough data yet</div>';return;}
+  // Use the host's real pixel width as the viewBox width so preserveAspectRatio="none" is 1:1 and does
+  // NOT stretch text/numbers horizontally. (Falls back to 600 if the host isn't measured yet.)
+  const W=Math.max(320,Math.round((host.getBoundingClientRect&&host.getBoundingClientRect().width)||600)),padL=48,padR=10,padT=12,padB=22;
+  const ys=pts.map(p=>p.y),lo=Math.min(0,...ys),hi=(Math.min(yMax==null?Infinity:yMax,Math.max(...ys))||1),span=(hi-lo)||1;
+  const X=(i)=>padL+(i/(pts.length-1))*(W-padL-padR);
+  const Y=(val)=>h-padB-((Math.min(val,hi)-lo)/span)*(h-padT-padB);   // clamp at hi so outliers don't escape the plot
+  let s=`<svg viewBox="0 0 ${W} ${h}" preserveAspectRatio="none" style="width:100%;height:${h}px;display:block" role="img" aria-label="chart">`;
+  for(let g=0;g<=3;g++){const val=lo+span*g/3,y=Y(val);s+=`<line x1="${padL}" y1="${y.toFixed(1)}" x2="${W-padR}" y2="${y.toFixed(1)}" stroke="#1b1f1d"/><text x="${padL-6}" y="${(y+3).toFixed(1)}" text-anchor="end" fill="#6f6f6f" font-size="10">${esc(yfmt(val))}</text>`;}
+  for(const t of xticks){const x=X(t.i);s+=`<text x="${x.toFixed(1)}" y="${h-7}" text-anchor="middle" fill="#6f6f6f" font-size="10">${esc(t.label)}</text>`;}
+  if(kind==='bar'){const bw=Math.max(1,(W-padL-padR)/pts.length*0.7);pts.forEach((p,i)=>{const x=X(i),y=Y(p.y);s+=`<rect x="${(x-bw/2).toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(0,h-padB-y).toFixed(1)}" fill="${stroke}" opacity=".65"/>`;});}
+  else{const d='M'+pts.map((p,i)=>X(i).toFixed(1)+','+Y(p.y).toFixed(1)).join(' L');s+=`<path d="${d} L${X(pts.length-1).toFixed(1)},${h-padB} L${padL},${h-padB} Z" fill="${stroke}" opacity=".1"/><path d="${d}" fill="none" stroke="${stroke}" stroke-width="1.6" vector-effect="non-scaling-stroke"/>`;}
+  if(mark){const x=padL+Math.min(1,Math.max(0,mark.frac))*(W-padL-padR);s+=`<line x1="${x.toFixed(1)}" y1="${padT}" x2="${x.toFixed(1)}" y2="${h-padB}" stroke="#ffd24a" stroke-dasharray="3 2"/><text x="${x.toFixed(1)}" y="${padT+8}" text-anchor="middle" fill="#ffd24a" font-size="9">${esc(mark.label)}</text>`;}
+  if(refY!=null){const y=Y(refY);s+=`<line x1="${padL}" y1="${y.toFixed(1)}" x2="${W-padR}" y2="${y.toFixed(1)}" stroke="#ffd24a" stroke-dasharray="4 3" opacity=".85"/><text x="${(W-padR).toFixed(1)}" y="${(y-3).toFixed(1)}" text-anchor="end" fill="#ffd24a" font-size="9">${esc(refLabel)}</text>`;}
+  s+=`<line class="ch-cross" stroke="${stroke}" stroke-dasharray="2 3" y1="${padT}" y2="${h-padB}" style="opacity:0"/><circle class="ch-dot" r="3" fill="${stroke}" style="opacity:0"/></svg>`;
+  host.innerHTML=`<div class="chart-wrap">${s}<div class="ch-tip"></div></div>`;
+  const svg=host.querySelector('svg'),cross=host.querySelector('.ch-cross'),dot=host.querySelector('.ch-dot'),tip=host.querySelector('.ch-tip');
+  const move=(cx)=>{const r=svg.getBoundingClientRect();
+    // remap the cursor (which spans the full svg incl. left/right padding) onto the PLOT area, so the
+    // crosshair + tooltip land under the cursor instead of offset right by padL's worth.
+    const fracFull=(cx-r.left)/r.width,plotL=padL/W,plotR=(W-padR)/W;
+    const frac=Math.min(1,Math.max(0,(fracFull-plotL)/(plotR-plotL)));const i=Math.round(frac*(pts.length-1));const x=X(i),y=Y(pts[i].y);
+    cross.setAttribute('x1',x);cross.setAttribute('x2',x);cross.style.opacity='1';dot.setAttribute('cx',x);dot.setAttribute('cy',y);dot.style.opacity='1';
+    tip.innerHTML=pts[i].tip;tip.style.left=(x/W*100)+'%';tip.style.top=(y/h*100)+'%';tip.style.opacity='1';};
+  svg.addEventListener('mousemove',e=>move(e.clientX));
+  svg.addEventListener('touchmove',e=>{if(e.touches[0])move(e.touches[0].clientX);},{passive:true});
+  svg.addEventListener('mouseleave',()=>{cross.style.opacity='0';dot.style.opacity='0';tip.style.opacity='0';});
+}
 
 // ── CairnX record → plain English (mirrors cairnx CONVENTION §4/§9-18; display only) ──
-const fmtAmt=(v,dec)=>{try{const n=BigInt(v);const d=BigInt(10)**BigInt(dec||0);const i=n/d,f=n%d;return f?`${i}.${String(f).padStart(Number(dec),'0').replace(/0+$/,'')}`:i.toLocaleString();}catch{return esc(v);}};
+// SECURITY: dec comes from RAW on-chain records (attacker-controlled) on the home activity feed —
+// clamp it so a crafted decimals (e.g. 7_000_000) can't blow up 10**dec / padStart into a DoS.
+const fmtAmt=(v,dec)=>{try{dec=Number(dec)||0;if(dec<0||dec>30)return esc(v);const n=BigInt(v);const d=BigInt(10)**BigInt(dec);const i=n/d,f=n%d;return f?`${i}.${String(f).padStart(dec,'0').replace(/0+$/,'')}`:i.toLocaleString();}catch{return esc(v);}};
 // token decimals, warmed once per session from the resolver (cairn front door only) - action
 // lines show HUMAN amounts when known, labeled base units otherwise (never a silent 10^n shift)
 let DEC=null;
@@ -287,9 +402,14 @@ function flowHtml(tx){
 
 // ── pages ──
 async function home(v){
-  const [health,domains,supply,miners]=await Promise.all([
-    j('/health'),j('/domains'),
-    j('/analytics/supply').catch(()=>null),j('/analytics/miners').catch(()=>null)]);
+  const health=await j('/health').catch(()=>null);
+  if(!health){ v.innerHTML='<div class="panel"><h2>indexer warming up</h2><div class="muted">The indexer is starting or catching up to the chain tip. This page populates as soon as it is ready.</div></div>'; return; }
+  const [domains,supply,miners,rich,cxprops]=await Promise.all([
+    j('/domains').catch(()=>[]),
+    j('/analytics/supply').catch(()=>null),j('/analytics/miners').catch(()=>null),
+    j('/analytics/richlist?limit=8').catch(()=>null),
+    j('/domain/'+encodeURIComponent('cairnx:v1')+'/proposals').catch(()=>[])]);
+  await warmDecimals(); await warmVerdicts();
   const recent=await recentBlocks();
   v.innerHTML='';
 
@@ -304,32 +424,58 @@ async function home(v){
     <div class="pu"><div class="n">${halvDays!=null?'~'+Math.round(halvDays/365*10)/10+' <span class="u">yr</span>':'-'}</div><div class="l">to first halving</div></div>
   </div>`));
 
-  // ── coins on this chain: native CSD + every CairnX token (humanly readable) ──
-  const coinsPanel=el(`<div class="panel"><h2>the CSD economy: native coin & on-chain tokens</h2><div class="coins" id="coins"></div>
-    <div class="muted" id="coins-note"></div></div>`);
-  v.appendChild(coinsPanel);
-  const coins=$('#coins',coinsPanel);
-  coins.appendChild(el(`<div class="coin"><span class="tk">CSD</span><span class="nm">the native coin - secures the chain (PoW)</span>
-    <div class="meta"><span>circulating <b>${supply?fmtCSD(supply.emitted_supply):'-'}</b></span>
-    <span>max <b>${supply?fmtCSD(supply.max_supply):'-'}</b></span>
-    <span>block reward <b>${supply?fmtCSD(supply.block_reward):'-'}</b></span></div>
-    <div class="bar"><i style="width:${supply?Math.max(1,supply.pct_emitted):0}%"></i></div></div>`));
+  // ── Section: CSD, the native coin (+ emission-schedule chart) ──
+  const csdPanel=el(`<div class="panel"><h2>CSD <span class="pill">the native coin</span></h2>
+    <div style="display:flex;gap:20px;flex-wrap:wrap;font-size:13px;color:var(--dim2);margin-bottom:10px">
+      <span>circulating <b style="color:var(--fg)">${supply?fmtCSD(supply.emitted_supply):'-'}</b></span>
+      <span>max supply <b style="color:var(--fg)">${supply?fmtCSD(supply.max_supply):'-'}</b></span>
+      <span>block reward <b style="color:var(--fg)">${supply?fmtCSD(supply.block_reward):'-'}</b></span>
+      <span>emitted <b class="green">${supply?supply.pct_emitted.toFixed(2)+'%':'-'}</b></span></div>
+    <div class="bar" style="height:6px"><i style="width:${supply?Math.max(1,supply.pct_emitted):0}%"></i></div>
+    <div class="muted" style="margin:16px 0 6px">emission schedule: 50 CSD/block, halving every 1,051,200 blocks (~4 years), secured by SHA-NI proof-of-work</div>
+    <div id="emchart"></div></div>`);
+  v.appendChild(csdPanel);
+  (()=>{ const genesisTime=recent.length?recent[recent.length-1].time-recent[recent.length-1].height*120:(Date.now()/1000-(health.indexed_height||0)*120);
+    const HALVE=1051200,maxH=8*HALVE,N=44;
+    const pts=Array.from({length:N},(_,k)=>{const hh=Math.round(k/(N-1)*maxH);const csd=emittedAt(hh)/1e8;const yr=new Date((genesisTime+hh*120)*1000).getUTCFullYear();return{y:csd,tip:`<b>${yr}</b> · ${compactNum(csd)} CSD emitted`};});
+    const xticks=[0,1,2,3,4].map(k=>{const hh=k*2*HALVE,i=Math.round(hh/maxH*(N-1));return{i,label:String(new Date((genesisTime+hh*120)*1000).getUTCFullYear())};});
+    chart($('#emchart',csdPanel),pts,{kind:'line',h:150,yfmt:(val)=>compactNum(val),xticks,mark:{frac:(health.indexed_height||0)/maxH,label:'now'}});
+  })();
+
+  // ── Section: tokens on CairnX (top 3 highlighted + searchable/collapsible full list) ──
+  const tokPanel=el(`<div class="panel"><h2>tokens on CairnX <span class="pill" id="tok-count"></span></h2>
+    <div id="tok-top" class="coins"></div>
+    <button class="tab" id="tok-toggle" style="display:none;margin-top:12px"></button>
+    <div id="tok-rest-wrap" style="display:none;margin-top:10px">
+      <input id="tok-search" class="tok-search" aria-label="search tokens" placeholder="search tokens by ticker or name…" autocomplete="off"/>
+      <div id="tok-rest" class="scroll-x" style="margin-top:8px"></div></div>
+    <div class="muted" id="tok-note" style="margin-top:12px"></div></div>`);
+  v.appendChild(tokPanel);
   (async()=>{
     const toks=await jx(SIB.cairnx,'/tokens');
-    if(!toks){$('#coins-note',coinsPanel).innerHTML='CairnX tokens render on the <a href="https://cairn-substrate.com/explorer">cairn front door</a> (this standalone view has no token resolver).';return;}
+    if(!toks){$('#tok-note',tokPanel).innerHTML='CairnX tokens render on the <a href="https://cairn-substrate.com/explorer">cairn front door</a> (this standalone view has no token resolver).';return;}
     const names=await jx(SIB.cairnx,'/names');
-    for(const t of toks){
-      const pct=Number(t.supply)>0?Number(BigInt(t.minted)*100n/BigInt(t.supply)):0;
-      coins.appendChild(el(`<a class="coin" href="#/token/${esc(t.ticker)}"><span class="tk">${esc(t.ticker)}</span><span class="nm">${esc(t.name||'CairnX token')} - ${t.mint==='issuer'?'fixed supply (issuer-mint)':'open mint'}</span>
+    $('#tok-count',tokPanel).textContent=`${toks.length} listed`;
+    const tokCard=(t)=>{const pct=Number(t.supply)>0?Number(BigInt(t.minted)*100n/BigInt(t.supply)):0;
+      return `<a class="coin" href="#/token/${esc(t.ticker)}"><span class="tk">${esc(t.ticker)}</span><span class="nm">${esc(t.name||'CairnX token')} - ${t.mint==='issuer'?'fixed supply':'open mint'}</span>
         <div class="meta"><span>minted <b>${fmtAmt(t.minted,t.decimals)}</b></span><span>max <b>${fmtAmt(t.supply,t.decimals)}</b></span></div>
-        <div class="bar"><i style="width:${Math.max(2,pct)}%"></i></div></a>`));
+        <div class="bar"><i style="width:${Math.max(2,pct)}%"></i></div></a>`;};
+    $('#tok-top',tokPanel).innerHTML=toks.slice(0,3).map(tokCard).join('');
+    const rest=toks.slice(3);
+    if(rest.length){
+      const wrap=$('#tok-rest-wrap',tokPanel),toggle=$('#tok-toggle',tokPanel);
+      toggle.style.display=''; toggle.textContent=`▸ browse all ${toks.length} tokens`;
+      toggle.onclick=()=>{const open=wrap.style.display!=='none';wrap.style.display=open?'none':'';toggle.textContent=(open?'▸ browse all ':'▾ hide ')+`${toks.length} tokens`;if(!open)$('#tok-search',tokPanel).focus();};
+      const renderRest=(q)=>{const f=rest.filter(t=>!q||t.ticker.toLowerCase().includes(q)||String(t.name||'').toLowerCase().includes(q));
+        $('#tok-rest',tokPanel).innerHTML=`<table><thead><tr><th>token</th><th>name</th><th class="opt">minted</th></tr></thead><tbody>${f.slice(0,300).map(t=>`<tr><td>${link('/token/'+encodeURIComponent(t.ticker),t.ticker,'amber')}</td><td class="dim">${esc(t.name||'')}</td><td class="opt">${fmtAmt(t.minted,t.decimals)}</td></tr>`).join('')||'<tr><td colspan="3" class="dim">no matches</td></tr>'}</tbody></table>`;};
+      renderRest(''); $('#tok-search',tokPanel).addEventListener('input',(e)=>renderRest(e.target.value.trim().toLowerCase()));
     }
-    $('#coins-note',coinsPanel).innerHTML=`Every token above is <b>CairnX</b> - Compute Substrate's first token standard: records carried inside ordinary chain transactions (the Ordinals/Runes class, but with atomic delivery-versus-payment built into consensus), no contracts, no custodian, state recomputable by anyone. ${names?`<b>${names.length}</b> <span class=\"green\">.csd</span> names registered. `:''}Trade at <a href="https://cairn-substrate.com/trade" target="_blank">/trade</a> · build on it: <a href="https://cairn-substrate.com/docs" target="_blank">docs</a> + the <span class="mono">@inversealtruism/cairnx-core</span> package.`;
+    $('#tok-note',tokPanel).innerHTML=`Every token is <b>CairnX</b> - records carried inside ordinary chain transactions (the Ordinals/Runes class, with atomic delivery-versus-payment built into consensus). ${names?`<b>${names.length}</b> <span class="green">.csd</span> names registered. `:''}Trade at <a href="https://cairn-substrate.com/trade" target="_blank">/trade</a> · <a href="https://cairn-substrate.com/docs" target="_blank">docs</a>.`;
   })();
 
   v.appendChild(el(`<div class="row">
     <div class="panel"><h2>app activity (on-chain domains)</h2><div class="scroll-x"><table><thead><tr><th>domain</th><th>proposals</th></tr></thead>
-      <tbody>${domains.slice(0,8).map(d=>`<tr><td>${link('/domain/'+encodeURIComponent(d.domain),d.domain)}</td><td>${d.proposals}</td></tr>`).join('')}</tbody></table></div></div>
+      <tbody>${domains.slice(0,8).map(d=>`<tr><td>${link('/domain/'+encodeURIComponent(d.domain),domainLabel(d.domain))}</td><td>${d.proposals}</td></tr>`).join('')}</tbody></table></div></div>
     <div class="panel"><h2>chain records</h2><div class="kv">
       <div>blocks indexed</div><div class="v">${health.blocks.toLocaleString()}</div>
       <div>transactions</div><div class="v">${health.txs.toLocaleString()}</div>
@@ -339,11 +485,53 @@ async function home(v){
     </div></div>
   </div>`));
   const feed=el(`<div class="panel"><h2>latest blocks <span class="pill" id="livepill">● live</span></h2>
-    <div class="scroll-x"><table><thead><tr><th>height</th><th>hash</th><th>txs</th><th>time</th></tr></thead><tbody id="blkfeed"></tbody></table></div></div>`);
+    <div class="scroll-x"><table><thead><tr><th>height</th><th>hash</th><th>txs</th><th>time</th></tr></thead><tbody id="blkfeed" aria-live="polite"></tbody></table></div></div>`);
   v.appendChild(feed);
   const tb=$('#blkfeed',feed);
   recent.forEach(b=>tb.appendChild(blockRow(b)));
   subscribeBlocks(tb);
+
+  // ── recent CairnX activity (names + DEX), decoded — All / Names / DEX ──
+  const NAME_KINDS=new Set(['name','nset','nxfer','nrenew','ncommit']);
+  // /domain/:d/proposals is already newest-first (DESC by height) — do NOT reverse
+  const acts=(cxprops||[]).map(p=>{ let rec=null; try{rec=JSON.parse(p.uri);}catch{}
+      const html=describeDomainRecord('cairnx:v1',p.uri,VER&&VER[p.txid.toLowerCase()]); return html?{p,html,name:!!(rec&&NAME_KINDS.has(rec.t))}:null; })
+    .filter(Boolean);
+  if(acts.length){
+    const act=el(`<div class="panel"><h2>recent CairnX activity</h2>
+      <div class="tabs"><button class="tab on" data-f="all">all</button><button class="tab" data-f="name">names</button><button class="tab" data-f="dex">DEX</button></div>
+      <div id="actfeed"></div></div>`);
+    v.appendChild(act);
+    const render=(f)=>{ const list=acts.filter(a=>f==='all'||(f==='name'?a.name:!a.name)).slice(0,18);
+      $('#actfeed',act).innerHTML=list.length?list.map(a=>`<div class="actrow"><div class="action" style="padding:5px 0">${a.html}</div><a class="dim mono" href="#/tx/${esc(a.p.txid)}">${short(a.p.txid,6)}</a></div>`).join(''):'<div class="muted">nothing here yet</div>';
+      paintNames($('#actfeed',act)); };
+    act.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{act.querySelectorAll('.tab').forEach(x=>x.classList.toggle('on',x===b));render(b.dataset.f);});
+    render('all');
+  }
+
+  // ── miners (24h) + top holders ──
+  v.appendChild(el(`<div class="row">
+    <div class="panel"><h2>miners (24h)${miners&&miners.concentration?` <span class="pill" title="Herfindahl-Hirschman index of block share, lower = more decentralised">HHI ${Math.round(miners.concentration.hhi*10000)}</span>`:''}</h2>
+      <div class="scroll-x"><table><thead><tr><th>#</th><th>miner</th><th>blocks</th><th class="opt">share</th></tr></thead><tbody>${
+        ((miners&&miners.miners)||[]).slice(0,5).map((m,i)=>`<tr><td class="dim">${i+1}</td><td>${addrLink(m.addr)}</td><td>${m.blocks}</td><td class="opt dim">${(m.share*100).toFixed(1)}%</td></tr>`).join('')||'<tr><td colspan="4" class="dim">no recent miners</td></tr>'}</tbody></table></div></div>
+    <div class="panel"><h2>top holders</h2>
+      <div class="scroll-x"><table><thead><tr><th>#</th><th>address</th><th>balance</th><th class="opt">share</th></tr></thead><tbody>${
+        ((rich&&rich.holders)||[]).slice(0,5).map(hh=>`<tr><td class="dim">${hh.rank}</td><td>${addrLink(hh.addr)}</td><td>${fmtCSD(hh.balance)}</td><td class="opt dim">${(hh.pct_of_emitted).toFixed(2)}%</td></tr>`).join('')||'<tr><td colspan="4" class="dim">indexing…</td></tr>'}</tbody></table></div></div>
+  </div>`));
+
+  // ── block times: interactive chart over the last ~30 blocks (hover → seconds) ──
+  (async()=>{
+    const cb=(await j('/blocks/recent?limit=31').catch(()=>null))||recent;   // newest-first
+    const iv=[]; for(let i=0;i<cb.length-1;i++){ if(cb[i].time&&cb[i+1].time) iv.push({h:cb[i].height,dt:Math.max(0,cb[i].time-cb[i+1].time)}); }
+    iv.reverse();   // oldest → newest, left → right
+    if(iv.length<2) return;
+    const avg=Math.round(iv.reduce((a,b)=>a+b.dt,0)/iv.length);
+    const btPanel=el(`<div class="panel"><h2>block times <span class="pill">last ${iv.length} blocks</span></h2><div id="btchart"></div>
+      <div class="muted">seconds between consecutive blocks · target ~120s · avg <b>${avg}s</b> · hover a bar for the block + interval</div></div>`);
+    v.appendChild(btPanel);
+    chart($('#btchart',btPanel), iv.map(x=>({y:x.dt,tip:`block <b>${x.h.toLocaleString()}</b> · <b>${x.dt}s</b>`})), {kind:'bar',h:150,yfmt:(val)=>Math.round(val)+'s',refY:120,refLabel:'target 120s',yMax:Math.max(240,2*avg)});
+  })();
+  paintNames(v);
 }
 
 // ── token page: one CairnX coin, humanly ──
@@ -374,16 +562,20 @@ async function tokenPage(v,ticker){
 }
 function blockRow(b,live){
   return el(`<tr class="${live?'feed-row':''}"><td>${link('/block/'+b.height,b.height)}</td>
-    <td>${link('/block/'+b.hash,short(b.hash,12),'mono')}</td><td>${b.tx_count}</td><td class="dim">${b.time?ago(b.time):''}</td></tr>`);
+    <td>${link('/block/'+b.hash,short(b.hash,12),'mono')}</td><td>${b.tx_count}</td><td class="dim" data-ts="${b.time||''}">${b.time?ago(b.time):''}</td></tr>`);
 }
 async function recentBlocks(){
+  // one round-trip (newest-first) instead of a tip→N×(height→hash→block) waterfall
+  try{ const r=await j('/blocks/recent?limit=12'); if(Array.isArray(r)) return r; }catch{}
+  // fallback for an indexer without /blocks/recent (older deploy / different host)
   const tip=await j('/blocks/tip/height');const out=[];
   for(let h=tip;h>tip-12&&h>=0;h--){const hash=await j('/block-height/'+h).catch(()=>null);if(!hash)continue;out.push(await j('/block/'+hash));}
   return out;
 }
 function subscribeBlocks(tb){
   try{const es=new EventSource(API+'/stream/blocks');
-    es.addEventListener('block',ev=>{const b=JSON.parse(ev.data);const r=blockRow({height:b.height,hash:b.hash,tx_count:b.tx_count,time:Math.floor(Date.now()/1000)},true);tb.prepend(r);while(tb.children.length>14)tb.lastChild.remove();});
+    es.addEventListener('block',ev=>{const b=JSON.parse(ev.data);const r=blockRow({height:b.height,hash:b.hash,tx_count:b.tx_count,time:Math.floor(Date.now()/1000)},true);tb.prepend(r);while(tb.children.length>14)tb.lastChild.remove();
+      const hn=$('.pu.hot .n'); if(hn) hn.textContent=Number(b.height).toLocaleString();});  // keep the hero height live with the feed
     es.addEventListener('reorg',ev=>{const d=JSON.parse(ev.data);const p=$('#livepill');if(p){p.textContent='⟲ reorg @'+d.ancestor;p.classList.add('red');}});
   }catch{}
 }
@@ -397,10 +589,10 @@ async function blockPage(v,id){
     <div>prev</div><div class="v">${b.prev?link('/block/'+b.prev,b.prev,'mono'):'-'}</div>
     <div>merkle root</div><div class="v mono dim">${esc(b.merkle)}</div>
     <div>time</div><div class="v">${new Date(b.time*1000).toISOString()} <span class="dim">(${ago(b.time)})</span></div>
-    <div>bits</div><div class="v">0x${(b.bits>>>0).toString(16)}</div>
+    <div>difficulty</div><div class="v">${compactNum(difficultyOf(b.bits))} <span class="dim">· bits 0x${(b.bits>>>0).toString(16)}</span></div>
     <div>nonce</div><div class="v">${b.nonce}</div>
     <div>transactions</div><div class="v">${b.tx_count}</div>
-    <div>chainwork</div><div class="v dim">${esc(b.chainwork)}</div>
+    <div>chainwork</div><div class="v">${compactNum(b.chainwork)}H <span class="dim">cumulative work</span></div>
   </div></div>`));
   v.appendChild(el(`<div class="panel"><h2>transactions (${txids.length})</h2><table><thead><tr><th>#</th><th>txid</th></tr></thead>
     <tbody>${txids.map((t,i)=>`<tr><td class="dim">${i}</td><td>${txidLink(t)}</td></tr>`).join('')}</tbody></table></div>`));
@@ -439,7 +631,7 @@ async function txPage(v,id){
           const paid=(tx.outputs||[]).filter(o=>(o.addr||'').toLowerCase()!==me).reduce((s,o)=>s+o.value,0);
           const what=(rec&&rec.t==='offer')?(rec.give.name?`name <b class="green">${esc(rec.give.name)}.csd</b>`:`<b class="amber">${esc(rec.give.ticker)}</b>`):'';
           if(score===0) line=`✕ <span class="what">Cancelled</span> ${rec&&rec.t==='bid'?'a bid':'an offer'} - ${link('/proposal/'+pidHex,short(pidHex,10),'mono')}`;
-          else if(conf===1000000&&rec) line=`⇄ <span class="what">Token swap fill</span> - took the offer ${link('/proposal/'+pidHex,short(pidHex,10),'mono')} (${esc(rec.give&&rec.give.amount)} ${esc(rec.give&&rec.give.ticker)} for ${esc(rec.want&&rec.want.amount)} ${esc(rec.want&&rec.want.ticker)}, paid in tokens - no CSD moves)`;
+          else if(conf===1000000&&rec) line=`⇄ <span class="what">Token swap fill</span> - took the offer ${link('/proposal/'+pidHex,short(pidHex,10),'mono')} (${amt(rec.give&&rec.give.amount,rec.give&&rec.give.ticker)} ${esc(rec.give&&rec.give.ticker)} for ${amt(rec.want&&rec.want.amount,rec.want&&rec.want.ticker)} ${esc(rec.want&&rec.want.ticker)}, paid in tokens - no CSD moves)`;
           /* v1.7 open-lane CLAIM (Attest score=SCORE_CLAIM=50, no payment): a free reservation, NOT a purchase.
              Must NOT read as "Bought … for 0 CSD" — the fill (score=100) comes later. */
           else if(rec&&rec.t==='offer'&&score===50) line=`📌 <span class="what">Reserved ${what}</span> <span class="muted">(open offer — claimed; the purchase completes after a short reorg-safe wait)</span> - offer ${link('/proposal/'+pidHex,short(pidHex,10),'mono')}`;
@@ -456,6 +648,7 @@ async function txPage(v,id){
       line=`💸 <span class="what">${addrLink(tx.signer)} sent CSD</span>${outs.length===1?` to ${addrLink(outs[0].addr)}`:` to ${outs.length} recipients`}`;
     }
     slot.innerHTML=line||'<span class="dim">a plain chain transaction</span>';
+    paintNames(human);
   })();
 
   v.appendChild(el(`<div class="panel"><h2>transaction ${typeBadge} <span id="inclbadge" class="badge pend">verifying inclusion…</span></h2>
@@ -551,10 +744,51 @@ async function addrPage(v,a){
           }}
       } else if(full.coinbase){const slot=$('#act-'+i); if(slot) slot.innerHTML='⛏ block reward';}
       else if(full.app_type==='Transfer'||full.app_type==='None'){const slot=$('#act-'+i); if(slot) slot.innerHTML='💸 CSD transfer';}
+      paintNames($('#act-'+i));
     }catch{}
   });
 }
 
+// ── .csd name profile page (the name-service centerpiece) — front-door only ──
+async function namePage(v,label){
+  label=String(label||'').toLowerCase().replace(/\.csd$/,'');
+  if(!SIB.cairnx){ v.innerHTML='<div class="panel"><h2>name</h2><div class="muted">.csd name pages need the cairn front door (cairn-substrate.com/explorer). This standalone view has no name resolver.</div></div>'; return; }
+  const n=await jx(SIB.cairnx,'/name/'+encodeURIComponent(label));
+  v.innerHTML='';
+  if(!n||n.ok===false){
+    v.appendChild(el(`<div class="panel namehdr"><div>${nameAvatar(label)}</div>
+      <div><h2 style="font-size:20px;margin:0;color:var(--fg)">${esc(label)}<span class="dim">.csd</span></h2>
+      <div class="muted">not registered. <a href="https://cairn-substrate.com/names" target="_blank" rel="noopener">register it ↗</a></div></div></div>`));
+    return;
+  }
+  const owner=n.owner, target=n.addr||n.owner, via=n.addr?'address record (nset)':'owner (no record set)';
+  const isPrimary=n.addr&&owner&&n.addr.toLowerCase()===owner.toLowerCase();
+  const L=n.lease||{};
+  const leaseLine = !L.leased ? '<span class="dim">no lease (legacy registration)</span>'
+    : L.lapsed ? '<span class="red">lapsed</span> · in recapture window'
+    : L.inGrace ? `<span class="amber">in grace</span> · ~${epochsToHuman(L.graceEpochsLeft)} to recapture`
+    : `<span class="green">active</span> · ~${epochsToHuman(L.epochsLeft)} remaining`;
+  v.appendChild(el(`<div class="panel namehdr"><div>${nameAvatar(label)}</div>
+    <div><h2 style="font-size:20px;margin:0;color:var(--green)">${esc(label)}<span class="dim">.csd</span>${isPrimary?' <span class="badge ok">★ primary</span>':''}</h2>
+      <div class="muted">${n.locked?'<span class="amber">locked in an open offer</span>':'a .csd name on Compute Substrate'}${n.viaFill?' · acquired via a marketplace fill':''}</div></div></div>`));
+  v.appendChild(el(`<div class="panel"><h2>record</h2><div class="kv">
+    <div>owner</div><div class="v">${addrLink(owner)}</div>
+    <div>resolves to</div><div class="v">${addrLink(target)} <span class="dim">(${via})</span></div>
+    <div>lease</div><div class="v">${leaseLine}</div>
+    <div>claimed</div><div class="v">${link('/block/'+n.height,n.height)} <span class="dim">· effective h${n.effectiveHeight}</span></div>
+  </div></div>`));
+  const prof=n.profile||{}, pk=Object.keys(prof).filter(k=>prof[k]);
+  if(pk.length) v.appendChild(el(`<div class="panel"><h2>profile</h2><div class="kv">${pk.map(k=>`<div>${esc(k)}</div><div class="v">${esc(String(prof[k]))}</div>`).join('')}</div></div>`));
+  if(n.offer){ const o=n.offer, price=o.want&&o.want.value!=null?fmtCSD(o.want.value):(o.want?`${esc(o.want.amount)} ${esc(o.want.ticker)}`:'—');
+    v.appendChild(el(`<div class="panel"><h2>for sale</h2><div class="action">🏷 <span class="what">Listed for <b>${price}</b></span>${o.taker?' · reserved (RFQ)':' · open offer'}</div>
+      <div class="muted">Buy at <a href="https://cairn-substrate.com/names" target="_blank" rel="noopener">/names ↗</a></div></div>`));
+  }
+  const hist=await jx(SIB.cairnx,'/name-history/'+encodeURIComponent(label));
+  const evs=((hist&&hist.events)||[]).slice().reverse();
+  if(evs.length) v.appendChild(el(`<div class="panel"><h2>history (${evs.length})</h2><div class="scroll-x"><table><thead><tr><th>action</th><th>tx</th><th class="opt">block</th></tr></thead>
+    <tbody>${evs.slice(0,40).map(ev=>`<tr><td>${kindLabel(ev.kind)}</td><td>${txidLink(ev.txid)}</td><td class="opt">${ev.height?link('/block/'+ev.height,ev.height):''}</td></tr>`).join('')}</tbody></table></div></div>`));
+  paintNames(v);
+}
 async function domainPage(v,d){
   await warmDecimals(); await warmVerdicts();
   const props=await j('/domain/'+encodeURIComponent(d)+'/proposals');
@@ -579,7 +813,7 @@ async function proposalPage(v,id){
     <div>uri</div><div class="v dim">${p.uri?esc(p.uri):'-'}</div>
     <div>proposer</div><div class="v">${addrLink(p.proposer)}</div>
     <div>fee</div><div class="v">${fmtCSD(p.fee)}</div>
-    <div>expires epoch</div><div class="v">${p.expires_epoch}</div>
+    <div>expires</div><div class="v">epoch ${p.expires_epoch} <span class="dim">(~block ${(Number(p.expires_epoch)*30).toLocaleString()})</span></div>
     <div>attestations</div><div class="v">${p.attestation_count}</div>
   </div></div>`));
   v.appendChild(el(`<div class="panel"><h2>attestations (${(p.attestations||[]).length}) <span class="pill">per-attester - not on-chain aggregate</span></h2>
@@ -597,10 +831,15 @@ async function proposalPage(v,id){
 // ── header stats + live ──
 async function refreshStats(){
   try{const h=await j('/health');
-    $('#stats').innerHTML=`<span>height <b>${h.indexed_height.toLocaleString()}</b></span><span>txs <b>${h.txs.toLocaleString()}</b></span><span>proposals <b>${h.proposals}</b></span><span class="green">● indexing</span>`;
+    const ss=h.seconds_since_tip, fresh=!h.stale&&(ss==null||ss<180);
+    const behind=ss==null?'syncing':ss<60?ss+'s':ss<3600?Math.floor(ss/60)+'m':Math.floor(ss/3600)+'h';
+    const dot=fresh?'<span class="green" title="indexer is at the chain tip">● live</span>':`<span class="amber" title="indexer is behind the chain tip">● ${behind} behind</span>`;
+    $('#stats').innerHTML=`<span>height <b>${h.indexed_height.toLocaleString()}</b></span><span>txs <b>${h.txs.toLocaleString()}</b></span><span>proposals <b>${h.proposals}</b></span>${dot}`;
   }catch{$('#stats').innerHTML='<span class="red">● indexer offline</span>';}
 }
-refreshStats();setInterval(refreshStats,15000);route();
+refreshStats();setInterval(refreshStats,15000);
+setInterval(()=>document.querySelectorAll('[data-ts]').forEach(e=>{const t=+e.getAttribute('data-ts'); if(t)e.textContent=ago(t);}),10000);  // tick relative times
+route();
 </script>
 </body>
 </html>
