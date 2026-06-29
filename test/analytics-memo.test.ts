@@ -25,7 +25,7 @@ const REWARD = 5_000_000_000;
 
 async function addBlock(h: number): Promise<void> {
   const s = store();
-  await s.run(SQL_BLOCK, h, id(1000 + h), id(999 + h), id(2000 + h), 1_700_000_000 + h * 120, 0x1e00ffff, h, 1, String(h * 1000));
+  await s.run(SQL_BLOCK, h, id(1000 + h), id(999 + h), id(2000 + h), 1_700_000_000 + h * 120, 0x1e00ffff, h, 1, 1, String(h * 1000));
   const cb = id(10_000 + h);
   await s.run(SQL_TX, cb, h, 0, "Coinbase", A, 0, 1_700_000_000 + h * 120, 1, 1, 1);
   await s.run(SQL_OUT, cb, 0, A, REWARD, h, null, null);
