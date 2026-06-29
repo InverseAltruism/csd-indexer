@@ -33,10 +33,20 @@ function clampInt(v: unknown): number {
 // the node's string/number as a BigInt, return a bigint when past 2^53 (the store binds bigint
 // to the BIGINT column and reads it back exact, both backends), a number when it fits. A
 // malformed (fractional / NaN / negative) value still degrades to 0n — never a lossy REAL.
+//
+// Upper clamp (parity with safeEpoch's clamp): the value column is signed-64-bit (sqlite int64 /
+// pg int8). A value >= 2^63 throws on bind inside writeBlock, the tx rolls back, the tip never
+// advances, and the same block re-poisons every poll = a PERMANENT indexer wedge. No consensus-
+// valid output can reach this (max supply ~1.05e16 is ~877x below 2^63), so the clamp is pure
+// defense-in-depth against a buggy/hostile node and is byte-identical for every real value. We
+// clamp (not drop) so a bogus value still INGESTS rather than wedging — staying live is the job;
+// the only cost is one impossible row's SUM contribution, which can never legitimately occur.
+const VALUE_BIND_MAX = (1n << 63n) - 1n;   // signed-int64 ceiling — the most the value column can bind
+function clampValue(n: bigint): bigint { return n > VALUE_BIND_MAX ? VALUE_BIND_MAX : n; }   // n is already >= 0n
 function safeValue(v: unknown): bigint {
-  if (typeof v === "bigint") return v >= 0n ? v : 0n;
-  if (typeof v === "number") return Number.isFinite(v) && v > 0 ? BigInt(Math.floor(v)) : 0n;
-  if (typeof v === "string" && /^[0-9]+$/.test(v.trim())) { try { return BigInt(v.trim()); } catch { return 0n; } }
+  if (typeof v === "bigint") return v >= 0n ? clampValue(v) : 0n;
+  if (typeof v === "number") return Number.isFinite(v) && v > 0 ? clampValue(BigInt(Math.floor(v))) : 0n;
+  if (typeof v === "string" && /^[0-9]+$/.test(v.trim())) { try { return clampValue(BigInt(v.trim())); } catch { return 0n; } }
   return 0n;
 }
 
@@ -149,7 +159,12 @@ export async function writeBlock(b: rpc.RpcBlock): Promise<void> {
         await d.run(SQL_OUT, t.txid, vout, addr, val, blk.height);
         if (addr) await d.run(SQL_HIST, addr, t.txid, blk.height, pos, "in", val);
       }
-      const fee = isCoinbase ? 0n : (sumIn > sumOut ? sumIn - sumOut : 0n);
+      // clampValue for the same anti-wedge reason as the output values: fee binds to the BIGINT columns
+      // (SQL_TX/SQL_PROP/SQL_ATT). fee = sumIn - sumOut and the inputs are clampValue'd outputs, so a
+      // hostile node feeding two near-int64-max outputs spent together could otherwise push fee >= 2^63
+      // and wedge the bind. Unreachable on a consensus-valid chain (fee << total supply); byte-identical
+      // for every real fee. This closes the sibling bind the output clamp would otherwise widen.
+      const fee = clampValue(isCoinbase ? 0n : (sumIn > sumOut ? sumIn - sumOut : 0n));
       const kind = appType(t, isCoinbase);
       await d.run(SQL_TX, t.txid, blk.height, pos, kind, signer, fee, time, ins.length, outs.length, isCoinbase ? 1 : 0);
 

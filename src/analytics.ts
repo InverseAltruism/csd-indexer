@@ -11,6 +11,13 @@ import { store } from "./db.js";
 // nominal blocks per window at the 120s target (heights, not wall-time — deterministic)
 const WINDOWS: Record<string, number> = { "1d": 720, "7d": 5040, "30d": 21600 };
 
+// Canonicalize the public args BEFORE they reach the memo cache key (below), so an attacker varying
+// ?window / ?limit cannot defeat the per-tip dedup or grow the cache one entry per distinct value:
+// every unknown window collapses to "all" (minersImpl already treats unknown as all-time), and limit
+// clamps to the same [1,500] range richlistImpl uses. Bounds the cache to 4 window keys + the limit set.
+const normWindow = (w: string): string => (w in WINDOWS ? w : "all");
+const normLimit = (limit: number): number => Math.max(1, Math.min(500, Math.floor(Number(limit)) || 100));
+
 const COIN = 100_000_000n;
 const INITIAL_REWARD = 50n * COIN;
 const HALVING_INTERVAL = 1_051_200;
@@ -40,6 +47,39 @@ async function tipRow(): Promise<{ height: number; time: number; chainwork: stri
   return (await store().get("SELECT height, time, chainwork FROM blocks WHERE orphaned=0 ORDER BY height DESC LIMIT 1")) as never ?? null;
 }
 
+// ── per-tip memoization ──────────────────────────────────────────────────────
+// supply / richlist / miners are O(table) full scans (SUM/GROUP BY over outputs+txs) that are
+// reachable unauthenticated via the cairn proxy and run on the SAME single event loop that writes
+// blocks — so a request flood would otherwise stall ingestion at scale. Their result changes ONLY
+// when the canonical tip changes (a new block or a reorg), so cache keyed on the tip identity
+// (height + hash → a same-height reorg also busts it). Args are canonicalized by the exported
+// wrappers (normWindow/normLimit) BEFORE keying, so the dedup holds even under garbage-varied params
+// and the cache stays bounded to the small fixed arg set. Returns the cached object by reference
+// (callers only serialize it, never mutate). No tip yet (empty chain) → never caches; cache holds only
+// current-tip entries (cleared on tip change). The tipKey()-then-impl-tipRow() gap is a benign TOCTOU:
+// a result computed at T+1 could be stored under key T, but it is evicted on the next call (which sees
+// T+1 and clears) and only ever served on an exact reorg back to (T,hash); these are non-consensus,
+// self-healing display analytics, so it is left unguarded rather than paying a second tip query.
+async function tipKey(): Promise<string | null> {
+  const r = await store().get<{ height: number; hash: string }>(
+    "SELECT height, hash FROM blocks WHERE orphaned=0 ORDER BY height DESC LIMIT 1");
+  return r ? `${r.height}:${r.hash}` : null;
+}
+function memoByTip<A extends unknown[]>(fn: (...args: A) => Promise<unknown>): (...args: A) => Promise<unknown> {
+  let curKey: string | null = null;
+  const cache = new Map<string, unknown>();
+  return async (...args: A): Promise<unknown> => {
+    const key = await tipKey();
+    if (key === null) return fn(...args);                 // no tip indexed → compute, don't cache
+    if (key !== curKey) { cache.clear(); curKey = key; }  // tip moved → drop stale-tip entries
+    const mk = JSON.stringify(args);
+    if (cache.has(mk)) return cache.get(mk);
+    const value = await fn(...args);
+    cache.set(mk, value);
+    return value;
+  };
+}
+
 /** Network hashrate over [from..to] derived from cumulative chainwork — exact, no bits math. */
 async function windowHashrate(fromHeight: number, toHeight: number): Promise<{ hashrate: number; seconds: number } | null> {
   const a = await store().get<{ time: number; chainwork: string }>("SELECT time, chainwork FROM blocks WHERE orphaned=0 AND height=?", fromHeight);
@@ -51,7 +91,7 @@ async function windowHashrate(fromHeight: number, toHeight: number): Promise<{ h
   return { hashrate: Number(dw) / dt, seconds: dt };
 }
 
-export async function miners(window: string): Promise<unknown> {
+async function minersImpl(window: string): Promise<unknown> {
   const tip = await tipRow();
   if (!tip) return { ok: false, error: "no blocks indexed" };
   const span = WINDOWS[window] ?? 0; // 0 / unknown → all-time
@@ -104,10 +144,10 @@ export async function miners(window: string): Promise<unknown> {
   };
 }
 
-export async function richlist(limit = 100): Promise<unknown> {
+async function richlistImpl(limit = 100): Promise<unknown> {
   const tip = await tipRow();
   if (!tip) return { ok: false, error: "no blocks indexed" };
-  const lim = Math.max(1, Math.min(500, Math.floor(Number(limit)) || 100));
+  const lim = normLimit(limit);
   const rows = await store().all<{ addr: string; balance: number | bigint; utxos: number | bigint }>(`
     SELECT addr, SUM(value) AS balance, COUNT(*) AS utxos
     FROM outputs WHERE spent_txid IS NULL AND addr IS NOT NULL
@@ -134,7 +174,7 @@ async function emittedSupply(): Promise<bigint> {
   return cb - fees;
 }
 
-export async function supply(): Promise<unknown> {
+async function supplyImpl(): Promise<unknown> {
   const tip = await tipRow();
   if (!tip) return { ok: false, error: "no blocks indexed" };
   const emitted = await emittedSupply();
@@ -156,3 +196,13 @@ export async function supply(): Promise<unknown> {
     },
   };
 }
+
+// Public endpoints (server.ts) — args canonicalized (normWindow/normLimit) THEN memoized per canonical
+// tip, so the cache key is bounded and the dedup fires for repeated AND garbage-varied params. The
+// *Impl functions above are the uncached source of truth (and what the offline analytics test exercises
+// through these exports). supply() is argless.
+const minersMemo = memoByTip(minersImpl);
+const richlistMemo = memoByTip(richlistImpl);
+export const miners = (window: string): Promise<unknown> => minersMemo(normWindow(window));
+export const richlist = (limit = 100): Promise<unknown> => richlistMemo(normLimit(limit));
+export const supply = memoByTip(supplyImpl);
