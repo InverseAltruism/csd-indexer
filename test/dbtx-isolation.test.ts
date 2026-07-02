@@ -21,27 +21,34 @@ import { merkleRoot } from "@inversealtruism/csd-codec";
 const SRC = join(dirname(fileURLToPath(import.meta.url)), "..", "src");
 
 // ── half 1: source scan ──────────────────────────────────────────────────────
-// Real-I/O tokens that must never appear inside a dbTx callback body. `rpc.` covers every node
-// fetch; the rest cover timers/fs/raw fetch. Store calls (d.run/get/all/exec) stay legal.
+// B8c broadening (review finding F2): the original scan only DENYLISTED known I/O tokens, so an
+// indirect await (`await getBlockFromNode(h)` whose fetch lives in another module) passed it.
+// The scan is now allowlist-shaped: EVERY `await` inside a dbTx callback must await a call on
+// the callback's own store parameter (`await d.run(...)` etc. — microtask-only by construction);
+// any other awaited expression fails, direct or indirect. The token denylist stays as a second
+// net (it also catches non-awaited timer scheduling). KNOWN REMAINING GAP (documented, accepted):
+// a new file calling store().tx(...) inline without importing { tx } from "./db.js" is invisible
+// to this scan; the runtime sentinel below only covers the writeBlock/unwind paths it drives.
 const BANNED = [/\bfetch\s*\(/, /\brpc\./, /\bsetTimeout\s*\(/, /\bsetInterval\s*\(/, /\bsetImmediate\s*\(/, /node:fs/, /\breadFile/, /\bwriteFile/, /\bappendFile/, /\bsleep\s*\(/];
 
-// Extract the balanced-brace body of each `<alias>(async ... => {` call site.
-function txCallbackBodies(source: string, alias: string): string[] {
-  const bodies: string[] = [];
-  const re = new RegExp(String.raw`\b${alias}\s*(?:<[^>]*>)?\(\s*async\b`, "g");
+// Extract each `<alias>(async (param) ... => {` call site: its balanced-brace body + the
+// callback's store-parameter name (so awaits can be checked against it).
+function txCallbackSites(source: string, alias: string): { body: string; param: string | null }[] {
+  const sites: { body: string; param: string | null }[] = [];
+  const re = new RegExp(String.raw`\b${alias}\s*(?:<[^>]*>)?\(\s*async\s*\(?\s*([A-Za-z_$][\w$]*)?`, "g");
   for (let m = re.exec(source); m; m = re.exec(source)) {
     const open = source.indexOf("{", m.index);
     if (open < 0) continue;
     let depth = 0;
     for (let i = open; i < source.length; i++) {
       if (source[i] === "{") depth++;
-      else if (source[i] === "}") { depth--; if (depth === 0) { bodies.push(source.slice(open, i + 1)); break; } }
+      else if (source[i] === "}") { depth--; if (depth === 0) { sites.push({ body: source.slice(open, i + 1), param: m[1] ?? null }); break; } }
     }
   }
-  return bodies;
+  return sites;
 }
 
-test("source scan: no real-I/O awaits inside any dbTx callback in src/", () => {
+test("source scan: every await inside a dbTx callback targets the store param; no I/O tokens", () => {
   let sites = 0;
   for (const f of readdirSync(SRC).filter((f) => f.endsWith(".ts"))) {
     const src = readFileSync(join(SRC, f), "utf8");
@@ -51,8 +58,18 @@ test("source scan: no real-I/O awaits inside any dbTx callback in src/", () => {
     const alias = im?.[1]?.match(/\btx(?:\s+as\s+(\w+))?/);
     if (alias) aliases.add(alias[1] ?? "tx");
     for (const alias of aliases) {
-      for (const body of txCallbackBodies(src, alias)) {
+      for (const { body, param } of txCallbackSites(src, alias)) {
         sites++;
+        assert.ok(param, `${f}: dbTx callback has no recognizable store parameter (scan pattern rotted?)`);
+        // allowlist pass: every awaited expression must be a call on the store param
+        for (const m of body.matchAll(/\bawait\s+([A-Za-z_$][\w$]*)\s*[.(]/g)) {
+          assert.equal(m[1], param,
+            `${f}: dbTx callback awaits '${m[0].trim()}…' — only 'await ${param}.<store call>' is microtask-safe inside a transaction (src/db.ts tx() isolation invariant); indirect I/O through a helper breaks read atomicity exactly like a direct fetch`);
+        }
+        // a bare 'await expr' that the allowlist regex can't attribute is also a failure (conservative)
+        for (const m of body.matchAll(/\bawait\s+(?![A-Za-z_$][\w$]*\s*[.(])/g)) {
+          assert.fail(`${f}: dbTx callback contains an await the scan cannot attribute to the store param (${JSON.stringify(body.slice(Math.max(0, m.index - 10), m.index + 30))}) — restructure to 'await ${param}.<call>'`);
+        }
         for (const bad of BANNED) {
           assert.ok(!bad.test(body), `${f}: dbTx callback contains banned real-I/O token ${bad} (isolation invariant, src/db.ts tx())`);
         }

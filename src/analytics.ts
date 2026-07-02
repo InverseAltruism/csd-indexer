@@ -7,6 +7,7 @@
 // big() normalizes to BigInt for math, amt() serializes (a stray BigInt would crash
 // JSON.stringify; total emission crosses 2^53 in a few years and must never 500 these endpoints).
 import { store } from "./db.js";
+import { amt, tipRow as tipRowCanonical } from "./queries.js";
 
 // nominal blocks per window at the 120s target (heights, not wall-time — deterministic)
 const WINDOWS: Record<string, number> = { "1d": 720, "7d": 5040, "30d": 21600 };
@@ -18,33 +19,22 @@ const WINDOWS: Record<string, number> = { "1d": 720, "7d": 5040, "30d": 21600 };
 const normWindow = (w: string): string => (w in WINDOWS ? w : "all");
 const normLimit = (limit: number): number => Math.max(1, Math.min(500, Math.floor(Number(limit)) || 100));
 
-const COIN = 100_000_000n;
-const INITIAL_REWARD = 50n * COIN;
-const HALVING_INTERVAL = 1_051_200;
-const MAX_HALVINGS = 64;
+// Emission schedule: SINGLE-SOURCED from csd-codec since 0.1.15 (Plan 57 B8c; the local
+// hand-encoded table this file carried is retired). blockReward/maxSupply keep their exported
+// bigint signatures via the codec's exact-bigint helpers; test/analytics-lockstep.test.ts pins
+// the ADOPTED values at known heights so a bad codec bump still fails loud in THIS repo.
+import { blockRewardBase, maxSupplyBase, HALVING_INTERVAL } from "@inversealtruism/csd-codec";
+export const blockReward = blockRewardBase;
+export const maxSupply = maxSupplyBase;
 
-export function blockReward(height: number): bigint {
-  const era = Math.floor(height / HALVING_INTERVAL);
-  if (era >= MAX_HALVINGS) return 0n;
-  return INITIAL_REWARD >> BigInt(era);
-}
-
-export function maxSupply(): bigint {
-  let s = 0n;
-  for (let era = 0; era < MAX_HALVINGS; era++) s += (INITIAL_REWARD >> BigInt(era)) * BigInt(HALVING_INTERVAL);
-  return s;
-}
-
-// store values are number|bigint|null — normalize for BigInt math / Number display.
+// store values are number|bigint|null — normalize for BigInt math. amt() (serialization) is the
+// ONE copy in queries.ts since B8c (was defined verbatim-adjacent in both files).
 function big(v: number | bigint | null | undefined): bigint { return v == null ? 0n : BigInt(v); }
-// A BigInt amount → JS number when safe, else a decimal string (never lossy; never NaN in JSON).
-function amt(v: number | bigint | null | undefined): number | string {
-  const b = big(v);
-  return b <= BigInt(Number.MAX_SAFE_INTEGER) && b >= BigInt(Number.MIN_SAFE_INTEGER) ? Number(b) : b.toString();
-}
 
+// Canonical tip-row reader lives in queries.ts since B8c (was one of three near-identical
+// SELECT-the-tip queries in this repo); this module derives its two shapes from it.
 async function tipRow(): Promise<{ height: number; time: number; chainwork: string } | null> {
-  return (await store().get("SELECT height, time, chainwork FROM blocks WHERE orphaned=0 ORDER BY height DESC LIMIT 1")) as never ?? null;
+  return await tipRowCanonical();
 }
 
 // ── per-tip memoization ──────────────────────────────────────────────────────
@@ -61,8 +51,7 @@ async function tipRow(): Promise<{ height: number; time: number; chainwork: stri
 // T+1 and clears) and only ever served on an exact reorg back to (T,hash); these are non-consensus,
 // self-healing display analytics, so it is left unguarded rather than paying a second tip query.
 async function tipKey(): Promise<string | null> {
-  const r = await store().get<{ height: number; hash: string }>(
-    "SELECT height, hash FROM blocks WHERE orphaned=0 ORDER BY height DESC LIMIT 1");
+  const r = await tipRowCanonical();
   return r ? `${r.height}:${r.hash}` : null;
 }
 function memoByTip<A extends unknown[]>(fn: (...args: A) => Promise<unknown>): (...args: A) => Promise<unknown> {

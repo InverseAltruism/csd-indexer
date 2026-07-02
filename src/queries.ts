@@ -11,7 +11,10 @@ export interface OutRow { txid: string; vout: number; addr: string; value: numbe
 
 // Serialize a sats amount: a JS number when it fits exactly, else a decimal string. CSD max supply
 // (~1e17 sats) exceeds 2^53 — a high-value address must never 500 the API or corrupt silently.
-function amt(v: number | bigint | null | undefined): number | string {
+// THE one copy since B8c (analytics.ts imports it; was defined near-verbatim in both files —
+// this pass-through-number variant is canonical: it never throws on a weird store value where
+// the old big()-normalizing twin would RangeError on a non-integer number).
+export function amt(v: number | bigint | null | undefined): number | string {
   if (v == null) return 0;
   if (typeof v === "number") return v;
   return v <= BigInt(Number.MAX_SAFE_INTEGER) && v >= BigInt(Number.MIN_SAFE_INTEGER) ? Number(v) : v.toString();
@@ -31,9 +34,14 @@ const jsonSafeAll = <T>(rows: T[]): T[] => { rows.forEach(jsonSafe); return rows
 // and anything else must 404, not 500 (pg would reject 1e21/2.5 as an int8 param).
 const heightOk = (h: number): boolean => Number.isSafeInteger(h) && h >= 0;
 
+// Canonical tip-row reader (B8c): ONE query shape for the three tip readers this repo carried
+// (tipHeight here, analytics' tipRow/tipKey). Selecting the full row costs the same index walk
+// as MAX(height) and every caller derives what it needs.
+export async function tipRow(): Promise<{ height: number; hash: string; time: number; chainwork: string } | null> {
+  return ((await store().get("SELECT height, hash, time, chainwork FROM blocks WHERE orphaned=0 ORDER BY height DESC LIMIT 1")) as never) ?? null;
+}
 export async function tipHeight(): Promise<number> {
-  const r = await store().get<{ h: number | null }>("SELECT MAX(height) h FROM blocks WHERE orphaned=0");
-  return r?.h ?? -1;
+  return (await tipRow())?.height ?? -1;
 }
 export async function blockByHeight(h: number): Promise<BlockRow | null> {
   if (!heightOk(h)) return null;

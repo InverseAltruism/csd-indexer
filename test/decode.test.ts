@@ -23,6 +23,11 @@ test("deriveAddr rejects malformed script_sigs", () => {
   assert.equal(deriveAddr(""), null);
   assert.equal(deriveAddr("0xdeadbeef"), null);            // too short
   assert.equal(deriveAddr("0x41" + "ab".repeat(64) + "21" + "02" + "cd".repeat(32)), null); // wrong sig len byte
+  // B8c adoption pin: the SDK parser hex-VALIDATES the sig region (the retired local copy never
+  // read those bytes, so a garbage sig region still attributed). Unreachable via node RPC
+  // (script_sig is hex-encoded bytes) and proven delta-free over the full chain by csd-sdk's
+  // audit:scriptsig; this fixture pins the accepted strictness locally.
+  assert.equal(deriveAddr("0x40" + "zz".repeat(64) + "21" + "02" + "cd".repeat(32)), null); // non-hex sig region
 });
 
 test("deriveAddr is deterministic for a given pubkey", () => {

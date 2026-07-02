@@ -1,27 +1,14 @@
 // Pure decoding helpers: recover addresses from scripts and classify a tx by its
-// CSD app action. No DB, no network — unit-testable in isolation. Mirrors the
-// convention Cairn's scanner uses (and that the SDK's crypto.hash160 implements):
-//   address = hash160(pubkey33) = ripemd160(sha256(pubkey))
-//   script_sig (CSD_SIG_V1) = [0x40][sig 64B][0x21][pubkey 33B]
+// CSD app action. No DB, no network — unit-testable in isolation.
 //   script_pubkey (p2pkh)   = the 20-byte addr hash, hex
-import { createHash } from "node:crypto";
-
-function hash160(buf: Buffer): string {
-  const sha = createHash("sha256").update(buf).digest();
-  return "0x" + createHash("ripemd160").update(sha).digest("hex");
-}
+// The scriptSig parser lives in csd-crypto since 0.1.15 (Plan 57 B4/B8c): deriveAddr is the
+// SDK's signerAddrFromScriptSig (SCANNER contract: >=198 bytes, trailing bytes tolerated, no
+// signature verify), a drop-in for the byte-identical local copy this file carried. The swap is
+// gated by csd-sdk's audit:scriptsig full-chain differential (zero deltas over every input).
+import { signerAddrFromScriptSig } from "@inversealtruism/csd-crypto";
 
 /** Recover the signer's addr20 from a CSD_SIG_V1 script_sig. null if unparseable. */
-export function deriveAddr(scriptSig: string | null | undefined): string | null {
-  if (!scriptSig) return null;
-  const h = (scriptSig.startsWith("0x") ? scriptSig.slice(2) : scriptSig).toLowerCase();
-  if (h.length < 2 + 128 + 2 + 66) return null;
-  if (h.slice(0, 2) !== "40") return null;       // 0x40 → 64-byte sig follows
-  if (h.slice(130, 132) !== "21") return null;   // 0x21 → 33-byte pubkey follows
-  const pub = h.slice(132, 132 + 66);
-  if (!/^[0-9a-f]{66}$/.test(pub)) return null;
-  try { return hash160(Buffer.from(pub, "hex")); } catch { return null; }
-}
+export const deriveAddr = signerAddrFromScriptSig;
 
 /** addr20 from a p2pkh output script_pubkey (already the 20-byte hash, hex). */
 export function addrFromScriptPubkey(spk: string | null | undefined): string | null {
