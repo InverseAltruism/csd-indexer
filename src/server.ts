@@ -143,11 +143,18 @@ export function buildApp() {
   }));
 
   // ── tx ──
+  // Full tx shape (row + outputs), shared by /tx/:id AND the address tx lists below. The explorer's
+  // address page needs outputs for its Δ column; when the list rows lacked them it re-fetched
+  // /tx/<id> once per row (25 extra round-trips per address view). Additive response change.
+  const txFull = async (txid: string) => {
+    const t = await q.tx(txid);
+    return t ? { ...t, outputs: await q.txOutputs(t.txid) } : null;
+  };
   app.get("/tx/:id", h(async (req, res) => {
     if (!TXID.test(req.params.id!)) return bad(res, "want /tx/0x<64-hex>");
-    const t = await q.tx(req.params.id!);
+    const t = await txFull(req.params.id!);
     if (!t) return nf(res, "unknown tx");
-    res.json({ ...t, outputs: await q.txOutputs(t.txid) });
+    res.json(t);
   }));
   app.get("/tx/:id/status", h(async (req, res) => {
     const t = await q.tx(req.params.id!);
@@ -174,7 +181,7 @@ export function buildApp() {
   app.get("/address/:a/txs", h(async (req, res) => {
     if (!ADDR.test(req.params.a!.toLowerCase())) return bad(res, "want /address/0x<40-hex>");
     const ids = await q.addressTxids(req.params.a!, null);
-    res.json((await Promise.all(ids.map((r) => q.tx(r.txid)))).filter(Boolean));
+    res.json((await Promise.all(ids.map((r) => txFull(r.txid)))).filter(Boolean));
   }));
   app.get("/address/:a/txs/chain/:last", h(async (req, res) => {
     // Esplora `/address/:addr/txs/chain/:last_seen_txid` — page by the last-seen TXID (not a raw height).
@@ -188,7 +195,7 @@ export function buildApp() {
     const h0 = await q.addressTxidHeight(req.params.a!, last);
     if (h0 == null) return res.json([]); // cursor txid not in this address's history → no further pages
     const ids = await q.addressTxids(req.params.a!, { height: h0, txid: last });
-    res.json((await Promise.all(ids.map((r) => q.tx(r.txid)))).filter(Boolean));
+    res.json((await Promise.all(ids.map((r) => txFull(r.txid)))).filter(Boolean));
   }));
   app.get("/address/:a/utxo", h(async (req, res) => {
     if (!ADDR.test(req.params.a!.toLowerCase())) return bad(res, "want /address/0x<40-hex>");
