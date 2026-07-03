@@ -59,7 +59,8 @@ await pgAll(`SELECT 1`);
 sqGet("SELECT 1 AS one");
 const tip = Number((await pgAll(`SELECT MAX(height) h FROM ${T("blocks")} WHERE orphaned=0`))[0].h);
 const txids = (await pgAll(`SELECT txid FROM ${T("txs")} ORDER BY random() LIMIT 200`)).map((r) => r.txid);
-const addrs = (await pgAll(`SELECT DISTINCT addr FROM ${T("address_history")} ORDER BY random() LIMIT 50`)).map((r) => r.addr);
+// (subquery: pg rejects SELECT DISTINCT with an ORDER BY expression not in the select list)
+const addrs = (await pgAll(`SELECT addr FROM (SELECT DISTINCT addr FROM ${T("address_history")}) d ORDER BY random() LIMIT 50`)).map((r) => r.addr);
 console.log(`backend-bench: real data (pg tip=${tip}, ${txids.length} sampled txids, ${addrs.length} addrs) — sqlite=${SQLITE}\n`);
 
 // ── 1. READ latency on real data ──
