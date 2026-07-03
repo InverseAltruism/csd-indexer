@@ -6,8 +6,10 @@ import express, { type Request, type Response } from "express";
 import { createServer, type Server } from "node:http";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { readFileSync } from "node:fs";
 import { CFG, host, port } from "./config.js";
 import { verifyContentBytes } from "@inversealtruism/csd-codec";
+import { store } from "./db.js";
 import * as q from "./queries.js";
 import * as analytics from "./analytics.js";
 import { merkleProof } from "./merkle.js";
@@ -18,6 +20,16 @@ import * as registry from "./registry.js";
 const TXID = /^0x[0-9a-f]{64}$/;
 const ADDR = /^0x[0-9a-f]{40}$/;
 const HASH = /^0x[0-9a-f]{64}$/;
+
+// Package version, read once at boot. Exposed in /health as the cross-host skew tell (the same
+// fix class as cairnx's /cairnx/health version field): version drift between two indexer hosts
+// is invisible until responses diverge unless the health surface says what is running.
+const PKG_VERSION: string = (() => {
+  try {
+    const p = join(dirname(fileURLToPath(import.meta.url)), "..", "package.json");
+    return String((JSON.parse(readFileSync(p, "utf8")) as { version?: string }).version ?? "unknown");
+  } catch { return "unknown"; }
+})();
 
 export function buildApp() {
   const app = express();
@@ -62,6 +74,11 @@ export function buildApp() {
   // the winning tip against the L0 light client (header PoW + chainwork comparison) and reject a
   // header whose time fails an MTP / max-future-drift sanity bound. Treat a single indexer's
   // /health as untrusted for fork selection.
+  // counts() is four COUNT(*) full scans and /health is the failover-LB poll target — memoize it
+  // per canonical tip (analytics.memoByTip) so the scans run once per block, not once per poll.
+  // The wall-clock freshness fields (seconds_since_tip, stale) stay live: they are computed per
+  // hit from the (cheap, index-backed) tip row, never from the memo.
+  const countsByTip = analytics.memoByTip(q.counts);
   app.get("/health", h(async (_req, res) => {
     const indexed_height = await indexedHeight();
     const tipH = await q.tipHeight();
@@ -70,6 +87,8 @@ export function buildApp() {
     const seconds_since_tip = tip ? now - Number(tip.time) : null;
     res.json({
       ok: true,
+      version: PKG_VERSION,                         // cross-host version-skew tell (additive)
+      backend: store().backend,                     // "sqlite" | "postgres" — makes a storage cutover observable
       indexed_height,
       tip_height: tipH,
       tip_hash: tip?.hash ?? null,
@@ -77,7 +96,7 @@ export function buildApp() {
       seconds_since_tip,                            // wall-clock age of the tip block
       stale: seconds_since_tip == null ? true : seconds_since_tip > CFG.staleSecs,
       final_depth: CFG.finalDepth,
-      ...(await q.counts()),
+      ...(await countsByTip() as Awaited<ReturnType<typeof q.counts>>),
     });
   }));
 

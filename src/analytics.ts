@@ -54,7 +54,9 @@ async function tipKey(): Promise<string | null> {
   const r = await tipRowCanonical();
   return r ? `${r.height}:${r.hash}` : null;
 }
-function memoByTip<A extends unknown[]>(fn: (...args: A) => Promise<unknown>): (...args: A) => Promise<unknown> {
+// Exported so server.ts can give /health's counts() the same once-per-block treatment: /health is
+// the failover-LB poll target, so its four COUNT(*) full scans were the most-hit unmemoized cost.
+export function memoByTip<A extends unknown[]>(fn: (...args: A) => Promise<unknown>): (...args: A) => Promise<unknown> {
   let curKey: string | null = null;
   const cache = new Map<string, unknown>();
   return async (...args: A): Promise<unknown> => {
