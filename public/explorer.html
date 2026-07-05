@@ -874,9 +874,17 @@ async function proposalPage(v,id){
 // ── header stats + live ──
 async function refreshStats(){
   try{const h=await j('/health');
-    const ss=h.seconds_since_tip, fresh=!h.stale&&(ss==null||ss<180);
+    const ss=h.seconds_since_tip, lag=Math.max(0,(h.tip_height||0)-(h.indexed_height||0));
+    const fresh=!h.stale&&lag<2&&(ss==null||ss<180);
     const behind=ss==null?'syncing':ss<60?ss+'s':ss<3600?Math.floor(ss/60)+'m':Math.floor(ss/3600)+'h';
-    const dot=fresh?'<span class="green" title="indexer is at the chain tip">● live</span>':`<span class="amber" title="indexer is behind the chain tip">● ${behind} behind</span>`;
+    // Honest badge: a real indexer LAG (indexed_height < node tip -> catching up) is distinct from a merely
+    // OLD tip (the indexer is AT the tip but blocks are slow, e.g. low hashrate). The latter is NOT the
+    // indexer being "behind", so label it as the age of the newest block instead of blaming the indexer.
+    const dot = lag>=2
+      ? `<span class="amber" title="the indexer is catching up to the node (${lag} blocks)">● ${lag} blocks behind</span>`
+      : fresh
+        ? '<span class="green" title="indexer is at the chain tip">● live</span>'
+        : `<span class="amber" title="the indexer is at the tip; the newest block is ${behind} old (slow blocks / low hashrate)">● last block ${behind} ago</span>`;
     $('#stats').innerHTML=`<span>height <b>${h.indexed_height.toLocaleString()}</b></span><span>txs <b>${h.txs.toLocaleString()}</b></span><span>proposals <b>${h.proposals}</b></span>${dot}`;
   }catch{$('#stats').innerHTML='<span class="red">● indexer offline</span>';}
 }
