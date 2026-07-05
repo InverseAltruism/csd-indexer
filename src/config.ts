@@ -5,6 +5,13 @@ export const CFG = {
   // Node RPC (the source of truth). 8789 = the node itself. (8790 was the MINER's RPC —
   // the miner is disabled since 2026-06-12; never default to it.)
   rpc: env("CSD_RPC", "http://127.0.0.1:8789"),
+  // RPC failover backends: read the healthiest (reachable, highest cumulative chainwork) of these each
+  // sync cycle, so a node that falls behind (db-loss resync / lag) does not stall the projection — it
+  // reads the on-host miner (:8790) or standby (:8795) instead. Primary is rpcBackends[0]. Override with
+  // a comma list in CSD_RPC_BACKENDS. max-chainwork selection with stickiness (no auto-failback) is in
+  // rpc.ts, and it composes with the reorg chainwork guard: this picks the most-caught-up source, the
+  // guard HOLDS only when EVERY source is behind our indexed tip.
+  rpcBackends: backendList(),
   // sqlite file. node:sqlite (built into Node 22) — no native dep, no build step.
   db: env("CSD_INDEX_DB", "./csd-index.db"),
   // Postgres connection string. When set, the indexer uses Postgres INSTEAD of sqlite —
@@ -53,3 +60,16 @@ export function port(): number { return Number(CFG.listen.split(":")[1] || 8793)
 
 function env(k: string, d: string): string { return process.env[k] ?? d; }
 function num(k: string, d: number): number { const v = Number(process.env[k]); return Number.isFinite(v) ? v : d; }
+// Failover backend list: explicit CSD_RPC_BACKENDS (comma list) wins; else the primary CSD_RPC plus the
+// on-host miner + standby RPCs (deduped). Primary stays first so it is preferred on a chainwork tie.
+function backendList(): string[] {
+  const raw = process.env.CSD_RPC_BACKENDS;
+  if (raw) return raw.split(",").map((s) => s.trim()).filter(Boolean);
+  const prim = env("CSD_RPC", "http://127.0.0.1:8789");
+  // Only auto-append OUR on-host miner + standby when running against OUR default node. A custom CSD_RPC
+  // (a third party, or a test mock) gets NO implicit extra backends — otherwise it would silently poll
+  // 127.0.0.1:8790/8795, which is both wrong for third parties and lethal in tests (they would read the
+  // live chain instead of their mock). Set CSD_RPC_BACKENDS explicitly to opt a custom setup into failover.
+  if (prim !== "http://127.0.0.1:8789") return [prim];
+  return [prim, "http://127.0.0.1:8790", "http://127.0.0.1:8795"];
+}

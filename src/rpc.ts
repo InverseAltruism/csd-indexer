@@ -15,10 +15,48 @@ export interface RpcTxOut { script_pubkey?: string; value?: number; }
 export interface RpcTx { txid: string; version?: number; locktime?: number; app?: any; inputs?: RpcTxIn[]; outputs?: RpcTxOut[]; }
 export interface RpcBlock { hash: string; height: number; chainwork?: string; header: RpcHeader; txs: RpcTx[]; }
 
+// The backend we are currently reading from. selectBackend() (called once per sync cycle) moves it to
+// the healthiest source; every getJson in a cycle then uses that one consistent backend.
+let ACTIVE = (CFG.rpcBackends && CFG.rpcBackends[0]) || CFG.rpc;
+export function activeBackend(): string { return ACTIVE; }
+
 async function getJson(path: string): Promise<any> {
-  const res = await fetch(CFG.rpc + path);
+  const res = await fetch(ACTIVE + path);
   if (!res.ok) throw new Error(`rpc ${path} -> ${res.status}`);
   return res.json();
+}
+
+async function tipOf(base: string): Promise<{ height: number; chainwork: bigint } | null> {
+  try {
+    const res = await fetch(base + "/tip", { signal: AbortSignal.timeout(5000) });
+    if (!res.ok) return null;
+    const j: any = await res.json();
+    return { height: Number(j.height ?? 0), chainwork: BigInt(String(j.chainwork ?? "0")) };
+  } catch { return null; }
+}
+
+/**
+ * Choose which backend to read THIS cycle: the reachable one with the most cumulative chainwork.
+ * Hysteresis so it does not flap and does NOT auto-fail-back: if ACTIVE is tied for the best chainwork,
+ * keep it; otherwise prefer the primary (rpcBackends[0]) among the tied-best, else the first tied-best.
+ * A node that falls behind (resync / lag) has less chainwork, so selection moves to the miner/standby and
+ * the projection keeps advancing on fresh data; when the node catches back up (a tie) we stay put (a human
+ * restart resets to primary), which avoids oscillation. If NOTHING is reachable, keep ACTIVE (reads then
+ * fail and the caller retries next poll).
+ */
+export async function selectBackend(): Promise<{ active: string; switched: boolean; height: number }> {
+  const backends = CFG.rpcBackends && CFG.rpcBackends.length ? CFG.rpcBackends : [CFG.rpc];
+  const probed = await Promise.all(backends.map(async (b) => ({ b, t: await tipOf(b) })));
+  const reachable = probed.filter((x): x is { b: string; t: { height: number; chainwork: bigint } } => x.t != null);
+  const prev = ACTIVE;
+  if (reachable.length === 0) return { active: ACTIVE, switched: false, height: 0 };
+  let maxWork = reachable[0]!.t.chainwork;
+  for (const r of reachable) if (r.t.chainwork > maxWork) maxWork = r.t.chainwork;
+  const best = reachable.filter((r) => r.t.chainwork === maxWork);
+  const primary = backends[0];
+  const chosen = best.some((r) => r.b === ACTIVE) ? ACTIVE : (best.find((r) => r.b === primary)?.b ?? best[0]!.b);
+  ACTIVE = chosen;
+  return { active: chosen, switched: chosen !== prev, height: best.find((r) => r.b === chosen)!.t.height };
 }
 
 export async function tip(): Promise<{ height: number; tip: string; chainwork: string }> {

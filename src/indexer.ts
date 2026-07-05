@@ -328,6 +328,10 @@ async function reconcileTipWindow(tip: number): Promise<number> {
  * Returns a summary. Idempotent: re-running with no new blocks is a no-op.
  */
 export async function syncOnce(): Promise<IndexResult> {
+  // Pick the healthiest backend (node -> miner -> standby by chainwork) for this whole cycle, so a node
+  // that fell behind does not stall the projection. Composes with the regression guard below.
+  const sel = await rpc.selectBackend();
+  if (sel.switched) console.warn(`[indexer] RPC backend -> ${sel.active} (h=${sel.height}); prior backend fell behind or went unreachable`);
   if (!(await rpc.reachable())) throw new Error("node RPC unreachable");
   const nodeTip = await rpc.tip();
   const tip = nodeTip.height;
