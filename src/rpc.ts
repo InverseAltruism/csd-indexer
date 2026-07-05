@@ -18,7 +18,12 @@ export interface RpcBlock { hash: string; height: number; chainwork?: string; he
 // The backend we are currently reading from. selectBackend() (called once per sync cycle) moves it to
 // the healthiest source; every getJson in a cycle then uses that one consistent backend.
 let ACTIVE = (CFG.rpcBackends && CFG.rpcBackends[0]) || CFG.rpc;
-const HYSTERESIS_BLOCKS = 3; // keep ACTIVE unless it falls more than this many blocks behind the best
+const HYSTERESIS_BLOCKS = 3; // keep ACTIVE unless it falls more than this many blocks behind the best HEIGHT
+// Work-escape: height hysteresis ALONE would pin ACTIVE to a same-height but LOWER-CHAINWORK backend (a
+// minority fork that keeps pace in height) indefinitely. If ACTIVE stays below the best chainwork for this
+// many consecutive cycles, force a switch to the highest-work backend. Configurable for tests.
+const WORK_ESCAPE_CYCLES = Number(process.env.CSD_RPC_WORK_ESCAPE || 20);
+let behindStreak = 0;
 export function activeBackend(): string { return ACTIVE; }
 
 async function getJson(path: string): Promise<any> {
@@ -58,9 +63,12 @@ export async function selectBackend(): Promise<{ active: string; switched: boole
   const bestHeight = Math.max(...reachable.map((r) => r.t.height));
   const activeEntry = reachable.find((r) => r.b === ACTIVE);
   const primary = backends[0];
-  const chosen = (activeEntry && activeEntry.t.height >= bestHeight - HYSTERESIS_BLOCKS)
-    ? ACTIVE                                                          // sticky: ACTIVE still close enough
+  behindStreak = (activeEntry && activeEntry.t.chainwork < maxWork) ? behindStreak + 1 : 0;
+  const workEscape = behindStreak >= WORK_ESCAPE_CYCLES;                // ACTIVE out-worked too long -> force a switch
+  const chosen = (activeEntry && activeEntry.t.height >= bestHeight - HYSTERESIS_BLOCKS && !workEscape)
+    ? ACTIVE                                                          // sticky: close in HEIGHT and not persistently out-worked
     : (best.find((r) => r.b === primary)?.b ?? best[0]!.b);          // switch to highest-work, primary-preferred
+  if (chosen !== ACTIVE) behindStreak = 0;
   ACTIVE = chosen;
   return { active: chosen, switched: chosen !== prev, height: reachable.find((r) => r.b === chosen)!.t.height };
 }

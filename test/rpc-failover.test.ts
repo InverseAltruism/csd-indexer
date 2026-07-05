@@ -26,6 +26,7 @@ await new Promise<void>((r) => A.srv.listen(0, "127.0.0.1", () => r()));
 await new Promise<void>((r) => B.srv.listen(0, "127.0.0.1", () => r()));
 process.env.CSD_RPC = A.url();
 process.env.CSD_RPC_BACKENDS = `${A.url()},${B.url()}`;
+process.env.CSD_RPC_WORK_ESCAPE = "3";   // small so the work-escape test does not need 20 cycles
 const rpc = await import("../src/rpc.js");
 
 test("failover: prefers the primary on a chainwork tie", async () => {
@@ -64,6 +65,22 @@ test("failover: keeps the last ACTIVE when nothing is reachable", async () => {
   assert.equal(s.active, before, "kept last ACTIVE (reads then fail + retry)");
   assert.equal(s.switched, false);
   A.revive(); B.revive();
+});
+
+test("failover: sticky within the height-hysteresis margin (no flap on a small lead)", async () => {
+  A.set(200, 5000n); B.set(200, 5000n); await rpc.selectBackend();      // tie -> ACTIVE = primary A, streak reset
+  assert.equal(rpc.activeBackend(), A.url());
+  A.set(200, 5000n); B.set(202, 5200n);                                 // B pulls 2 blocks ahead (within the 3-block margin)
+  const s = await rpc.selectBackend();
+  assert.equal(s.active, A.url(), "within the height margin -> stay on A (no flap)");
+});
+
+test("failover: work-escape switches off a same-height LOWER-work backend after N cycles", async () => {
+  A.set(300, 9000n); B.set(300, 9000n); await rpc.selectBackend();      // tie -> ACTIVE = A, behindStreak = 0
+  assert.equal(rpc.activeBackend(), A.url());
+  A.set(300, 9000n); B.set(300, 9500n);                                 // fork: SAME height, B strictly more work
+  let s = await rpc.selectBackend(); for (let i = 0; i < 2; i++) s = await rpc.selectBackend(); // 3 cycles; CSD_RPC_WORK_ESCAPE=3
+  assert.equal(s.active, B.url(), "height hysteresis alone would pin A; the work-escape forces the switch to B");
 });
 
 test.after(() => { A.srv.closeAllConnections?.(); B.srv.closeAllConnections?.(); A.srv.close(); B.srv.close(); });
