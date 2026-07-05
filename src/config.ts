@@ -53,6 +53,10 @@ export const CFG = {
   // resync), not consensus moving. The primary defense is the chainwork regression guard in the sync
   // loop; this floor is the backstop. Override if a deeper checkpoint ever ships.
   checkpointFloor: num("CSD_INDEX_CHECKPOINT_FLOOR", 38142),
+  // Kill switch for the chainwork regression guard. Default on. If the guard ever wrongly HOLDs (e.g. a
+  // backend served an inflated chainwork that poisoned our stored tip work), set CSD_INDEX_WORK_GUARD=0
+  // to let the indexer advance again without a code change, then fix the source.
+  workGuard: (process.env.CSD_INDEX_WORK_GUARD ?? "1") !== "0",
 };
 
 export function host(): string { return CFG.listen.split(":")[0] || "127.0.0.1"; }

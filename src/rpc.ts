@@ -18,6 +18,7 @@ export interface RpcBlock { hash: string; height: number; chainwork?: string; he
 // The backend we are currently reading from. selectBackend() (called once per sync cycle) moves it to
 // the healthiest source; every getJson in a cycle then uses that one consistent backend.
 let ACTIVE = (CFG.rpcBackends && CFG.rpcBackends[0]) || CFG.rpc;
+const HYSTERESIS_BLOCKS = 3; // keep ACTIVE unless it falls more than this many blocks behind the best
 export function activeBackend(): string { return ACTIVE; }
 
 async function getJson(path: string): Promise<any> {
@@ -36,13 +37,14 @@ async function tipOf(base: string): Promise<{ height: number; chainwork: bigint 
 }
 
 /**
- * Choose which backend to read THIS cycle: the reachable one with the most cumulative chainwork.
- * Hysteresis so it does not flap and does NOT auto-fail-back: if ACTIVE is tied for the best chainwork,
- * keep it; otherwise prefer the primary (rpcBackends[0]) among the tied-best, else the first tied-best.
- * A node that falls behind (resync / lag) has less chainwork, so selection moves to the miner/standby and
- * the projection keeps advancing on fresh data; when the node catches back up (a tie) we stay put (a human
- * restart resets to primary), which avoids oscillation. If NOTHING is reachable, keep ACTIVE (reads then
- * fail and the caller retries next poll).
+ * Choose which backend to read THIS cycle: the reachable one with the most cumulative chainwork, with
+ * HYSTERESIS so it does not flap and does NOT auto-fail-back. Keep ACTIVE while it is reachable and within
+ * HYSTERESIS_BLOCKS of the best height (so same-chain backends racing block propagation do not flap, and
+ * once we move off the primary we stay until a human restarts). Only when ACTIVE falls meaningfully behind
+ * (or is gone) do we switch to the highest-chainwork backend, preferring the primary among ties. A node
+ * that falls behind (resync / lag) has less work, so selection moves to the miner/standby and the
+ * projection keeps advancing on fresh data. If NOTHING is reachable, keep ACTIVE (reads then fail and the
+ * caller retries next poll).
  */
 export async function selectBackend(): Promise<{ active: string; switched: boolean; height: number }> {
   const backends = CFG.rpcBackends && CFG.rpcBackends.length ? CFG.rpcBackends : [CFG.rpc];
@@ -53,10 +55,14 @@ export async function selectBackend(): Promise<{ active: string; switched: boole
   let maxWork = reachable[0]!.t.chainwork;
   for (const r of reachable) if (r.t.chainwork > maxWork) maxWork = r.t.chainwork;
   const best = reachable.filter((r) => r.t.chainwork === maxWork);
+  const bestHeight = Math.max(...reachable.map((r) => r.t.height));
+  const activeEntry = reachable.find((r) => r.b === ACTIVE);
   const primary = backends[0];
-  const chosen = best.some((r) => r.b === ACTIVE) ? ACTIVE : (best.find((r) => r.b === primary)?.b ?? best[0]!.b);
+  const chosen = (activeEntry && activeEntry.t.height >= bestHeight - HYSTERESIS_BLOCKS)
+    ? ACTIVE                                                          // sticky: ACTIVE still close enough
+    : (best.find((r) => r.b === primary)?.b ?? best[0]!.b);          // switch to highest-work, primary-preferred
   ACTIVE = chosen;
-  return { active: chosen, switched: chosen !== prev, height: best.find((r) => r.b === chosen)!.t.height };
+  return { active: chosen, switched: chosen !== prev, height: reachable.find((r) => r.b === chosen)!.t.height };
 }
 
 export async function tip(): Promise<{ height: number; tip: string; chainwork: string }> {

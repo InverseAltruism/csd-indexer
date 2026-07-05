@@ -344,13 +344,17 @@ export async function syncOnce(): Promise<IndexResult> {
   // (~41k rows gone, /names emptied). A genuine reorg ALWAYS presents chainwork >= ours. So when the
   // node is behind on work, HOLD: keep serving the last-good index and re-derive forward once the node
   // catches up. Fail closed + re-derivable — the behavior the resilience audit praised for cairnx.
-  {
+  if (CFG.workGuard) {
     const top = await indexedHeight();
     if (top >= CFG.scanFrom) {
       const ourWork = await indexedChainwork();
-      const nodeWork = (() => { try { return BigInt(nodeTip.chainwork || "0"); } catch { return 0n; } })();
-      if (nodeWork > 0n && ourWork > 0n && nodeWork < ourWork) {
-        console.warn(`[indexer] HOLD: node behind on chainwork (node h=${tip} w=${nodeWork} < indexed h=${top} w=${ourWork}) — NOT reconciling/unwinding; index re-derives forward once the node catches up`);
+      const nodeWork = (() => { try { return BigInt(String(nodeTip.chainwork ?? "0")); } catch { return 0n; } })();
+      // HOLD when the node presents LESS work than we have indexed (regression), AND fail CLOSED when we
+      // cannot read a valid node chainwork at all (nodeWork <= 0 while we have indexed work): a source we
+      // cannot verify must never drive an unwind. Only advance when node work is a valid figure >= ours.
+      if (ourWork > 0n && nodeWork < ourWork) {
+        const why = nodeWork <= 0n ? "node chainwork missing/unparseable (fail-closed)" : "node behind on chainwork";
+        console.warn(`[indexer] HOLD: ${why} (node h=${tip} w=${nodeWork} vs indexed h=${top} w=${ourWork}) — NOT reconciling/unwinding; re-derives forward once the node presents valid, sufficient work`);
         return { from: top + 1, to: top, tip, blocks, reorgs, reorgDepth };
       }
     }

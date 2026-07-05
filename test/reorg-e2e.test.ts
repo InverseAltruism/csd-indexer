@@ -218,4 +218,36 @@ test("regression guard: node behind on chainwork (db-loss resync) HOLDS, does no
   assert.equal(await indexedHeight(), 6, "resumed indexing forward once the node caught back up");
 });
 
+test("regression guard: an EQUAL-work tip-swap does NOT hold (guard is strict <)", async () => {
+  CHAIN = buildChain(["g", "Pa", "Pb", "Pc"]); // 0..3
+  await syncOnce();
+  const ourTipWork = CHAIN[CHAIN.length - 1]!.chainwork; // the cumulative work we just indexed at the tip
+  // swap the tip block at the SAME height 3, forcing EQUAL work (a same-work tie). The strict `<` guard
+  // must NOT hold; reconcile must still swap the orphaned tip out.
+  const swap = buildChain(["g", "Pa", "Pb", "Pq"]);
+  swap[swap.length - 1]!.chainwork = ourTipWork;
+  CHAIN = swap;
+  await syncOnce();
+  assert.equal(await storedHash(3), h32("blk-Pq"), "equal-work swap reconciled (not held)");
+  assert.equal(await propCount("dom-Pc"), 0, "orphaned tip proposal gone");
+  assert.equal(await propCount("dom-Pq"), 1, "new tip proposal indexed");
+});
+
+test("regression guard: unverifiable node work (0) HOLDS (fail-closed, not the ~41k nuke)", async () => {
+  CHAIN = buildChain(["g", "Pa", "Pb", "Pc", "Pd"]); // 0..4
+  await syncOnce();
+  assert.equal(await indexedHeight(), 4);
+  const rowsBefore = Number(((await store().get("SELECT COUNT(*) n FROM blocks WHERE orphaned=0")) as any).n);
+  // node serves a tip whose chainwork is "0" (missing / unparseable) while we HAVE indexed work: the old
+  // code required nodeWork>0 to guard and would have unwound; the fix fails CLOSED and holds.
+  const bad = buildChain(["g", "Pa"]); // 0..1
+  bad[bad.length - 1]!.chainwork = "0";
+  CHAIN = bad;
+  const r = await syncOnce();
+  assert.equal(r.reorgs, 0, "no reorg on a 0-work (unverifiable) node tip");
+  assert.equal(await indexedHeight(), 4, "held: did NOT unwind on unverifiable node work");
+  const rowsAfter = Number(((await store().get("SELECT COUNT(*) n FROM blocks WHERE orphaned=0")) as any).n);
+  assert.equal(rowsAfter, rowsBefore, "no rows deleted (fail-closed)");
+});
+
 test.after(async () => { server.close(); await closeDb(); });
