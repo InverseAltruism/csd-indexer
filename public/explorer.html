@@ -176,7 +176,11 @@ const short = (s,n=10)=> { s=esc(s); return s? (s.length>2*n? s.slice(0,n)+'…'
 // the helper safe-by-default if ever pointed at free-form text.
 // BigInt-safe: max_supply (~1.05e16 sats) exceeds 2^53, so divide in BigInt before going to Number
 const fmtCSD = (v)=>{ const s=String(v); const sats=/^\d+$/.test(s)?BigInt(s):BigInt(Math.round(Number(v)||0)); const neg=sats<0n, a=neg?-sats:sats; const whole=a/100000000n, frac=a%100000000n; const fracStr=frac===0n?'':'.'+frac.toString().padStart(8,'0').replace(/0+$/,''); return (neg?'-':'')+Number(whole).toLocaleString()+fracStr+' CSD'; };
-const ago = (t)=>{const s=Math.max(0,Math.floor(Date.now()/1000-t));if(s<60)return s+'s ago';if(s<3600)return (s/60|0)+'m ago';if(s<86400)return (s/3600|0)+'h ago';return (s/86400|0)+'d ago';};
+// CSD block timestamps can run AHEAD of wall-clock (miners stamp up to the future-drift tolerance), so a
+// naive now-blockTime goes negative and clamps to 0 → every recent block reads "0s ago". Reference ages to
+// max(now, newest-block-time) so they show correct RELATIVE spacing whether or not the chain clock leads.
+let TIP_TIME = 0;   // newest block time seen (updated in blockRow)
+const ago = (t)=>{if(!t)return '';const ref=Math.max(Math.floor(Date.now()/1000),TIP_TIME);const s=Math.max(0,ref-t);if(s<60)return s+'s ago';if(s<3600)return (s/60|0)+'m ago';if(s<86400)return (s/3600|0)+'h ago';return (s/86400|0)+'d ago';};
 const j = async(p)=>{const r=await fetch(API+p);if(!r.ok)throw new Error(p+' → '+r.status);return r.json();};
 const txt = async(p)=>{const r=await fetch(API+p);if(!r.ok)throw new Error(p+' → '+r.status);return r.text();};
 
@@ -561,7 +565,8 @@ async function tokenPage(v,ticker){
       <td class="opt dim">${(Number((h.av+h.lk)*1000n/total)/10).toFixed(1)}%</td></tr>`).join('')}</tbody></table></div></div>`));
 }
 function blockRow(b,live){
-  return el(`<tr class="${live?'feed-row':''}"><td>${link('/block/'+b.height,b.height)}</td>
+  if(b.time) TIP_TIME=Math.max(TIP_TIME,b.time);   // keep the age reference current with the chain tip
+  return el(`<tr class="${live?'feed-row':''}" data-h="${b.height}"><td>${link('/block/'+b.height,b.height)}</td>
     <td>${link('/block/'+b.hash,short(b.hash,12),'mono')}</td><td>${b.tx_count}</td><td class="dim" data-ts="${b.time||''}">${b.time?ago(b.time):''}</td></tr>`);
 }
 async function recentBlocks(){
@@ -573,10 +578,27 @@ async function recentBlocks(){
   return out;
 }
 function subscribeBlocks(tb){
-  try{const es=new EventSource(API+'/stream/blocks');
-    es.addEventListener('block',ev=>{const b=JSON.parse(ev.data);const r=blockRow({height:b.height,hash:b.hash,tx_count:b.tx_count,time:Math.floor(Date.now()/1000)},true);tb.prepend(r);while(tb.children.length>14)tb.lastChild.remove();
-      const hn=$('.pu.hot .n'); if(hn) hn.textContent=Number(b.height).toLocaleString();});  // keep the hero height live with the feed
-    es.addEventListener('reorg',ev=>{const d=JSON.parse(ev.data);const p=$('#livepill');if(p){p.textContent='⟲ reorg @'+d.ancestor;p.classList.add('red');}});
+  // Auto-refresh by POLLING /blocks/recent (real timestamps, deduped by height). This works regardless of
+  // SSE / the front-door proxy, which does NOT forward the event-stream — the old EventSource-only feed
+  // therefore never updated through cairn-subst.com/explorer, and it stamped streamed rows with the CLIENT
+  // clock (Date.now()) so every live block read "0s ago". SSE, when reachable (standalone), just nudges a poll.
+  const seen=new Set([...tb.querySelectorAll('[data-h]')].map(r=>+r.getAttribute('data-h')));
+  let es=null,last=0;
+  async function poll(){
+    if(!tb.isConnected){ clearInterval(iv); try{es&&es.close();}catch{} return; }   // view navigated away → stop
+    const now=Date.now(); if(now-last<1500) return; last=now;                        // debounce SSE bursts
+    let rows; try{ rows=await j('/blocks/recent?limit=12'); }catch{ return; }
+    if(!Array.isArray(rows)) return;
+    const fresh=rows.filter(b=>b&&!seen.has(b.height)).sort((a,c)=>a.height-c.height); // oldest-first so prepends keep order
+    for(const b of fresh){ seen.add(b.height); tb.prepend(blockRow(b,true));
+      const hn=$('.pu.hot .n'); if(hn) hn.textContent=Number(b.height).toLocaleString(); }   // keep the hero height live
+    while(tb.children.length>14){ const lc=tb.lastChild; seen.delete(+lc.getAttribute('data-h')); tb.removeChild(lc); }
+    if(fresh.length) document.querySelectorAll('[data-ts]').forEach(e=>{const t=+e.getAttribute('data-ts'); if(t)e.textContent=ago(t);}); // re-age with the advanced TIP_TIME
+  }
+  const iv=setInterval(poll,12000);
+  try{ es=new EventSource(API+'/stream/blocks');
+    es.addEventListener('block',()=>poll());
+    es.addEventListener('reorg',ev=>{try{const d=JSON.parse(ev.data);const p=$('#livepill');if(p){p.textContent='⟲ reorg @'+d.ancestor;p.classList.add('red');}}catch{}});
   }catch{}
 }
 
