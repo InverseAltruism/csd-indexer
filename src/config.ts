@@ -1,6 +1,8 @@
 // Environment configuration for the standalone indexer. Everything is overridable
 // so a third party can point it at their own node + paths and run an identical
 // indexer (determinism is the audit — see the roadmap's honest limits).
+import { readFileSync } from "node:fs";
+
 export const CFG = {
   // Node RPC (the source of truth). 8789 = the node itself. (8790 was the MINER's RPC —
   // the miner is disabled since 2026-06-12; never default to it.)
@@ -52,7 +54,7 @@ export const CFG = {
   // a buried checkpoint, so a "reorg" that would unwind below it is a node tip-regression (db-loss /
   // resync), not consensus moving. The primary defense is the chainwork regression guard in the sync
   // loop; this floor is the backstop. Override if a deeper checkpoint ever ships.
-  checkpointFloor: num("CSD_INDEX_CHECKPOINT_FLOOR", 38142),
+  checkpointFloor: num("CSD_INDEX_CHECKPOINT_FLOOR", checkpointDefault()),
   // Kill switch for the chainwork regression guard. Default on. If the guard ever wrongly HOLDs (e.g. a
   // backend served an inflated chainwork that poisoned our stored tip work), set CSD_INDEX_WORK_GUARD=0
   // to let the indexer advance again without a code change, then fix the source.
@@ -62,6 +64,12 @@ export const CFG = {
 export function host(): string { return CFG.listen.split(":")[0] || "127.0.0.1"; }
 export function port(): number { return Number(CFG.listen.split(":")[1] || 8793); }
 
+// Single source for the SPV checkpoint floor, shared with the watchdog (cairn/deploy/spv-checkpoint) so a
+// new checkpoint updates ONE file. The CSD_INDEX_CHECKPOINT_FLOOR env still overrides; the file is the
+// default; 38142 is the hard fallback if the file is absent (e.g. a third-party deploy).
+function checkpointDefault(): number {
+  try { const v = Number(readFileSync("/opt/cairn_substrate/cairn/deploy/spv-checkpoint", "utf8").trim()); return Number.isFinite(v) && v > 0 ? v : 38142; } catch { return 38142; }
+}
 function env(k: string, d: string): string { return process.env[k] ?? d; }
 function num(k: string, d: number): number { const v = Number(process.env[k]); return Number.isFinite(v) ? v : d; }
 // Failover backend list: explicit CSD_RPC_BACKENDS (comma list) wins; else the primary CSD_RPC plus the
