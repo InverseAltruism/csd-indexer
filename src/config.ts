@@ -54,7 +54,9 @@ export const CFG = {
   // a buried checkpoint, so a "reorg" that would unwind below it is a node tip-regression (db-loss /
   // resync), not consensus moving. The primary defense is the chainwork regression guard in the sync
   // loop; this floor is the backstop. Override if a deeper checkpoint ever ships.
-  checkpointFloor: num("CSD_INDEX_CHECKPOINT_FLOOR", checkpointDefault()),
+  // env value if a valid positive int, else the shared file, else 38142. The `|| checkpointDefault()` also
+  // guards the empty-string env case (num() turns "" into 0, which would silently disable the floor).
+  checkpointFloor: num("CSD_INDEX_CHECKPOINT_FLOOR", 0) || checkpointDefault(),
   // Kill switch for the chainwork regression guard. Default on. If the guard ever wrongly HOLDs (e.g. a
   // backend served an inflated chainwork that poisoned our stored tip work), set CSD_INDEX_WORK_GUARD=0
   // to let the indexer advance again without a code change, then fix the source.
