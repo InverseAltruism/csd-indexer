@@ -76,6 +76,14 @@ export async function indexedHeight(): Promise<number> {
   return v == null ? CFG.scanFrom - 1 : Number(v);
 }
 
+/** Accumulated chainwork at our indexed tip (0n if fresh/unknown). Stored as TEXT; compared as BigInt. */
+async function indexedChainwork(): Promise<bigint> {
+  const h = await indexedHeight();
+  if (h < CFG.scanFrom) return 0n;
+  const r = await store().get<{ chainwork: string }>("SELECT chainwork FROM blocks WHERE height=? AND orphaned=0", h);
+  try { return r?.chainwork ? BigInt(r.chainwork) : 0n; } catch { return 0n; }
+}
+
 /**
  * Write one block + all its txs/outputs/spends/events in a single transaction.
  *
@@ -301,6 +309,13 @@ async function reconcileTipWindow(tip: number): Promise<number> {
   // we matched at, in which case converged === ceil and this guard doesn't fire).
   if (converged < ceil && !mismatched) return 0;
   if (converged >= top) return 0;                          // consistent up to our tip — nothing to unwind
+  // CHECKPOINT-FLOOR backstop (2026-07-05): refuse to unwind below the highest shipped SPV checkpoint.
+  // No honest reorg crosses a buried checkpoint; a "reorg" that would is a node tip-regression the
+  // chainwork guard normally caught earlier. Hold + let a human look rather than hard-DELETE the index.
+  if (converged < CFG.checkpointFloor && top >= CFG.checkpointFloor) {
+    console.warn(`[indexer] REFUSING to unwind to ${converged} (< SPV checkpoint floor ${CFG.checkpointFloor}); holding — node likely resyncing/regressed, not a real reorg`);
+    return 0;
+  }
   const depth = top - converged;
   await unwindAbove(converged);
   await setMeta(TIP_KEY, String(converged));
@@ -314,8 +329,29 @@ async function reconcileTipWindow(tip: number): Promise<number> {
  */
 export async function syncOnce(): Promise<IndexResult> {
   if (!(await rpc.reachable())) throw new Error("node RPC unreachable");
-  const { height: tip } = await rpc.tip();
+  const nodeTip = await rpc.tip();
+  const tip = nodeTip.height;
   let blocks = 0, reorgs = 0, reorgDepth = 0;
+
+  // REGRESSION GUARD (2026-07-05 incident). Never reconcile/unwind against a node presenting LESS
+  // accumulated chainwork than we have already indexed. A db-loss resync or a lagging node drops its
+  // tip far below ours WITHOUT offering a heavier chain; the old code saw that low tip "converge" at a
+  // buried height (the low blocks genuinely match — same chain) and hard-DELETEd every row above it
+  // (~41k rows gone, /names emptied). A genuine reorg ALWAYS presents chainwork >= ours. So when the
+  // node is behind on work, HOLD: keep serving the last-good index and re-derive forward once the node
+  // catches up. Fail closed + re-derivable — the behavior the resilience audit praised for cairnx.
+  {
+    const top = await indexedHeight();
+    if (top >= CFG.scanFrom) {
+      const ourWork = await indexedChainwork();
+      const nodeWork = (() => { try { return BigInt(nodeTip.chainwork || "0"); } catch { return 0n; } })();
+      if (nodeWork > 0n && ourWork > 0n && nodeWork < ourWork) {
+        console.warn(`[indexer] HOLD: node behind on chainwork (node h=${tip} w=${nodeWork} < indexed h=${top} w=${ourWork}) — NOT reconciling/unwinding; index re-derives forward once the node catches up`);
+        return { from: top + 1, to: top, tip, blocks, reorgs, reorgDepth };
+      }
+    }
+  }
+
   // FIRST reconcile the tip window (catches an equal/lower-height reorg the forward scan can't).
   const reconciled = await reconcileTipWindow(tip);
   if (reconciled > 0) { reorgs++; reorgDepth = reconciled; }
@@ -331,6 +367,12 @@ export async function syncOnce(): Promise<IndexResult> {
     if (ancestor === REORG_ABORT) break; // node withheld deeper blocks — retry next poll; never act on absence
     if (ancestor >= 0) {
       const prevIndexed = await indexedHeight();
+      // Checkpoint-floor backstop (mirrors reconcileTipWindow): never hard-unwind below a buried SPV
+      // checkpoint via the forward scan either. Stop this pass and retry; a real reorg does not cross it.
+      if (ancestor < CFG.checkpointFloor && prevIndexed >= CFG.checkpointFloor) {
+        console.warn(`[indexer] REFUSING forward-scan unwind to ${ancestor} (< SPV checkpoint floor ${CFG.checkpointFloor}); stopping this pass — node likely resyncing`);
+        break;
+      }
       await unwindAbove(ancestor);
       await setMeta(TIP_KEY, String(ancestor));
       reorgs++; reorgDepth = Math.max(reorgDepth, prevIndexed - ancestor);

@@ -14,13 +14,19 @@ for (const s of ["", "-wal", "-shm"]) { try { rmSync(DB + s); } catch {} }
 // ── mock node serving a mutable chain: chain[h] = { hash, header, txs } ──
 type B = { hash: string; height: number; chainwork: string; header: any; txs: any[] };
 let CHAIN: B[] = [];
+// Monotonic per BUILT chain: a real node only ever switches its canonical view to a HIGHER cumulative
+// -work chain, so every chain the mock serves out-works all previously-served ones. This lets the sync
+// loop's chainwork regression guard (which HOLDS when the node presents LESS work than we've indexed)
+// pass the legitimate-reorg fixtures, while the dedicated db-loss test below forces work DOWN by hand.
+let WORK_EPOCH = 0;
 const h32 = (s: string) => "0x" + Buffer.from(s.padEnd(32, "_")).toString("hex").slice(0, 64).padEnd(64, "0");
 function blk(height: number, tag: string, prev: string, props: { propTxid?: string; domain?: string } = {}): B {
   const txs: any[] = [{ txid: h32(`cb-${tag}`), inputs: [], outputs: [{ script_pubkey: "0x" + "a1".repeat(20), value: 5000000000 }] }];
   if (props.propTxid) txs.push({ txid: props.propTxid, inputs: [{ prev_txid: h32("cb-g"), vout: 0 }], outputs: [{ script_pubkey: "0x" + "c3".repeat(20), value: 1 }], app: { type: "Propose", domain: props.domain ?? "csd:test", payload_hash: h32("ph"), uri: "u", expires_epoch: 9999 } });
-  return { hash: h32(`blk-${tag}`), height, chainwork: String(height * 1000), header: { bits: 0x1e00ffff, merkle: h32(`mk-${tag}`), nonce: 0, prev, time: 1700000000 + height, version: 1 }, txs };
+  return { hash: h32(`blk-${tag}`), height, chainwork: String(height * 1000 + WORK_EPOCH * 1_000_000_000), header: { bits: 0x1e00ffff, merkle: h32(`mk-${tag}`), nonce: 0, prev, time: 1700000000 + height, version: 1 }, txs };
 }
 function buildChain(tags: string[]): B[] {
+  WORK_EPOCH++; // each freshly-built chain out-works all prior ones (a node only adopts a higher-work chain)
   const out: B[] = []; let prev = h32("genesis");
   tags.forEach((tag, i) => { const b = blk(i, tag, prev, tag.startsWith("P") ? { propTxid: h32(`prop-${tag}`), domain: `dom-${tag}` } : {}); out.push(b); prev = b.hash; });
   return out;
@@ -183,6 +189,33 @@ test("IDXREORG-1 tip-mismatch + deeper-withhold does NOT over-unwind the index",
   assert.equal(await indexedHeight(), 10);
   assert.equal(await storedHash(9), h32("blk-Pi"), "common ancestor height 9 preserved");
   assert.equal(await storedHash(10), h32("blk-Pj2"), "height 10 swapped to the canonical block after recovery");
+});
+
+// ── 2026-07-05 incident: a node that LOST ITS DB and is resyncing presents a tip FAR BELOW ours with
+// LESS cumulative chainwork. That is NOT a reorg (a real reorg presents >= our work); the old code saw
+// the low tip "converge" at a buried height (the low blocks genuinely match — same chain) and
+// hard-DELETEd every row above it (~41k rows, /names emptied). The chainwork REGRESSION GUARD must HOLD
+// the index (serve last-good) and re-derive forward once the node catches back up.
+test("regression guard: node behind on chainwork (db-loss resync) HOLDS, does not wipe the index", async () => {
+  CHAIN = buildChain(["g", "Pa", "Pb", "Pc", "Pd", "Pe"]); // 0..5, our canonical
+  await syncOnce();
+  assert.equal(await indexedHeight(), 5);
+  const rowsBefore = Number(((await store().get("SELECT COUNT(*) n FROM blocks WHERE orphaned=0")) as any).n);
+  // node lost its db and is resyncing: it serves the SAME chain but only up to height 1, and its tip
+  // chainwork is now FAR BELOW what we've indexed (force it down by hand to model the regression).
+  const resync = buildChain(["g", "Pa"]); // 0..1
+  resync[resync.length - 1]!.chainwork = "1"; // << our indexed tip's chainwork
+  CHAIN = resync;
+  const r = await syncOnce();
+  assert.equal(r.reorgs, 0, "no reorg signalled — a behind node is not a reorg");
+  assert.equal(await indexedHeight(), 5, "index HELD at last-good height (not unwound to the resync tip)");
+  const rowsAfter = Number(((await store().get("SELECT COUNT(*) n FROM blocks WHERE orphaned=0")) as any).n);
+  assert.equal(rowsAfter, rowsBefore, "no rows deleted while the node was behind (the ~41k-row nuke prevented)");
+  assert.equal(await storedHash(5), h32("blk-Pe"), "canonical tip still present");
+  // node finishes resyncing PAST our tip (same chain, now taller + higher work) → normal sync resumes
+  CHAIN = buildChain(["g", "Pa", "Pb", "Pc", "Pd", "Pe", "Pf"]); // 0..6
+  await syncOnce();
+  assert.equal(await indexedHeight(), 6, "resumed indexing forward once the node caught back up");
 });
 
 test.after(async () => { server.close(); await closeDb(); });

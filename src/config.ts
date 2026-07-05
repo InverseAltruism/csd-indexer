@@ -40,6 +40,12 @@ export const CFG = {
   // flag tells a load balancer / failover client NOT to route value actions here. The raw
   // seconds_since_tip is always exposed so a consumer can apply its own threshold.
   staleSecs: num("CSD_STALE_SECS", 600),
+  // Never hard-unwind the index below this height. It is the highest SHIPPED SPV checkpoint across the
+  // wallet (namespv 29960, swapguard 38142) + bridge (31076); 38142 is the max. No honest reorg crosses
+  // a buried checkpoint, so a "reorg" that would unwind below it is a node tip-regression (db-loss /
+  // resync), not consensus moving. The primary defense is the chainwork regression guard in the sync
+  // loop; this floor is the backstop. Override if a deeper checkpoint ever ships.
+  checkpointFloor: num("CSD_INDEX_CHECKPOINT_FLOOR", 38142),
 };
 
 export function host(): string { return CFG.listen.split(":")[0] || "127.0.0.1"; }
