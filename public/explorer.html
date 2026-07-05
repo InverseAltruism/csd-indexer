@@ -566,7 +566,7 @@ async function tokenPage(v,ticker){
 }
 function blockRow(b,live){
   if(b.time) TIP_TIME=Math.max(TIP_TIME,b.time);   // keep the age reference current with the chain tip
-  return el(`<tr class="${live?'feed-row':''}" data-h="${b.height}"><td>${link('/block/'+b.height,b.height)}</td>
+  return el(`<tr class="${live?'feed-row':''}" data-h="${b.height}" data-hash="${b.hash}"><td>${link('/block/'+b.height,b.height)}</td>
     <td>${link('/block/'+b.hash,short(b.hash,12),'mono')}</td><td>${b.tx_count}</td><td class="dim" data-ts="${b.time||''}">${b.time?ago(b.time):''}</td></tr>`);
 }
 async function recentBlocks(){
@@ -582,16 +582,19 @@ function subscribeBlocks(tb){
   // SSE / the front-door proxy, which does NOT forward the event-stream — the old EventSource-only feed
   // therefore never updated through cairn-subst.com/explorer, and it stamped streamed rows with the CLIENT
   // clock (Date.now()) so every live block read "0s ago". SSE, when reachable (standalone), just nudges a poll.
-  const seen=new Set([...tb.querySelectorAll('[data-h]')].map(r=>+r.getAttribute('data-h')));
+  const seen=new Map(); tb.querySelectorAll('[data-h]').forEach(r=>seen.set(+r.getAttribute('data-h'), r.getAttribute('data-hash')||''));
   let es=null,last=0;
   async function poll(){
     if(!tb.isConnected){ clearInterval(iv); try{es&&es.close();}catch{} return; }   // view navigated away → stop
     const now=Date.now(); if(now-last<1500) return; last=now;                        // debounce SSE bursts
     let rows; try{ rows=await j('/blocks/recent?limit=12'); }catch{ return; }
     if(!Array.isArray(rows)) return;
-    const fresh=rows.filter(b=>b&&!seen.has(b.height)).sort((a,c)=>a.height-c.height); // oldest-first so prepends keep order
-    for(const b of fresh){ seen.add(b.height); tb.prepend(blockRow(b,true));
-      const hn=$('.pu.hot .n'); if(hn) hn.textContent=Number(b.height).toLocaleString(); }   // keep the hero height live
+    // NEW or CHANGED-hash (reorg) blocks, keyed on height+hash; oldest-first so prepends keep order
+    const fresh=rows.filter(b=>b&&seen.get(b.height)!==b.hash).sort((a,c)=>a.height-c.height);
+    for(const b of fresh){ const existing=tb.querySelector(`tr[data-h="${b.height}"]`); const nr=blockRow(b,true);
+      if(existing){ existing.replaceWith(nr); }                                       // reorg: replace the orphaned row in place
+      else { tb.prepend(nr); const hn=$('.pu.hot .n'); if(hn) hn.textContent=Number(b.height).toLocaleString(); }   // new: prepend + keep the hero height live
+      seen.set(b.height, b.hash); }
     while(tb.children.length>14){ const lc=tb.lastChild; seen.delete(+lc.getAttribute('data-h')); tb.removeChild(lc); }
     if(fresh.length) document.querySelectorAll('[data-ts]').forEach(e=>{const t=+e.getAttribute('data-ts'); if(t)e.textContent=ago(t);}); // re-age with the advanced TIP_TIME
   }
