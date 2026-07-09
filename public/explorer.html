@@ -126,9 +126,16 @@
 </style>
 </head>
 <body>
+<!-- cross-app nav (loads from the cairn origin when this page is proxied at /explorer; absent on a
+     direct :8793 dev hit, which is fine). The explorer's own search header stays below it. -->
+<header id="site-header" data-active="explorer" data-brand="Explorer"></header>
 <header>
   <a class="brand" href="#/" title="explorer home"><span class="dot"></span>CSD&nbsp;<b>Explorer</b></a>
-  <form class="search" onsubmit="return doSearch(event)">
+  <!-- submit is bound in the (nonced) script via addEventListener, NOT an inline onsubmit=: when this
+       page is proxied at cairn's /explorer the CSP is `script-src 'self' 'nonce-…'`, and a nonce never
+       authorizes inline event-handler attributes — the old onsubmit was silently CSP-blocked, so search
+       did nothing via the public front door (it only worked hitting the indexer :8793 directly). -->
+  <form class="search" id="search-form">
     <input id="q" aria-label="search the chain" placeholder="search: name.csd · block height · 0x txid · 0x address" autocomplete="off"/>
     <button>↵</button>
   </form>
@@ -201,6 +208,8 @@ async function verifyInclusion(txid,pos,branch,root){
 
 // ── router ──
 window.addEventListener('hashchange',route);
+// bind search here (NOT an inline onsubmit=) so it survives the nonce CSP on the proxied /explorer.
+document.getElementById('search-form').addEventListener('submit',doSearch);
 // (no eager warmDecimals() here — `let DEC` is declared below, so an eager call would hit its
 // temporal dead zone and reject before its first await, doing nothing. Every render path awaits
 // warmDecimals()/warmVerdicts() itself, which is where the actual warming happens.)
@@ -892,5 +901,6 @@ refreshStats();setInterval(refreshStats,15000);
 setInterval(()=>document.querySelectorAll('[data-ts]').forEach(e=>{const t=+e.getAttribute('data-ts'); if(t)e.textContent=ago(t);}),10000);  // tick relative times
 route();
 </script>
+<script src="/header.js"></script>
 </body>
 </html>
