@@ -15,6 +15,9 @@
   a{color:var(--green);text-decoration:none}a:hover{text-decoration:underline}
   header{position:sticky;top:0;background:linear-gradient(#050505f5,#050505e6);backdrop-filter:blur(6px);border-bottom:1px solid var(--line);padding:13px 18px;display:flex;gap:16px;align-items:center;flex-wrap:wrap;z-index:5}
   header::after{content:"";position:absolute;left:0;right:0;bottom:-1px;height:1px;background:linear-gradient(90deg,transparent,rgba(87,217,119,.5),rgba(255,210,74,.4),transparent)}
+  /* the unified nav (#site-header) is filled by cairn's /header.js when proxied; on a direct :8793 hit
+     that file 404s, so hide the empty bar instead of showing a styled-but-blank strip. */
+  #site-header:empty{display:none}#site-header::after{content:none}
   .brand{font-weight:700;letter-spacing:.5px;color:var(--green);display:flex;gap:8px;align-items:center}
   .brand:hover{text-decoration:none;filter:brightness(1.2)}
   .brand b{color:var(--amber)}
