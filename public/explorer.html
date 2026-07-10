@@ -8,6 +8,9 @@
 <style>
   :root{--bg:#050505;--panel:#0a0c0b;--panel2:#0d0f0e;--line:#1b1f1d;--green:#57d977;--amber:#ffd24a;--fg:#f2f2f2;--dim:#6f6f6f;--dim2:#a6a6a6;--red:#ff6b6b}
   *{box-sizing:border-box}
+  /* overflow-x:clip (NOT hidden: clip doesn't create a scroll container, so position:sticky keeps
+     working) - belt-and-braces against any stray wide element panning the whole page sideways on phones */
+  html,body{overflow-x:clip}
   body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
   body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
     background:radial-gradient(60% 40% at 70% -10%,rgba(87,217,119,.05),transparent 60%),
@@ -16,15 +19,20 @@
   header{position:sticky;top:0;background:linear-gradient(#050505f5,#050505e6);backdrop-filter:blur(6px);border-bottom:1px solid var(--line);padding:13px 18px;display:flex;gap:16px;align-items:center;flex-wrap:wrap;z-index:5}
   header::after{content:"";position:absolute;left:0;right:0;bottom:-1px;height:1px;background:linear-gradient(90deg,transparent,rgba(87,217,119,.5),rgba(255,210,74,.4),transparent)}
   /* the unified nav (#site-header) is filled by cairn's /header.js when proxied; on a direct :8793 hit
-     that file 404s, so hide the empty bar instead of showing a styled-but-blank strip. */
+     that file 404s, so hide the empty bar instead of showing a styled-but-blank strip.
+     header#site-header (higher specificity than header.js's injected #site-header rule) is made
+     NON-sticky here: both bars sticking at top:0 made the unified nav (z-index 900) cover the
+     explorer's own search header (z-index 5) the moment the page scrolled - search looked dead. On
+     the explorer the nav scrolls away and the search bar keeps the sticky slot. */
   #site-header:empty{display:none}#site-header::after{content:none}
+  header#site-header{position:static}
   .brand{font-weight:700;letter-spacing:.5px;color:var(--green);display:flex;gap:8px;align-items:center}
   .brand:hover{text-decoration:none;filter:brightness(1.2)}
   .brand b{color:var(--amber)}
   .dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 8px var(--green);animation:pulse 2s infinite}
   @keyframes pulse{50%{opacity:.4}}
   form.search{flex:1;min-width:220px;display:flex}
-  form.search input{flex:1;background:var(--panel);border:1px solid var(--line);color:var(--fg);padding:8px 10px;border-radius:6px 0 0 6px;font-family:inherit}
+  form.search input{flex:1;min-width:0;background:var(--panel);border:1px solid var(--line);color:var(--fg);padding:8px 10px;border-radius:6px 0 0 6px;font-family:inherit}
   form.search button{background:var(--panel2);border:1px solid var(--line);border-left:0;color:var(--green);padding:0 14px;border-radius:0 6px 6px 0;cursor:pointer;font-family:inherit}
   .stats{display:flex;gap:14px;color:var(--dim2);font-size:12px;flex-wrap:wrap}
   .stats b{color:var(--fg)}
@@ -105,6 +113,8 @@
   .tab{background:var(--panel2);border:1px solid var(--line);color:var(--dim2);padding:4px 12px;border-radius:6px;cursor:pointer;font-family:inherit;font-size:12px}
   .tab.on{color:var(--green);border-color:#1f4d2e;background:#0b1a10}
   .actrow{display:flex;justify-content:space-between;align-items:center;gap:12px;border-bottom:1px solid var(--line);padding:2px 0}
+  .actrow>.action{min-width:0;overflow-wrap:anywhere}   /* long names/reasons wrap instead of pushing the row past the viewport */
+  .actrow .meta{flex:none;text-align:right;font-size:11px;color:var(--dim);line-height:1.5;white-space:nowrap}
   .actrow:last-child{border-bottom:none}
   .spark{padding:6px 0}
   .chart-wrap{position:relative}
@@ -114,8 +124,13 @@
   /* ── mobile ── */
   @media (max-width:720px){
     main{padding:10px}
-    header{padding:10px 12px;gap:10px}
-    .stats{font-size:11px;gap:10px}
+    header{padding:10px 12px;gap:8px 10px}
+    /* the search form gets its own full-width row: inline it overflowed the viewport and pushed
+       the submit button (and part of the input) off-screen - search was unusable on phones */
+    form.search{order:3;flex-basis:100%;min-width:0}
+    .stats{font-size:11px;gap:10px;margin-left:auto}
+    .cx-noeffect{white-space:normal}
+    .actrow{flex-wrap:wrap}.actrow .meta{text-align:left}
     .panel{padding:12px;border-radius:8px}
     .kv{grid-template-columns:1fr;gap:2px 0}
     .kv div:nth-child(odd){margin-top:8px;font-size:11px;text-transform:uppercase;letter-spacing:.5px}
@@ -145,7 +160,10 @@
   <div class="stats" id="stats"><span class="dim">connecting…</span></div>
 </header>
 <main id="view"><div class="loading">loading…</div></main>
-<footer>
+<!-- unified cairn footer (filled by /footer.js through the front-door proxy, same pattern as the
+     header). The static children below are the STANDALONE fallback: on a direct :8793 hit
+     /footer.js 404s and this original disclaimer keeps rendering as-is. -->
+<footer id="site-footer" data-note="CSD Explorer is a derived, untrusted view - inclusion is folded in your browser against the indexer's own block header (a consistency check, NOT a PoW/consensus proof; for that, run the L0 light client). Run your own: github.com/InverseAltruism/csd-indexer">
   CSD Explorer · a <b>derived, untrusted view</b> - inclusion is folded in your browser against the indexer's own block header (a consistency check, NOT a PoW/consensus proof; for that, run the L0 light client).
   <a href="https://github.com/InverseAltruism/csd-indexer" target="_blank">source</a>
 </footer>
@@ -162,8 +180,9 @@ const API = (() => {
 // CairnX proxy enables token/name enrichment. Standalone (:8793) degrades gracefully.
 const SIB = (() => {
   const m = location.pathname.match(/(.*)\/explorer\/?$/);
-  if (!m) return { node:null, cairnx:null };
-  return { node: location.origin + m[1] + "/api/rpc", cairnx: location.origin + m[1] + "/trade/api/cairnx" };
+  if (!m) return { node:null, cairnx:null, market:null };
+  return { node: location.origin + m[1] + "/api/rpc", cairnx: location.origin + m[1] + "/trade/api/cairnx",
+           market: location.origin + m[1] + "/api/market" };
 })();
 const jx = async(base,p)=>{ if(!base) return null; try{ const r=await fetch(base+p); if(!r.ok) return null; return await r.json(); }catch{ return null; } };
 
@@ -223,23 +242,33 @@ async function route(){
   try{
     if(h==='/'||h==='')          await home(v);
     else if(h.startsWith('/block/'))    await blockPage(v,h.slice(7));
-    else if(h.startsWith('/tx/'))       await txPage(v,h.slice(4));
+    else if(h.startsWith('/tx/')){
+      // a pasted 64-hex is usually a txid but can be a BLOCK hash - fall through instead of erroring
+      try{ await txPage(v,h.slice(4)); }
+      catch(err){ const id=h.slice(4);
+        if(/^0x[0-9a-f]{64}$/i.test(id)&&await j('/block/'+id).catch(()=>null)){ location.hash='/block/'+id; return; }
+        throw err; }
+    }
     else if(h.startsWith('/address/'))  await addrPage(v,h.slice(9));
     else if(h.startsWith('/domain/'))   await domainPage(v,decodeURIComponent(h.slice(8)));
     else if(h.startsWith('/proposal/')) await proposalPage(v,h.slice(10));
     else if(h.startsWith('/token/'))     await tokenPage(v,decodeURIComponent(h.slice(7)));
     else if(h.startsWith('/name/'))      await namePage(v,decodeURIComponent(h.slice(6)));
-    else v.innerHTML='<div class="panel">unknown route</div>';
-  }catch(e){v.innerHTML='<div class="panel red">error: '+esc(e.message)+'</div>';}
+    else v.innerHTML='<div class="panel"><h2>not found</h2><div class="muted">Nothing lives at this route. Search above for a .csd name, block height, txid or address - or go <a href="#/">home</a>.</div></div>';
+  }catch(e){v.innerHTML='<div class="panel"><h2 class="red">nothing found</h2><div class="muted">'+esc(e.message)+'</div><div class="muted" style="margin-top:6px">Check the value, or search above for a .csd name, block height, txid or 0x address. <a href="#/">← back to the explorer</a></div></div>';}
   paintNames(v);
 }
 
 function doSearch(e){e.preventDefault();let q=$('#q').value.trim();if(!q)return false;
+  // normalize what real users paste: inner whitespace, thousands separators on heights, missing 0x
+  q=q.replace(/\s+/g,'');
+  if(/^[0-9][0-9,]*$/.test(q)) q=q.replace(/,/g,'');
   const csd=/\.csd$/i.test(q), bare=q.replace(/\.csd$/i,'');
+  const hex=q.replace(/^0x/i,'');
   if(csd&&/^[a-z0-9][a-z0-9-]{0,30}$/i.test(bare))location.hash='/name/'+bare.toLowerCase();  // explicit name.csd
   else if(/^[0-9]+$/.test(q))location.hash='/block/'+q;            // bare number → height
-  else if(/^0x[0-9a-f]{64}$/i.test(q))location.hash='/tx/'+q.toLowerCase();
-  else if(/^0x[0-9a-f]{40}$/i.test(q))location.hash='/address/'+q.toLowerCase();
+  else if(/^[0-9a-f]{64}$/i.test(hex))location.hash='/tx/0x'+hex.toLowerCase();      // txid / block hash (0x optional)
+  else if(/^[0-9a-f]{40}$/i.test(hex))location.hash='/address/0x'+hex.toLowerCase(); // address (0x optional)
   else if(/^[a-z0-9][a-z0-9-]{0,30}$/i.test(q))location.hash='/name/'+q.toLowerCase();         // bare word → .csd name
   else location.hash='/domain/'+encodeURIComponent(q);
   $('#q').value='';return false;}
@@ -306,6 +335,14 @@ function emittedAt(H){const HALVE=1051200;let total=0,reward=50e8,h=0;while(h<H&
 function bitsToTarget(bits){const exp=(bits>>>24)&0xff, mant=BigInt(bits&0xffffff); return exp<=3?(mant>>BigInt(8*(3-exp))):(mant<<BigInt(8*(exp-3)));}
 function difficultyOf(bits){const t=bitsToTarget(bits>>>0); if(t<=0n)return 0; const d1=0xffffn*(2n**208n); return Number(d1*1000n/t)/1000;} // relative to difficulty-1
 function compactNum(n){n=Number(n)||0;const u=['','K','M','G','T','P','E','Z','Y'];let i=0;while(Math.abs(n)>=1000&&i<u.length-1){n/=1000;i++;}return (Math.abs(n)<10?n.toFixed(2):Math.abs(n)<100?n.toFixed(1):Math.round(n))+u[i];}
+// adaptive H/s units (a fixed /1e9 once rendered "4903.5 GH/s" where the dashboard said "4.9 TH/s")
+function fmtHashrate(hps){hps=Number(hps)||0;const u=['H/s','KH/s','MH/s','GH/s','TH/s','PH/s'];let i=0;while(hps>=1000&&i<u.length-1){hps/=1000;i++;}return{val:hps>=100?Math.round(hps):hps>=10?hps.toFixed(1):hps.toFixed(2),unit:u[i]};}
+// network hashrate over a span of recent blocks = Δcumulative-chainwork ÷ Δtime (chainwork ≈ total
+// hashes ever done, so this needs no difficulty constant and matches /dashboard's methodology; the
+// indexer's /analytics/miners figure is the same math over 24h). newest-first rows; BigInt-safe.
+function hashrateOf(rows){ try{ if(!rows||rows.length<2) return 0;
+  const a=rows[rows.length-1], b=rows[0], dt=(b.time||0)-(a.time||0);
+  if(dt<=0) return 0; return Number(BigInt(b.chainwork)-BigInt(a.chainwork))/dt; }catch{ return 0; } }
 const DOMAIN_LABEL={'cairnx:v1':'CairnX · tokens · names · DEX','csd:anchor:base':'Base anchors','csd:bridge:deploy':'Bridge registry'};
 const domainLabel=(d)=>DOMAIN_LABEL[d]||d;
 // interactive SVG chart (line or bars) with hover crosshair + tooltip. pts:[{y,tip}] (tip is HTML and
@@ -431,10 +468,12 @@ async function home(v){
 
   // ── the chain at a glance ──
   const halvDays=supply?Math.round(supply.halving.est_seconds_remaining/86400):null;
+  // hashrate: recent-window Δchainwork/Δtime (matches /dashboard); indexer 24h avg as fallback + tooltip
+  const hrRecent=hashrateOf(recent), hr=fmtHashrate(hrRecent||(miners&&miners.network_hashrate)||0), hr24=fmtHashrate((miners&&miners.network_hashrate)||0);
   v.appendChild(el(`<div class="pulse">
     <div class="pu hot"><div class="n">${health.indexed_height.toLocaleString()}</div><div class="l">block height</div></div>
-    <div class="pu"><div class="n">${miners?(miners.network_hashrate/1e9).toFixed(1):'-'} <span class="u">GH/s</span></div><div class="l">network hashrate</div></div>
-    <div class="pu"><div class="n">${miners?Math.round(miners.avg_interval_secs):'-'} <span class="u">s</span></div><div class="l">avg block time</div></div>
+    <div class="pu" title="Δchainwork ÷ Δtime over the last ${recent.length} blocks · 24h avg ${hr24.val} ${hr24.unit}"><div class="n">${hr.val} <span class="u">${hr.unit}</span></div><div class="l">hashrate (${hrRecent?'~1h':'24h avg'})</div></div>
+    <div class="pu"><div class="n">${miners?Math.round(miners.avg_interval_secs):'-'} <span class="u">s</span></div><div class="l">avg block time (24h)</div></div>
     <div class="pu"><div class="n">${miners?miners.miner_count:'-'}</div><div class="l">miners (24h)</div></div>
     <div class="pu gold"><div class="n">${supply?fmtCSD(supply.emitted_supply).replace(' CSD',''):'-'} <span class="u">CSD</span></div><div class="l">circulating (${supply?supply.pct_emitted.toFixed(2):'-'}% of max)</div></div>
     <div class="pu"><div class="n">${halvDays!=null?'~'+Math.round(halvDays/365*10)/10+' <span class="u">yr</span>':'-'}</div><div class="l">to first halving</div></div>
@@ -447,10 +486,26 @@ async function home(v){
       <span>max supply <b style="color:var(--fg)">${supply?fmtCSD(supply.max_supply):'-'}</b></span>
       <span>block reward <b style="color:var(--fg)">${supply?fmtCSD(supply.block_reward):'-'}</b></span>
       <span>emitted <b class="green">${supply?supply.pct_emitted.toFixed(2)+'%':'-'}</b></span></div>
+    <div id="mktrow" style="display:none;gap:20px;flex-wrap:wrap;font-size:13px;color:var(--dim2);margin-bottom:10px"></div>
     <div class="bar" style="height:6px"><i style="width:${supply?Math.max(1,supply.pct_emitted):0}%"></i></div>
     <div class="muted" style="margin:16px 0 6px">emission schedule: 50 CSD/block, halving every 1,051,200 blocks (~4 years), secured by SHA-NI proof-of-work</div>
     <div id="emchart"></div></div>`);
   v.appendChild(csdPanel);
+  // live market context (SafeTrade CSD/USDT via the front door's /api/market/csd) — shown only
+  // when the feed answers; Mcap/FDV = price × the SAME emitted/max supply displayed above
+  (async()=>{
+    const m=await jx(SIB.market,'/csd'); const row=$('#mktrow',csdPanel);
+    if(!m||!m.ok||!(m.price>0)||!row||!supply) return;
+    const usd=(v,d)=>v==null||!isFinite(v)?'-':'$'+Number(v).toLocaleString(undefined,{minimumFractionDigits:d,maximumFractionDigits:d});
+    const coins=(base)=>Number(BigInt(base)/10000n)/10000;
+    const chg=m.changePct==null?'':` <span class="${m.changePct>=0?'green':'red'}">${m.changePct>=0?'▲':'▼'}${Math.abs(m.changePct).toFixed(1)}%</span>`;
+    row.style.display='flex';
+    row.innerHTML=`<span>price <b style="color:var(--fg)">${usd(m.price,m.price<1?4:2)}</b>${chg}</span>
+      <span>market cap <b style="color:var(--fg)">${usd(m.price*coins(supply.emitted_supply),0)}</b></span>
+      <span>FDV <b style="color:var(--fg)">${usd(m.price*coins(supply.max_supply),0)}</b></span>
+      ${m.volQuote!=null?`<span>24h volume <b style="color:var(--fg)">${usd(m.volQuote,0)}</b></span>`:''}
+      <span class="dim">via <a href="https://safetrade.com/exchange/CSD-USDT" target="_blank" rel="noopener">${esc(m.source||'SafeTrade')} ↗</a>${m.stale?' · <span class="amber">stale</span>':''}</span>`;
+  })();
   (()=>{ const genesisTime=recent.length?recent[recent.length-1].time-recent[recent.length-1].height*120:(Date.now()/1000-(health.indexed_height||0)*120);
     const HALVE=1051200,maxH=8*HALVE,N=44;
     const pts=Array.from({length:N},(_,k)=>{const hh=Math.round(k/(N-1)*maxH);const csd=emittedAt(hh)/1e8;const yr=new Date((genesisTime+hh*120)*1000).getUTCFullYear();return{y:csd,tip:`<b>${yr}</b> · ${compactNum(csd)} CSD emitted`};});
@@ -504,7 +559,7 @@ async function home(v){
     <div class="scroll-x"><table><thead><tr><th>height</th><th>hash</th><th>txs</th><th>time</th></tr></thead><tbody id="blkfeed" aria-live="polite"></tbody></table></div></div>`);
   v.appendChild(feed);
   const tb=$('#blkfeed',feed);
-  recent.forEach(b=>tb.appendChild(blockRow(b)));
+  recent.slice(0,12).forEach(b=>tb.appendChild(blockRow(b)));
   subscribeBlocks(tb);
 
   // ── recent CairnX activity (names + DEX), decoded — All / Names / DEX ──
@@ -514,15 +569,23 @@ async function home(v){
       const html=describeDomainRecord('cairnx:v1',p.uri,VER&&VER[p.txid.toLowerCase()]); return html?{p,html,name:!!(rec&&NAME_KINDS.has(rec.t))}:null; })
     .filter(Boolean);
   if(acts.length){
+    // age from height distance (blocks target ~2min): honest "~" display, no per-row block fetch
+    const avgSecs=(miners&&miners.avg_interval_secs)||120, tipH=health.indexed_height||0;
+    const hAgo=(hh)=>{ if(!hh||!tipH||hh>tipH) return ''; const s=Math.round((tipH-hh)*avgSecs);
+      if(s<90)return 'just now'; if(s<3600)return '~'+Math.round(s/60)+'m ago'; if(s<86400)return '~'+Math.round(s/3600)+'h ago'; return '~'+Math.round(s/86400)+'d ago'; };
     const act=el(`<div class="panel"><h2>recent CairnX activity</h2>
       <div class="tabs"><button class="tab on" data-f="all">all</button><button class="tab" data-f="name">names</button><button class="tab" data-f="dex">DEX</button></div>
-      <div id="actfeed"></div></div>`);
+      <div id="actfeed"></div><div id="actmore" style="margin-top:10px"></div></div>`);
     v.appendChild(act);
-    const render=(f)=>{ const list=acts.filter(a=>f==='all'||(f==='name'?a.name:!a.name)).slice(0,18);
-      $('#actfeed',act).innerHTML=list.length?list.map(a=>`<div class="actrow"><div class="action" style="padding:5px 0">${a.html}</div><a class="dim mono" href="#/tx/${esc(a.p.txid)}">${short(a.p.txid,6)}</a></div>`).join(''):'<div class="muted">nothing here yet</div>';
+    let shown=18, filt='all';
+    const render=()=>{ const all=acts.filter(a=>filt==='all'||(filt==='name'?a.name:!a.name)), list=all.slice(0,shown);
+      $('#actfeed',act).innerHTML=list.length?list.map(a=>`<div class="actrow"><div class="action" style="padding:5px 0">${a.html}</div>
+        <div class="meta">by ${addrLink(a.p.proposer)} · ${link('/block/'+a.p.height,hAgo(a.p.height)||('h'+Number(a.p.height).toLocaleString()),'dim')} · <a class="dim mono" href="#/tx/${esc(a.p.txid)}">${short(a.p.txid,6)}</a></div></div>`).join(''):'<div class="muted">nothing here yet</div>';
+      $('#actmore',act).innerHTML=all.length>shown?`<button class="tab" id="actshowmore">show ${Math.min(24,all.length-shown)} more</button>`:'';
+      const mb=$('#actshowmore',act); if(mb) mb.onclick=()=>{shown+=24;render();};
       paintNames($('#actfeed',act)); };
-    act.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{act.querySelectorAll('.tab').forEach(x=>x.classList.toggle('on',x===b));render(b.dataset.f);});
-    render('all');
+    act.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{act.querySelectorAll('.tab').forEach(x=>x.classList.toggle('on',x===b));filt=b.dataset.f;shown=18;render();});
+    render();
   }
 
   // ── miners (24h) + top holders ──
@@ -537,7 +600,7 @@ async function home(v){
 
   // ── block times: interactive chart over the last ~30 blocks (hover → seconds) ──
   (async()=>{
-    const cb=(await j('/blocks/recent?limit=31').catch(()=>null))||recent;   // newest-first
+    const cb=recent;   // newest-first; recentBlocks() already pulled 31 in one round-trip
     const iv=[]; for(let i=0;i<cb.length-1;i++){ if(cb[i].time&&cb[i+1].time) iv.push({h:cb[i].height,dt:Math.max(0,cb[i].time-cb[i+1].time)}); }
     iv.reverse();   // oldest → newest, left → right
     if(iv.length<2) return;
@@ -582,8 +645,9 @@ function blockRow(b,live){
     <td>${link('/block/'+b.hash,short(b.hash,12),'mono')}</td><td>${b.tx_count}</td><td class="dim" data-ts="${b.time||''}">${b.time?ago(b.time):''}</td></tr>`);
 }
 async function recentBlocks(){
-  // one round-trip (newest-first) instead of a tip→N×(height→hash→block) waterfall
-  try{ const r=await j('/blocks/recent?limit=12'); if(Array.isArray(r)) return r; }catch{}
+  // one round-trip (newest-first); 31 blocks feeds the feed (12 shown), the ~1h hashrate
+  // estimate AND the block-times chart from a single fetch
+  try{ const r=await j('/blocks/recent?limit=31'); if(Array.isArray(r)) return r; }catch{}
   // fallback for an indexer without /blocks/recent (older deploy / different host)
   const tip=await j('/blocks/tip/height');const out=[];
   for(let h=tip;h>tip-12&&h>=0;h--){const hash=await j('/block-height/'+h).catch(()=>null);if(!hash)continue;out.push(await j('/block/'+hash));}
@@ -629,10 +693,18 @@ async function blockPage(v,id){
     <div>difficulty</div><div class="v">${compactNum(difficultyOf(b.bits))} <span class="dim">· bits 0x${(b.bits>>>0).toString(16)}</span></div>
     <div>nonce</div><div class="v">${b.nonce}</div>
     <div>transactions</div><div class="v">${b.tx_count}</div>
+    <div>miner</div><div class="v" id="blkminer"><span class="dim">…</span></div>
     <div>chainwork</div><div class="v">${compactNum(b.chainwork)}H <span class="dim">cumulative work</span></div>
   </div></div>`));
-  v.appendChild(el(`<div class="panel"><h2>transactions (${txids.length})</h2><table><thead><tr><th>#</th><th>txid</th></tr></thead>
-    <tbody>${txids.map((t,i)=>`<tr><td class="dim">${i}</td><td>${txidLink(t)}</td></tr>`).join('')}</tbody></table></div>`));
+  // who mined it + what it paid (coinbase = first tx; display only)
+  (async()=>{ const m=$('#blkminer'); if(!m||!txids.length) return;
+    const cb=await j('/tx/'+txids[0]).catch(()=>null);
+    if(!cb||!cb.coinbase){ m.innerHTML='<span class="dim">-</span>'; return; }
+    const reward=(cb.outputs||[]).reduce((s,o)=>s+o.value,0);
+    m.innerHTML=`${addrLink(cb.outputs&&cb.outputs[0]&&cb.outputs[0].addr)} <span class="dim">· reward ${fmtCSD(reward)}</span>`;
+    paintNames(m); })();
+  v.appendChild(el(`<div class="panel"><h2>transactions (${txids.length})</h2><div class="scroll-x"><table><thead><tr><th>#</th><th>txid</th></tr></thead>
+    <tbody>${txids.map((t,i)=>`<tr><td class="dim">${i}</td><td>${txidLink(t)}</td></tr>`).join('')}</tbody></table></div></div>`));
 }
 
 async function txPage(v,id){
@@ -692,11 +764,16 @@ async function txPage(v,id){
     <div class="kv">
       <div>txid</div><div class="v mono green">${esc(tx.txid)}</div>
       <div>block</div><div class="v">${link('/block/'+tx.height,tx.height)} ${status?`· ${status.confirmations} confs ${status.final?'<span class="badge ok">final</span>':'<span class="badge pend">maturing</span>'}`:''}</div>
+      <div>time</div><div class="v" id="txtime"><span class="dim">…</span></div>
       <div>position</div><div class="v">${tx.pos}</div>
       <div>signer</div><div class="v">${addrLink(tx.signer)}</div>
       <div>fee</div><div class="v">${fmtCSD(tx.fee)}</div>
       <div>inputs / outputs</div><div class="v">${tx.n_in} / ${tx.n_out}</div>
     </div></div>`));
+  // when the tx was mined (one block-header lookup, display only)
+  (async()=>{ const t=$('#txtime'); if(!t) return;
+    const blk=await j('/block/'+await j('/block-height/'+tx.height).catch(()=>null)).catch(()=>null);
+    t.innerHTML=blk&&blk.time?`${new Date(blk.time*1000).toISOString().replace('T',' ').slice(0,19)} UTC <span class="dim">(${ago(blk.time)})</span>`:'<span class="dim">-</span>'; })();
   v.appendChild(el(`<div class="panel"><h2>outputs</h2><div class="scroll-x"><table><thead><tr><th>#</th><th>address</th><th>value</th><th class="opt">status</th></tr></thead>
     <tbody>${(tx.outputs||[]).map(o=>`<tr><td class="dim">${o.vout}</td><td>${addrLink(o.addr)}</td><td>${fmtCSD(o.value)}</td>
       <td class="opt">${o.spent_txid?`<span class="dim">spent by ${txidLink(o.spent_txid)}</span>`:'<span class="badge ok">unspent</span>'}</td></tr>`).join('')}</tbody></table></div></div>`));
@@ -905,5 +982,6 @@ setInterval(()=>document.querySelectorAll('[data-ts]').forEach(e=>{const t=+e.ge
 route();
 </script>
 <script src="/header.js"></script>
+<script src="/footer.js"></script>
 </body>
 </html>
