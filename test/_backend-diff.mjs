@@ -17,9 +17,9 @@
 //      on BOTH sides before comparing.
 // meta is reported informationally only (indexed_height legitimately differs mid-catchup).
 //
-// USAGE (run as a user that can read the live sqlite DB, e.g. sudo -u csdsvc):
+// USAGE (run as a user that can read the live sqlite DB, e.g. the DB service user via sudo -u):
 //   node test/_backend-diff.mjs --sqlite /var/lib/csd-indexer/csd-index.db \
-//     --pg "postgresql://csdsvc@/csd_index?host=/var/run/postgresql&port=5439" [--pg-schema public]
+//     --pg "postgresql://<db-user>@/csd_index?host=/var/run/postgresql" [--pg-schema public]
 //     [--max-height H] [--lag 12] [--max-mismatches 10]
 // Exit 0 = every table matches at H. Non-zero = mismatch (first N printed per table).
 //

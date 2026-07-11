@@ -14,10 +14,10 @@
 //      while blocks land" property.
 //
 // SAFETY: reads touch only the real tables read-only; ALL writes go to a scratch sqlite file
-// and a scratch pg schema (bench_tmp_<pid>), both dropped at the end. Run as csdsvc (peer auth).
+// and a scratch pg schema (bench_tmp_<pid>), both dropped at the end. Run as the DB service user (peer auth).
 //
 // USAGE: node test/_backend-bench.mjs --sqlite /var/lib/csd-indexer/csd-index.db \
-//          --pg "postgresql://csdsvc@/csd_index?host=/var/run/postgresql&port=5439"
+//          --pg "postgresql://<db-user>@/csd_index?host=/var/run/postgresql"
 import { DatabaseSync } from "node:sqlite";
 import { createRequire } from "node:module";
 import { rmSync } from "node:fs";

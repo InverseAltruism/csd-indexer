@@ -43,7 +43,7 @@ TypeScript, run directly via `tsx` (no build step, no native deps; `node:sqlite`
 - `src/stream.ts` + `src/events.ts` - event bus -> SSE firehoses + WS /ws; caps: 500 SSE, 500 WS, 1000 sub keys, 4MB per-conn outbound buffer.
 - `public/explorer.html` - single self-contained SPA served at `/`; re-verifies merkle proofs in-browser (SubtleCrypto) and re-hashes proposal content against payload_hash. Served per-request from disk: edits go live without a restart. Carries the unified cairn nav: a `#site-header` placeholder filled by cairn's `/header.js` (only resolves through the /explorer proxy; hidden via `#site-header:empty` on a direct :8793 hit where it 404s).
 
-Repo-root `csd-index.db{,-shm,-wal}` are gitignored stale dev artifacts (a real deployment keeps its data in its own db file or in Postgres). The `before-*.png`/`test.png` screenshots are accidental commits, harmless.
+Repo-root `csd-index.db{,-shm,-wal}` are gitignored stale dev artifacts (a real deployment keeps its data in its own db file or in Postgres). Keep binary/screenshot artifacts out of the repo (a stray set of `before-*.png` dev screenshots was removed 2026-07-11).
 
 ## Core flows
 
