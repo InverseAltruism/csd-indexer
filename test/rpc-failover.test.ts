@@ -1,8 +1,17 @@
 // Multi-backend RPC failover: selectBackend() must read the reachable, highest-chainwork backend, with
 // stickiness (no flap, no auto-fail-back). Two mock nodes A (primary) and B whose tips we drive. No network.
+// ROUTE-1 (IDX-BACKEND-POW-1): a non-primary now only wins on work/height when its tip header is PoW-valid
+// AND hash-bound, so every mock serves a REAL on-chain tip header (block 32803) + its tip hash. That keeps
+// the honest-failover assertions below valid under the PoW gate (an honest ahead-backend proves work); the
+// forged-work case is covered separately in rpc-pow-route.test.ts.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
+
+// A REAL on-chain header (block 32803): sha256d(serializeHeader) <= target(bits) -> PoW-valid, and it
+// hashes to realTipHash (hash-binding). Same vector cairn's ROUTE-1 selftest uses.
+const realHeader = { version: 1, prev: "0x00000000000023001088ebb25d88a0657092d00129c76aaaa28a0f5dd5609095", merkle: "0xe0a002b0c98a8e64ecf2d7d2c2c1d6863b5dd9e03e6a3f22aaea6f03788cf5ef", time: 1781476758, bits: 453072620, nonce: 2749131683 };
+const realTipHash = "0x0000000000010c70c936f93ee4acbf76016d9c1f51dcffc78924d561bbcf4928";
 
 function mockNode() {
   let height = 0, work = 0n, up = true;
@@ -10,7 +19,9 @@ function mockNode() {
     res.setHeader("content-type", "application/json");
     res.setHeader("connection", "close");                                // no keep-alive: sockets close so srv.close() is clean
     if (!up) { res.statusCode = 503; return res.end("{}"); }             // "down" -> not ok -> treated unreachable
-    if (req.url === "/tip") return res.end(JSON.stringify({ ok: true, height, chainwork: String(work), tip: "0x00" }));
+    if (req.url === "/tip") return res.end(JSON.stringify({ ok: true, height, chainwork: String(work), tip: realTipHash }));
+    if (req.url?.startsWith("/block/height/"))                            // ROUTE-1: serve a PoW-valid tip header, bound to realTipHash
+      return res.end(JSON.stringify({ ok: true, hash: realTipHash, height, chainwork: String(work), header: realHeader, txs: [] }));
     res.statusCode = 404; res.end("{}");
   });
   return {
