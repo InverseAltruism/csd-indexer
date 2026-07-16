@@ -19,7 +19,7 @@ process.env.CSD_INDEX_FROM = "0";
 process.env.CSD_CONFIRMATIONS_FINAL = "6";
 
 const { writeBlock, unwindAbove, indexedHeight } = await import("../src/indexer.js");
-const { store, setMeta, resetStoreForTests, closeDb } = await import("../src/db.js");
+const { store, setMeta, getMeta, resetStoreForTests, closeDb } = await import("../src/db.js");
 const { merkleProof } = await import("../src/merkle.js");
 await resetStoreForTests();
 test.after(async () => { await closeDb(); });
@@ -294,4 +294,35 @@ test("GRX-WIRE-CLAMP-1: an over-2^53 consensus expires_epoch is stored as a NON-
   const okRow = (await store().get<{ expires_epoch: number | bigint }>("SELECT expires_epoch FROM proposals WHERE txid=?", okTxid))!;
   assert.equal(Number(okRow.expires_epoch), 9826, "a normal epoch is stored unchanged");
   assert.ok(Number.isSafeInteger(Number(okRow.expires_epoch)), "normal epoch reads back as a safe integer (accepted)");
+});
+
+// F11: the tip-pointer atomicity fix + indexedHeight self-heal. Historically setMeta(TIP_KEY) ran AFTER
+// unwindAbove committed; a crash in that gap left meta AHEAD of the blocks table and the forward scan then
+// SKIPPED the un-re-indexed gap, serving a canonically-spent output as a live UTXO (the 2026-07-06 ghost class).
+test("F11: unwindAbove folds the tip pointer atomically + indexedHeight self-heals a stale-ahead meta", async () => {
+  // clean slate so MAX(height) reflects ONLY this test's blocks (the suite shares one DB)
+  for (const t of ["blocks", "txs", "outputs", "address_history", "proposals", "attestations"]) await store().run(`DELETE FROM ${t}`);
+
+  // a small canonical chain 100..102 where the tx at 102 spends the coinbase from 100
+  const b100 = mkBlock(100, "0x" + "00".repeat(32), [coinbase("f11-cbA", ADDR_A)]);
+  await writeBlock(b100); await setMeta("indexed_height", "100");
+  const b101 = mkBlock(101, b100.hash, [coinbase("f11-cb1", ADDR_A)]);
+  await writeBlock(b101); await setMeta("indexed_height", "101");
+  const spend = { txid: txid("f11-spend"), version: 1, locktime: 0, inputs: [{ prev_txid: txid("f11-cbA"), vout: 0, script_sig: sigFor("02" + "cd".repeat(32)) }], outputs: [{ script_pubkey: spk(ADDR_B), value: 4_000_000_000 }] };
+  const b102 = mkBlock(102, b101.hash, [coinbase("f11-cb2", ADDR_A), spend]);
+  await writeBlock(b102); await setMeta("indexed_height", "102");
+
+  // 1) FOLD (mutation-sensitive to the fold): unwindAbove(101) must write the tip pointer to 101 INSIDE its own
+  // txn, with NO separate setMeta call. Check the RAW meta (getMeta) — remove the fold and this stays "102".
+  await unwindAbove(101);   // deliberately NO setMeta here
+  assert.equal(await getMeta("indexed_height"), "101", "F11 fold: unwindAbove wrote the tip pointer atomically inside its txn");
+  assert.equal(Number((await store().get<any>("SELECT COUNT(*) n FROM blocks WHERE height>101")).n), 0, "blocks above the ancestor deleted");
+  assert.equal((await store().get<any>("SELECT spent_txid FROM outputs WHERE txid=? AND vout=0", txid("f11-cbA")))?.spent_txid ?? null, null, "the orphaned spend at 102 was reversed");
+
+  // 2) SELF-HEAL (mutation-sensitive to the self-heal): reproduce the post-crash residue — a stale-AHEAD meta
+  // (200) while the real tip is 101. indexedHeight must clamp DOWN to MAX(blocks), so the forward scan resumes
+  // at the gap (102), not past it (201). Remove the self-heal and indexedHeight returns 200.
+  await setMeta("indexed_height", "200");
+  assert.equal(await indexedHeight(), 101, "F11 self-heal: a stale-ahead meta clamps to MAX(blocks WHERE orphaned=0)");
+  assert.equal((await indexedHeight()) + 1, 102, "F11: the forward scan resumes at the gap height, not past it");
 });
