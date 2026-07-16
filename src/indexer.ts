@@ -73,7 +73,16 @@ export interface IndexResult { from: number; to: number; tip: number; blocks: nu
 /** Height we've indexed up to (canonical), or scanFrom-1 if fresh. */
 export async function indexedHeight(): Promise<number> {
   const v = await getMeta(TIP_KEY);
-  return v == null ? CFG.scanFrom - 1 : Number(v);
+  const meta = v == null ? CFG.scanFrom - 1 : Number(v);
+  // F11 DiD: self-heal a stale-AHEAD tip pointer. If a past crash / transient store failure left meta above the
+  // real blocks table (an unwind that committed before the OLD out-of-txn setMeta ran), clamp DOWN to the true
+  // stored tip so the forward scan (from = indexedHeight()+1) cannot SKIP the un-re-indexed gap and serve an
+  // output whose canonical spend at that height was never re-applied as a live UTXO (the 2026-07-06 ghost class).
+  // MAX over non-orphaned blocks is the real indexed tip; meta above it is stale-ahead, so MAX wins. A meta
+  // BEHIND the tip is already self-healing (writeBlock is idempotent and re-writes the height next poll).
+  const r = await store().get<{ h: number | null }>("SELECT MAX(height) AS h FROM blocks WHERE orphaned=0");
+  const maxStored = r?.h == null ? null : Number(r.h);
+  return maxStored != null && maxStored >= CFG.scanFrom && meta > maxStored ? maxStored : meta;
 }
 
 /** Accumulated chainwork at our indexed tip (0n if fresh/unknown). Stored as TEXT; compared as BigInt. */
@@ -193,8 +202,18 @@ export async function writeBlock(b: rpc.RpcBlock): Promise<void> {
   });
 }
 
-/** Hard-delete every row strictly above `ancestor`, un-spending outputs orphaned by it. */
-export async function unwindAbove(ancestor: number): Promise<void> {
+/**
+ * Hard-delete every row strictly above `ancestor`, un-spending outputs orphaned by it, AND set the tip pointer
+ * to `newTip` (defaults to `ancestor`) INSIDE the same transaction. F11: the tip-pointer write used to run in
+ * the CALLER, AFTER unwindAbove committed; a crash / transient store failure in that gap left meta AHEAD of the
+ * blocks table (blocks 0..H-1 present, H deleted, meta=H). Every later poll then skipped the gap (indexedHeight
+ * reported the stale-ahead meta, the forward scan started past H, reconcile saw storedHash(H)=null and returned
+ * 0 without re-anchoring), serving an output whose canonical spend at H was never re-applied as a LIVE UTXO
+ * (the 2026-07-06 ghost-UTXO class). Folding the meta write into this dbTx makes the DELETEs and the tip pointer
+ * commit atomically. The meta INSERT is a pure store call (a microtask), so it honors the dbTx isolation
+ * invariant (which forbids only fetch/fs/timer awaits inside a dbTx callback).
+ */
+export async function unwindAbove(ancestor: number, newTip: number = ancestor): Promise<void> {
   await dbTx(async (d: Store) => {
     const h = ancestor;
     // un-spend outputs whose spender was orphaned (those spends no longer happened)
@@ -205,6 +224,7 @@ export async function unwindAbove(ancestor: number): Promise<void> {
     await d.run(`DELETE FROM outputs WHERE height>?`, h);
     await d.run(`DELETE FROM txs WHERE height>?`, h);
     await d.run(`DELETE FROM blocks WHERE height>?`, h);
+    await d.run("INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", TIP_KEY, String(newTip));
   });
 }
 
@@ -317,8 +337,7 @@ async function reconcileTipWindow(tip: number): Promise<number> {
     return 0;
   }
   const depth = top - converged;
-  await unwindAbove(converged);
-  await setMeta(TIP_KEY, String(converged));
+  await unwindAbove(converged);   // F11: the tip pointer is now set to `converged` ATOMICALLY inside unwindAbove
   bus.emitEvent({ kind: "reorg", ancestor: converged, depth });
   return depth;
 }
@@ -381,8 +400,7 @@ export async function syncOnce(): Promise<IndexResult> {
         console.warn(`[indexer] REFUSING forward-scan unwind to ${ancestor} (< SPV checkpoint floor ${CFG.checkpointFloor}); stopping this pass — node likely resyncing`);
         break;
       }
-      await unwindAbove(ancestor);
-      await setMeta(TIP_KEY, String(ancestor));
+      await unwindAbove(ancestor);   // F11: tip pointer set to `ancestor` ATOMICALLY inside unwindAbove
       reorgs++; reorgDepth = Math.max(reorgDepth, prevIndexed - ancestor);
       bus.emitEvent({ kind: "reorg", ancestor, depth: prevIndexed - ancestor });
       h = ancestor; // resume scanning from ancestor+1

@@ -1,6 +1,6 @@
 {
   "name": "csd-indexer",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "private": true,
   "type": "module",
   "description": "Standalone, reorg-safe indexer + explorer for Compute Substrate (CSD) — L2 of the no-fork ecosystem. Serves the Esplora REST contract plus merkle inclusion proofs for the L0 light client, per-attester data, address history, and content joins.",
