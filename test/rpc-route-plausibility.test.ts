@@ -63,12 +63,16 @@ const { store, resetStoreForTests, closeDb } = await import("../src/db.js");
 
 const LOCAL_TIP = 50;
 // Populate a local finality-gated window (heights 0..LOCAL_TIP) at a chosen difficulty, 120s spacing.
-async function populateLocal(bits: number) {
+// The tip's block TIME is now-staleSecs: staleSecs=0 = a FRESH/steady-state anchor (the M1 wall-clock delta
+// cap then reduces to the plain maxAhead); a large staleSecs simulates a FROZEN primary wedge (the local
+// scanner cannot advance) so the wall-clock-aware cap must grow to let a genuinely-ahead honest secondary win.
+async function populateLocal(bits: number, staleSecs = 0) {
   await resetStoreForTests();
   const s = store();
+  const tipTime = Math.floor(Date.now() / 1000) - staleSecs;
   for (let h = 0; h <= LOCAL_TIP; h++) {
     await s.run("INSERT INTO blocks(height,hash,prev,merkle,time,bits,nonce,version,tx_count,chainwork,orphaned) VALUES(?,?,?,?,?,?,?,?,?,?,0)",
-      h, "0x" + h.toString(16).padStart(64, "0"), null, null, 1700000000 + h * 120, bits, 0, 1, 0, String(h * 1000));
+      h, "0x" + h.toString(16).padStart(64, "0"), null, null, tipTime - (LOCAL_TIP - h) * 120, bits, 0, 1, 0, String(h * 1000));
   }
 }
 
@@ -120,6 +124,36 @@ test("MUTATION (LWMA): disabling the gate lets the TOO-EASY tip WIN (LWMA bound 
     const s = await rpc.selectBackend();
     assert.equal(s.active, B.url(), "with the gate OFF the too-easy contender wins -> the LWMA bound is what blocks it");
   } finally { delete process.env.CSD_RPC_ROUTE_PLAUSIBILITY; }
+});
+
+// ── M1 (Plan 70 R2 final red-team): the wall-clock-aware delta cap. A reachable-but-FROZEN primary wedge
+// stalls the local anchor while the honest chain advances; a fixed maxAhead cap would then reject the
+// genuinely-ahead honest secondary after ~maxAhead blocks of wedge (the incident-#10 stale-failover
+// regression ROUTE-1 exists to prevent). The cap grows by (now - localTip.time)/blockSecs so an honest
+// secondary that advanced DURING the wedge still wins, while a claim beyond wall-clock is still capped and
+// a min-diff forgery is still caught by the (relative) LWMA-ease test.
+test("WEDGE (M1): a genuinely-ahead honest secondary during a >maxAhead primary wedge is STILL selected", async () => {
+  await populateLocal(REAL_BITS, 200 * 120);            // local anchor FROZEN ~200 blocks-worth ago (~6.7h wedge)
+  A.set({ height: LOCAL_TIP, work: 1_000n, up: true }); // primary frozen at the stale local tip
+  B.set({ height: LOCAL_TIP + 150, work: 9_000_000_000n, up: true, header: realHeader, tipHash: realTipHash }); // honest, 150 > maxAhead=128, correct difficulty
+  const s = await rpc.selectBackend();
+  assert.equal(s.active, B.url(), "honest secondary 150 ahead of a wedge-frozen anchor is SELECTED (the wall-clock cap grew with staleness) - the M1 fix");
+});
+
+test("WEDGE (M1): a claim BEYOND what wall-clock allows is still capped -> stays on the anchor", async () => {
+  await populateLocal(REAL_BITS, 200 * 120);
+  A.set({ height: LOCAL_TIP, work: 1_000n, up: true });
+  B.set({ height: LOCAL_TIP + 100000, work: 9_000_000_000n, up: true, header: realHeader, tipHash: realTipHash }); // absurd, far beyond ~328 wall-clock cap
+  const s = await rpc.selectBackend();
+  assert.equal(s.active, A.url(), "a height beyond wall-clock (maxAhead 128 + ~200 stale blocks) is still rejected by the grown cap");
+});
+
+test("WEDGE (M1): a min-diff forgery during a wedge is STILL rejected by the LWMA-ease defense", async () => {
+  await populateLocal(HARDER_BITS, 200 * 120);          // stale AND a hard local difficulty
+  A.set({ height: LOCAL_TIP, work: 1_000n, up: true });
+  B.set({ height: LOCAL_TIP + 150, work: 9_000_000_000n, up: true, header: realHeader, tipHash: realTipHash }); // within the grown cap but >16x too easy
+  const s = await rpc.selectBackend();
+  assert.equal(s.active, A.url(), "a too-easy forgery is rejected even during a wedge - the LWMA-ease defense survives a stale anchor");
 });
 
 test.after(async () => { A.srv.closeAllConnections?.(); B.srv.closeAllConnections?.(); A.srv.close(); B.srv.close(); await closeDb(); });

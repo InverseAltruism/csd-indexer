@@ -31,6 +31,8 @@ const WORK_ESCAPE_CYCLES = Number(process.env.CSD_RPC_WORK_ESCAPE || 20);
 // when a non-primary CLAIMS to out-work the trusted primary; short so a hung/forged backend fails soft
 // fast instead of stalling the probe. Configurable for tests (matches the WORK_ESCAPE idiom).
 const POW_VERIFY_TIMEOUT_MS = Number(process.env.CSD_RPC_POW_TIMEOUT || 5000);
+// Chain target block spacing (s); used ONLY by the wall-clock-aware route delta cap (M1), never consensus.
+const ROUTE_BLOCK_SECS = Math.max(1, Number(process.env.CSD_RPC_BLOCK_SECS || 120));
 let behindStreak = 0;
 export function activeBackend(): string { return ACTIVE; }
 
@@ -80,20 +82,30 @@ export function tipHeaderPowOk(header: unknown, claimedTipHash: string | null): 
 async function contenderPlausible(claimedHeight: number, header: unknown): Promise<boolean> {
   if (process.env.CSD_RPC_ROUTE_PLAUSIBILITY === "0") return true; // operator escape valve (default on)
   // Read our local finality-gated tip. A store THROW is a genuine read error -> fail closed (false).
-  let localTip: { height: number | bigint | null; bits: number | bigint | null } | undefined;
+  let localTip: { height: number | bigint | null; bits: number | bigint | null; time: number | bigint | null } | undefined;
   try {
-    localTip = await store().get<{ height: number | bigint | null; bits: number | bigint | null }>(
-      "SELECT height, bits FROM blocks WHERE orphaned=0 ORDER BY height DESC LIMIT 1");
+    localTip = await store().get<{ height: number | bigint | null; bits: number | bigint | null; time: number | bigint | null }>(
+      "SELECT height, bits, time FROM blocks WHERE orphaned=0 ORDER BY height DESC LIMIT 1");
   } catch { return false; }
   // No local anchor yet (fresh index / mid-backfill): nothing to plausibility-check against, so the gate is
   // inactive rather than block a legitimate failover before the index exists.
   if (!localTip || localTip.height == null) return true;
   const lh = Number(localTip.height);
   if (!Number.isFinite(lh) || lh < CFG.scanFrom) return true;
-  // DELTA CAP.
+  // DELTA CAP (wall-clock-aware; M1 fix, Plan 70 R2 final red-team). The local anchor is fed by the
+  // primary-following scanner, so during a reachable-but-FROZEN primary wedge it stops advancing while the
+  // honest chain (and a genuinely-ahead honest secondary) keep going. A FIXED maxAhead cap would then reject
+  // the honest secondary after ~maxAhead blocks of wedge = the incident-#10 stale-failover regression ROUTE-1
+  // exists to prevent. So GROW the cap by how STALE the local tip is in wall-clock terms: an honest secondary
+  // can legitimately be ~(now - localTip.time)/blockSecs blocks past a frozen anchor. A forger still cannot
+  // claim more height than wall-clock allows, and the LWMA-ease test below stays the real min-diff forgery
+  // defense (a RELATIVE difficulty check, robust to a stale anchor). Runtime route decision, so Date.now() is fine.
   const claimed = Number(claimedHeight);
   if (!Number.isFinite(claimed)) return false;                 // shape error -> fail closed
-  if (claimed > lh + CFG.maxAheadBlocks) return false;         // implausibly far beyond the local tip
+  const nowSecs = Math.floor(Date.now() / 1000);
+  const ltTime = Number(localTip.time);
+  const staleBlocks = Number.isFinite(ltTime) ? Math.max(0, Math.floor((nowSecs - ltTime) / ROUTE_BLOCK_SECS)) : 0;
+  if (claimed > lh + CFG.maxAheadBlocks + staleBlocks) return false;  // implausibly far beyond the staleness-adjusted tip
   // LWMA PLAUSIBILITY. Parse the contender's declared tip target from its bits.
   const h = header as Partial<BlockHeader> | null | undefined;
   const cbits = Number(h?.bits);
