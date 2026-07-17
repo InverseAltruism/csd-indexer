@@ -61,6 +61,30 @@ export const CFG = {
   // backend served an inflated chainwork that poisoned our stored tip work), set CSD_INDEX_WORK_GUARD=0
   // to let the indexer advance again without a code change, then fix the source.
   workGuard: (process.env.CSD_INDEX_WORK_GUARD ?? "1") !== "0",
+  // Serial-poll timeout (ms) for the node RPC reads in rpc.ts getJson (/tip, /block/height). A backend
+  // that answers /tip fast but then STALLS on /block would otherwise wedge the serial sync loop forever
+  // (L9). Generous by default (>= a slow-but-honest block response) so it never fires on the healthy
+  // path; it only unblocks a genuinely hung backend so the next poll can retry (and failover can move).
+  rpcTimeoutMs: num("CSD_RPC_TIMEOUT", 10_000),
+  // ROUTE-1 F6 plausibility gate (rpc.ts selectBackend). A backend claiming to out-work/out-height the
+  // trust anchor must not only serve a self-referential PoW-valid tip header (ROUTE-1) but also be
+  // PLAUSIBLE against the indexer's OWN local finality-gated headers, so a co-located backend presenting a
+  // real MIN-DIFFICULTY header (target = POW_LIMIT) while claiming huge chainwork/height cannot capture the
+  // feed. Two anchored bounds, both derived ONLY from the local blocks table (never the live primary, so a
+  // genuinely-ahead honest secondary still wins when the primary is stale):
+  //   * DELTA CAP: reject a contender claiming height > localTip + maxAheadBlocks. A contender cannot
+  //     plausibly be arbitrarily far beyond the local finality-gated tip, and this bounds the LWMA drift
+  //     window below. 128 is generous for steady-state (the indexer polls every ~15s and stays at the tip).
+  maxAheadBlocks: num("CSD_RPC_MAX_AHEAD", 128),
+  //   * LWMA EASE FACTOR: reject a contender whose declared tip target (from its bits) is EASIER than the
+  //     honest expected local target (csd-light expectedBitsFromWindow over the local window) times this
+  //     factor. Conservatively generous, erring toward ALLOWING honest contenders: honest LWMA difficulty
+  //     drifts only a small factor over <= maxAheadBlocks in normal operation, while a POW_LIMIT forgery is
+  //     ~1.25e7x easier than mainnet difficulty (measured), so 16x catches the forgery with ~6 orders of
+  //     magnitude of margin yet never touches honest drift. Degrades gracefully at min difficulty: when the
+  //     honest expected target is already at/near POW_LIMIT, the threshold saturates at POW_LIMIT so a
+  //     min-diff contender passes the LWMA test (min-diff IS honest there) and only the delta cap applies.
+  maxEaseFactor: num("CSD_RPC_MAX_EASE", 16),
 };
 
 export function host(): string { return CFG.listen.split(":")[0] || "127.0.0.1"; }

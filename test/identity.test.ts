@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { keygen } from "@inversealtruism/csd-crypto";
 import { buildIdentityReveal, type ChainRecord } from "@inversealtruism/csd-registry";
-import { proofStatuses, externallyLive } from "../src/identity.js";
+import { proofStatuses, externallyLive, isPrivateHost } from "../src/identity.js";
 
 const o = keygen();
 const handle = "alice";
@@ -98,6 +98,48 @@ test("SSRF: a public IPv6 literal is not over-blocked by the reserved-range chec
   const okFetch: typeof fetch = async () => new Response(`address ${o.addr} handle ${handle}`, { status: 200 });
   const r = revealWith([{ type: "dns", domain: "[2606:4700:4700::1111]", path: "/.well-known/csd.json" }]);
   assert.equal((await proofStatuses(r, okFetch))[0]?.ok, true, "a public global-unicast IPv6 literal must pass the SSRF host check");
+});
+
+// IDX-SSRF-NUMIP-1: getaddrinfo/inet_aton accept 32-bit-decimal, octal, hex, and short IPv4 forms that a
+// dotted-quad-only regex leaves classified as PUBLIC, so a profile/identity URL in those forms could reach
+// co-located loopback services (node :8789 / indexer :8793 / cairnx :8794). isPrivateHost now canonicalizes
+// every such form to four octets BEFORE the reserved-range test, and fail-closes an unparseable numeric host.
+test("IDX-SSRF-NUMIP-1: numeric / octal / hex / short IPv4 forms of reserved IPs are PRIVATE", () => {
+  const priv = [
+    "2130706433",       // 127.0.0.1 as 32-bit decimal
+    "0x7f000001",       // 127.0.0.1 as 32-bit hex
+    "0x7f.0.0.1",       // hex first octet
+    "0177.0.0.1",       // octal first octet
+    "127.1",            // short a.d
+    "127.0.1",          // short a.b.d
+    "2852039166",       // 169.254.169.254 (cloud metadata) as 32-bit decimal
+    "3232235521",       // 192.168.0.1
+    "167772161",        // 10.0.0.1
+    "0",                // 0.0.0.0
+  ];
+  for (const h of priv) assert.equal(isPrivateHost(h), true, `${h} must be classified PRIVATE`);
+});
+
+test("IDX-SSRF-NUMIP-1: an unparseable / out-of-range all-numeric host fails CLOSED (PRIVATE)", () => {
+  for (const h of ["4294967296" /* 2^32, over range */, "0x100000000" /* over range */, "08" /* invalid octal */, "999.999.999.999"]) {
+    assert.equal(isPrivateHost(h), true, `${h} must fail closed to PRIVATE`);
+  }
+});
+
+test("IDX-SSRF-NUMIP-1: a real public host still resolves (not over-blocked)", () => {
+  // public dotted quad, public 32-bit-decimal form of the SAME public IP, and DNS names stay on the public
+  // path (isPrivateHost=false -> resolvesToPrivate then does a real getaddrinfo + per-address re-check).
+  for (const h of ["8.8.8.8", "134744072" /* 8.8.8.8 as decimal */, "1.1.1.1", "example.com", "gist.githubusercontent.com"]) {
+    assert.equal(isPrivateHost(h), false, `${h} must NOT be blocked as private`);
+  }
+});
+
+test("IDX-SSRF-NUMIP-1: a dns proof to a numeric/octal/hex loopback form is rejected (SSRF gate)", async () => {
+  const ssrfFetch: typeof fetch = async () => new Response(`address ${o.addr} handle ${handle}`, { status: 200 });
+  for (const domain of ["2130706433", "0x7f000001", "0177.0.0.1", "127.1", "2852039166"]) {
+    const r = revealWith([{ type: "dns", domain, path: "/.well-known/csd.json" }]);
+    assert.equal((await proofStatuses(r, ssrfFetch))[0]?.ok, false, `dns proof to numeric form ${domain} must be rejected`);
+  }
 });
 
 test.after(() => host.close());

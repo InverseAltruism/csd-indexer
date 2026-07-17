@@ -85,12 +85,30 @@ export async function indexedHeight(): Promise<number> {
   return maxStored != null && maxStored >= CFG.scanFrom && meta > maxStored ? maxStored : meta;
 }
 
-/** Accumulated chainwork at our indexed tip (0n if fresh/unknown). Stored as TEXT; compared as BigInt. */
-async function indexedChainwork(): Promise<bigint> {
+/**
+ * Accumulated chainwork at our indexed tip. Stored as TEXT; compared as BigInt.
+ *
+ * F7 (guard hygiene): distinguish a LEGITIMATE stored 0 from an UNREADABLE read. The old body collapsed
+ * three cases to 0n — missing row, empty chainwork, AND a BigInt parse THROW on garbage — so an unreadable
+ * own-work read silently produced 0n, which made the 2026-07-05 regression guard (HOLD only when
+ * ourWork > 0n && nodeWork < ourWork) fail OPEN: a garbage read could disable the guard and let a
+ * lower-work node drive an unwind. Now:
+ *   - `0n`   = a fresh index (below scanFrom) or a genuinely stored "0" (parses cleanly): no work to protect,
+ *              guard correctly does not fire.
+ *   - `null` = UNREADABLE (store threw, no row at our own tip, missing/empty chainwork, or an unparseable
+ *              value): the caller FAILS CLOSED (HOLD) rather than silently disable the guard.
+ */
+export async function indexedChainwork(): Promise<bigint | null> {
   const h = await indexedHeight();
-  if (h < CFG.scanFrom) return 0n;
-  const r = await store().get<{ chainwork: string }>("SELECT chainwork FROM blocks WHERE height=? AND orphaned=0", h);
-  try { return r?.chainwork ? BigInt(r.chainwork) : 0n; } catch { return 0n; }
+  if (h < CFG.scanFrom) return 0n;                             // fresh: nothing indexed, legitimately zero work
+  let r: { chainwork: string | null } | undefined;
+  try {
+    r = await store().get<{ chainwork: string | null }>("SELECT chainwork FROM blocks WHERE height=? AND orphaned=0", h);
+  } catch { return null; }                                     // (a) store read threw -> unreadable
+  if (!r) return null;                                         // (b) no row at our own tip -> inconsistent/unreadable
+  const raw = r.chainwork;
+  if (raw == null || String(raw).trim() === "") return null;   // (c) missing/empty chainwork -> unreadable
+  try { return BigInt(String(raw).trim()); } catch { return null; } // (d) garbage -> parse throw -> unreadable
 }
 
 /**
@@ -366,7 +384,15 @@ export async function syncOnce(): Promise<IndexResult> {
   if (CFG.workGuard) {
     const top = await indexedHeight();
     if (top >= CFG.scanFrom) {
-      const ourWork = await indexedChainwork();
+      const ourWork = await indexedChainwork();   // bigint (legit, incl. a real 0n) | null (unreadable)
+      // F7: an UNREADABLE own-work read (garbage/empty chainwork, missing row, or a store throw) must NOT
+      // silently disable the guard. We cannot verify whether the node is regressing, so FAIL CLOSED: HOLD
+      // and keep serving last-good rather than let an unverifiable own-work figure wave through an unwind.
+      // Manual-recovery posture (like the checkpoint floor); CSD_INDEX_WORK_GUARD=0 is the operator override.
+      if (ourWork === null) {
+        console.warn(`[indexer] HOLD: own indexed chainwork at h=${top} is unreadable/unparseable (fail-closed) — NOT reconciling/unwinding; manual recovery (or CSD_INDEX_WORK_GUARD=0 to override)`);
+        return { from: top + 1, to: top, tip, blocks, reorgs, reorgDepth };
+      }
       const nodeWork = (() => { try { return BigInt(String(nodeTip.chainwork ?? "0")); } catch { return 0n; } })();
       // HOLD when the node presents LESS work than we have indexed (regression), AND fail CLOSED when we
       // cannot read a valid node chainwork at all (nodeWork <= 0 while we have indexed work): a source we

@@ -42,6 +42,10 @@ await new Promise<void>((r) => C.srv.listen(0, "127.0.0.1", () => r()));
 process.env.CSD_RPC = A.url();
 process.env.CSD_RPC_BACKENDS = `${A.url()},${B.url()},${C.url()}`;   // 3 backends, like production [:8789,:8790,:8795]
 process.env.CSD_RPC_WORK_ESCAPE = "1000";
+// Empty, isolated local index -> the F6 plausibility gate stays inactive (no anchor) so this primary-down
+// failover assertion holds on its own; the plausibility gate is exercised in rpc-route-plausibility.
+process.env.CSD_INDEX_DB = `/tmp/csd-idx-rpcpd-${process.pid}.db`;
+for (const s of ["", "-wal", "-shm"]) { try { (await import("node:fs")).rmSync(process.env.CSD_INDEX_DB + s); } catch {} }
 const rpc = await import("../src/rpc.js");
 
 test("primary DOWN, 3 backends: a forged-work standby (invalid PoW) does NOT win; the honest standby does", async () => {

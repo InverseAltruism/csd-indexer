@@ -6,7 +6,7 @@
 import { DOMAINS, resolvePeers, resolveGateways, resolveIdentity, reverseIdentity, epochOf, type ChainRecord, type ResolveOpts } from "@inversealtruism/csd-registry";
 import { payloadHash } from "@inversealtruism/csd-codec";
 import { store } from "./db.js";
-import { tipHeight } from "./queries.js";
+import { tipHeight, tipRow } from "./queries.js";
 import { CFG } from "./config.js";
 import { proofStatuses } from "./identity.js";
 
@@ -82,9 +82,13 @@ async function fetchContent(hash: string): Promise<any> {
 
 // Memo of the assembled record set (E5). Registry data only changes when a registry-domain
 // proposal/attestation is added/removed (which advances the tip in production) — so we key on a cheap
-// fingerprint: tipHeight + the registry proposal & attestation counts. Any of those changing
-// invalidates the memo. We store ONLY when every record's content has resolved; if any is still null
-// (swarm not yet pinned) we leave it uncached so the next request retries — preserving self-healing.
+// fingerprint: tip HEIGHT + tip HASH + the registry proposal & attestation counts. Any of those changing
+// invalidates the memo. L8: the hash is load-bearing, not just the height — an EQUAL-height reorg (a
+// same-height tip swap, common on any PoW chain) can orphan a registry proposal and replace it with a
+// different one WITHOUT changing the height or the counts, so a height-only key would keep serving the
+// orphaned name -> address for up to a block. Including the tip hash invalidates the memo the instant the
+// tip swaps. We store ONLY when every record's content has resolved; if any is still null (swarm not yet
+// pinned) we leave it uncached so the next request retries — preserving self-healing.
 let recordsCache: { key: string; records: ChainRecord[] } | null = null;
 
 /** Build the ChainRecord set for the registry domains from indexed rows + fetched content. */
@@ -94,7 +98,8 @@ export async function buildRegistryRecords(): Promise<ChainRecord[]> {
     `SELECT (SELECT COUNT(*) FROM proposals WHERE domain IN (${ph})) AS p,
             (SELECT COUNT(*) FROM attestations WHERE proposal_id IN (SELECT txid FROM proposals WHERE domain IN (${ph}))) AS a`,
     ...REG_DOMAINS, ...REG_DOMAINS) ?? { p: 0, a: 0 };
-  const key = `${await tipHeight()}:${fp.p}:${fp.a}`;
+  const tip = await tipRow();                                  // L8: key on tip HASH too, not just height
+  const key = `${tip?.height ?? -1}:${tip?.hash ?? ""}:${fp.p}:${fp.a}`;
   if (recordsCache && recordsCache.key === key) return recordsCache.records;
   // CAIRN-IDX-REGISTRY-1: deterministic feed order. The resolver's tie-break on an EXACT weight tie depends
   // on iteration order; without ORDER BY the winner = first DB row = unspecified, so the same indexer could

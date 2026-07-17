@@ -8,7 +8,9 @@
 //   GET /tx/:txid          -> { ... } (or { tx: {...} })
 //   tx  = { txid, version, locktime, app?, inputs:[{prev_txid,vout,script_sig}], outputs:[{script_pubkey,value}] }
 import { CFG } from "./config.js";
-import { headerHashBytes, powOk, type BlockHeader } from "@inversealtruism/csd-codec";
+import { headerHashBytes, powOk, bitsToTarget, targetToBigInt, POW_LIMIT_BITS, LWMA_WINDOW, type BlockHeader } from "@inversealtruism/csd-codec";
+import { expectedBitsFromWindow } from "@inversealtruism/csd-light";
+import { store } from "./db.js";
 
 export interface RpcHeader { bits: number; merkle: string; nonce: number; prev: string; time: number; version: number; }
 export interface RpcTxIn { prev_txid?: string; prevTxid?: string; vout?: number; script_sig?: string; }
@@ -57,11 +59,87 @@ export function tipHeaderPowOk(header: unknown, claimedTipHash: string | null): 
   }
 }
 
-// Fetch a backend's tip header (at its claimed tip height) and return the ROUTE-1 PoW verdict, bound to
-// the tip hash the backend claimed in /tip. FAIL SOFT: any fetch/shape error → false (the backend simply
-// cannot win; no throw, no read added to the healthy path; this runs only for a backend that CLAIMS to
-// out-work the trust anchor).
-async function tipHeaderPowOkFor(base: string, claimedHeight: number, claimedTipHash: string | null): Promise<boolean> {
+// F6 (ROUTE-1 route-capture) plausibility gate. `tipHeaderPowOk` above only checks a header against its
+// OWN declared bits (powOk is floored at POW_LIMIT), so a REAL min-difficulty header (bits at/near
+// POW_LIMIT, trivial to grind) hashes valid and hash-binds — passing ROUTE-1 while the backend claims
+// arbitrary chainwork/height in /tip. That lets a co-located miner/standby (or a compromised
+// CSD_RPC_BACKENDS entry) capture the whole projection feed. This gate rejects such a contender by
+// anchoring on the indexer's OWN local finality-gated headers (the blocks table) — NEVER the live primary,
+// so a genuinely-ahead honest secondary still wins when the primary is stale/wedged (that is the whole
+// point of ROUTE-1; anchoring on the primary would pin routing on a dead primary = the availability
+// regression the design forbids). Two anchored bounds:
+//   (1) DELTA CAP: reject a claimed height more than CFG.maxAheadBlocks beyond the local tip.
+//   (2) LWMA PLAUSIBILITY: reject a declared tip target EASIER than expected_local_target * maxEaseFactor,
+//       where expected_local_target = csd-light expectedBitsFromWindow over the local LWMA window.
+// FAIL-SAFE and availability-aware: a store READ/parse THROW or an unparseable contender bits -> false
+// (the contender cannot win); a legitimately EMPTY/too-shallow local index (cold start / mid-backfill, no
+// anchor to check against) -> the gate is INACTIVE (true) so it never breaks the legitimate failover path
+// before the index is established. Runs ONLY for a backend that CLAIMS to beat the anchor (never on the
+// healthy path), so it adds no read to a normal cycle. Kill switch CSD_RPC_ROUTE_PLAUSIBILITY=0 (read
+// per-call) mirrors CSD_INDEX_WORK_GUARD: an operator escape if an extreme honest retarget ever mis-fires.
+async function contenderPlausible(claimedHeight: number, header: unknown): Promise<boolean> {
+  if (process.env.CSD_RPC_ROUTE_PLAUSIBILITY === "0") return true; // operator escape valve (default on)
+  // Read our local finality-gated tip. A store THROW is a genuine read error -> fail closed (false).
+  let localTip: { height: number | bigint | null; bits: number | bigint | null } | undefined;
+  try {
+    localTip = await store().get<{ height: number | bigint | null; bits: number | bigint | null }>(
+      "SELECT height, bits FROM blocks WHERE orphaned=0 ORDER BY height DESC LIMIT 1");
+  } catch { return false; }
+  // No local anchor yet (fresh index / mid-backfill): nothing to plausibility-check against, so the gate is
+  // inactive rather than block a legitimate failover before the index exists.
+  if (!localTip || localTip.height == null) return true;
+  const lh = Number(localTip.height);
+  if (!Number.isFinite(lh) || lh < CFG.scanFrom) return true;
+  // DELTA CAP.
+  const claimed = Number(claimedHeight);
+  if (!Number.isFinite(claimed)) return false;                 // shape error -> fail closed
+  if (claimed > lh + CFG.maxAheadBlocks) return false;         // implausibly far beyond the local tip
+  // LWMA PLAUSIBILITY. Parse the contender's declared tip target from its bits.
+  const h = header as Partial<BlockHeader> | null | undefined;
+  const cbits = Number(h?.bits);
+  if (!Number.isFinite(cbits)) return false;                   // shape error -> fail closed
+  let contenderTarget: bigint;
+  try { contenderTarget = targetToBigInt(bitsToTarget(cbits)); } catch { return false; }
+  if (contenderTarget <= 0n) return false;                     // invalid compact bits -> fail closed
+  const expected = await expectedLocalTarget(lh);
+  // Could not derive a local LWMA anchor (window too short / our own data anomalous): the DELTA CAP already
+  // applied above; skip the LWMA test rather than punish the contender for a LOCAL gap (availability-safe,
+  // and the local window is our own data, not attacker-influenced).
+  if (expected == null) return true;
+  let threshold = expected * BigInt(Math.max(1, Math.floor(CFG.maxEaseFactor)));
+  const powLimitTarget = targetToBigInt(bitsToTarget(POW_LIMIT_BITS));
+  if (threshold > powLimitTarget) threshold = powLimitTarget;  // graceful min-difficulty degrade
+  // Reject only when the contender's tip is EASIER (larger target) than honest expected * ease. A contender
+  // at the correct (or harder) local-LWMA difficulty passes; a POW_LIMIT forgery is orders of magnitude
+  // easier and is rejected (unless the local chain itself is at min difficulty, handled by the cap above).
+  return contenderTarget <= threshold;
+}
+
+// Honest expected target AT the local tip, from the local LWMA window (finality-gated blocks table only).
+// Returns null when it cannot be derived (fewer than 2 local headers, or a compute anomaly) so the caller
+// treats the LWMA test as inactive rather than throwing. Never touches the network or the live primary.
+async function expectedLocalTarget(localHeight: number): Promise<bigint | null> {
+  try {
+    const floor = Math.max(CFG.scanFrom, localHeight - LWMA_WINDOW);
+    const rows = await store().all<{ time: number | bigint; bits: number | bigint }>(
+      "SELECT time, bits FROM blocks WHERE orphaned=0 AND height < ? AND height >= ? ORDER BY height ASC",
+      localHeight, floor);
+    if (rows.length < 2) return null;
+    // window[last] must be the parent (localHeight-1); expectedBitsFromWindow computes the expected bits for
+    // the block AT localHeight given its preceding chronological window.
+    const window: BlockHeader[] = rows.map((r) => ({ version: 0, prev: "", merkle: "", time: Number(r.time), bits: Number(r.bits), nonce: 0 }));
+    const eb = expectedBitsFromWindow(window, localHeight);
+    const t = targetToBigInt(bitsToTarget(eb));
+    return t > 0n ? t : null;
+  } catch { return null; }
+}
+
+// Fetch a backend's tip header (at its claimed tip height), then apply BOTH ROUTE-1 rules with a SINGLE
+// header fetch: (a) the self-referential PoW + hash-binding verdict (tipHeaderPowOk) and (b) the F6
+// local-anchored plausibility gate (contenderPlausible). FAIL SOFT: any fetch/shape error → false (the
+// backend simply cannot win; no throw, no read added to the healthy path; this runs only for a backend
+// that CLAIMS to out-work the trust anchor).
+async function contenderEligible(base: string, claimedHeight: number, claimedTipHash: string | null): Promise<boolean> {
   if (!claimedTipHash) return false;
   try {
     const res = await fetch(base + `/block/height/${claimedHeight}`, { signal: AbortSignal.timeout(POW_VERIFY_TIMEOUT_MS) });
@@ -69,12 +147,19 @@ async function tipHeaderPowOkFor(base: string, claimedHeight: number, claimedTip
     const j: any = await res.json();
     const b = j.block ?? j;
     if (!b || !b.header) return false;
-    return tipHeaderPowOk(b.header, claimedTipHash);
+    if (!tipHeaderPowOk(b.header, claimedTipHash)) return false;      // ROUTE-1: self-referential PoW + hash-bind
+    return await contenderPlausible(claimedHeight, b.header);          // F6: local-anchored plausibility
   } catch { return false; }
 }
 
+// L9: bound every serial-poll read with a generous AbortSignal timeout. The sync loop reads /tip then
+// /block/height/:h serially; a backend that answers /tip fast but STALLS /block would otherwise wedge the
+// whole loop indefinitely (no forward progress, no failover). The signal aborts a hung response AND a
+// stalled body read, so getJson throws (caught by the callers: blockByHeight -> null, reachable -> false,
+// tip -> propagates to the poll loop's retry) instead of hanging. Generous by default (CFG.rpcTimeoutMs,
+// >= 10s) so it never fires on a slow-but-honest response = zero healthy-path regression.
 async function getJson(path: string): Promise<any> {
-  const res = await fetch(ACTIVE + path);
+  const res = await fetch(ACTIVE + path, { signal: AbortSignal.timeout(CFG.rpcTimeoutMs) });
   if (!res.ok) throw new Error(`rpc ${path} -> ${res.status}`);
   return res.json();
 }
@@ -110,6 +195,13 @@ async function tipOf(base: string): Promise<{ height: number; chainwork: bigint;
  * behind the primary) pays no header fetch and adds no read latency. NOTE the anchor differs from cairn's
  * 2-backend rule, which left primary-down as ungated liveness failover: with 3+ backends a forged loopback
  * must not out-claim the honest standby with zero PoW while the primary is down, so that path is gated too.
+ *
+ * F6 (route-capture): the ROUTE-1 PoW check alone is insufficient because a REAL min-difficulty header
+ * (bits at/near POW_LIMIT, trivial to grind) passes powOk against its OWN bits, so a contender can pair a
+ * cheap valid header with a huge forged /tip chainwork/height and win. `contenderEligible` therefore also
+ * runs `contenderPlausible`, which anchors on the indexer's OWN local finality-gated headers (delta cap +
+ * LWMA ease factor), never the live primary — so a min-diff forgery is excluded while a genuinely-ahead
+ * honest secondary at the correct local difficulty is still selected when the primary is stale.
  */
 type Probe = { height: number; chainwork: bigint; tipHash: string | null };
 export async function selectBackend(): Promise<{ active: string; switched: boolean; height: number }> {
@@ -129,7 +221,7 @@ export async function selectBackend(): Promise<{ active: string; switched: boole
   const authority = primaryEntry ?? reachable.reduce((a, b) => (b.t.chainwork < a.t.chainwork ? b : a));
   const contenders = reachable.filter((r) => r !== authority && r.b !== primary && (r.t.height > authority.t.height || r.t.chainwork > authority.t.chainwork));
   if (contenders.length) {
-    const verdicts = await Promise.all(contenders.map(async (r) => ({ b: r.b, ok: await tipHeaderPowOkFor(r.b, r.t.height, r.t.tipHash) })));
+    const verdicts = await Promise.all(contenders.map(async (r) => ({ b: r.b, ok: await contenderEligible(r.b, r.t.height, r.t.tipHash) })));
     const rejected = new Set(verdicts.filter((v) => !v.ok).map((v) => v.b));
     if (rejected.size) eligible = reachable.filter((r) => !rejected.has(r.b));
   }

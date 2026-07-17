@@ -18,6 +18,7 @@
   "dependencies": {
     "@inversealtruism/csd-codec": "0.1.15",
     "@inversealtruism/csd-crypto": "0.1.15",
+    "@inversealtruism/csd-light": "0.1.17",
     "@inversealtruism/csd-registry": "0.1.16",
     "express": "^4.21.2",
     "pg": "^8.21.0",

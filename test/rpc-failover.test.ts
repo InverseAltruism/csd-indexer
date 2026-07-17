@@ -38,6 +38,10 @@ await new Promise<void>((r) => B.srv.listen(0, "127.0.0.1", () => r()));
 process.env.CSD_RPC = A.url();
 process.env.CSD_RPC_BACKENDS = `${A.url()},${B.url()}`;
 process.env.CSD_RPC_WORK_ESCAPE = "3";   // small so the work-escape test does not need 20 cycles
+// Isolate an EMPTY local index so the F6 route-plausibility gate has no anchor and stays inactive here —
+// these honest-failover assertions must hold on their own (the gate is exercised in rpc-route-plausibility).
+process.env.CSD_INDEX_DB = `/tmp/csd-idx-rpcfo-${process.pid}.db`;
+for (const s of ["", "-wal", "-shm"]) { try { (await import("node:fs")).rmSync(process.env.CSD_INDEX_DB + s); } catch {} }
 const rpc = await import("../src/rpc.js");
 
 test("failover: prefers the primary on a chainwork tie", async () => {
