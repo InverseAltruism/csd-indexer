@@ -29,12 +29,63 @@ function isReservedIpv4(a: number, b: number): boolean {
   return false;
 }
 
-function isPrivateHost(host: string): boolean {
+// IDX-SSRF-NUMIP-1: `getaddrinfo`/`inet_aton` accept far more than the dotted-quad form — a 32-bit decimal
+// (2130706433), octal (0177.0.0.1), hex (0x7f.0.0.1 / 0x7f000001), and short (127.1 / 127.0.1) all resolve
+// to 127.0.0.1. A dotted-quad-only regex leaves every one of those classified as a PUBLIC host, so a
+// profile/identity URL in those forms slips past the reserved-range test and reaches co-located loopback
+// services (node :8789 / indexer :8793 / cairnx :8794) = SSRF. `parseInetAton` canonicalizes every such
+// form to four octets BEFORE the reserved-range test, using classic inet_aton semantics.
+//
+// Parse ONE inet_aton part: 0x-prefixed hex, leading-0 octal, else decimal. Returns null on anything else
+// (incl. an invalid octal digit like "08"), which fails the whole host closed (treated as private).
+function parseInetPart(p: string): number | null {
+  if (/^0x[0-9a-f]+$/i.test(p)) return parseInt(p, 16);
+  if (/^0[0-7]+$/.test(p)) return parseInt(p, 8);
+  if (p === "0") return 0;
+  if (/^[1-9][0-9]*$/.test(p)) return Number(p);
+  return null;
+}
+// True iff every dot-separated label is a numeric (decimal / 0x-hex / leading-0 octal) token — i.e. the
+// host is an inet_aton candidate, not a DNS name. A real hostname (has a non-numeric label) returns false
+// and stays on the DNS path. Bare hex without a 0x prefix (e.g. "cafe") is NOT numeric (inet_aton rejects
+// it too), so hex-looking hostnames still resolve via DNS.
+function isNumericHostForm(host: string): boolean {
+  const parts = host.split(".");
+  if (parts.length < 1 || parts.length > 4) return false;
+  return parts.every((p) => /^(0x[0-9a-f]+|[0-9]+)$/i.test(p));
+}
+// inet_aton -> [o0,o1,o2,o3], or null if unparseable/out-of-range. 1..4 parts; the last part holds the
+// remaining low bytes (a.b -> a.(24-bit b); a.b.c -> a.b.(16-bit c); a -> 32-bit).
+function parseInetAton(host: string): [number, number, number, number] | null {
+  const parts = host.split(".");
+  if (parts.length < 1 || parts.length > 4) return null;
+  const vals: number[] = [];
+  for (const p of parts) { const v = parseInetPart(p); if (v === null) return null; vals.push(v); }
+  const n = vals.length;
+  for (let i = 0; i < n - 1; i++) if (vals[i]! > 255) return null;     // leading parts are single octets
+  const lastMaxBits = 8 * (4 - (n - 1));                                // n=1:32, n=2:24, n=3:16, n=4:8
+  if (vals[n - 1]! > 2 ** lastMaxBits - 1) return null;
+  let addr = 0n;
+  for (let i = 0; i < n - 1; i++) addr = (addr << 8n) | BigInt(vals[i]!);
+  addr = (addr << BigInt(lastMaxBits)) | BigInt(vals[n - 1]!);
+  if (addr < 0n || addr > 0xffffffffn) return null;
+  return [Number((addr >> 24n) & 0xffn), Number((addr >> 16n) & 0xffn), Number((addr >> 8n) & 0xffn), Number(addr & 0xffn)];
+}
+
+export function isPrivateHost(host: string): boolean {
   const h = host.toLowerCase();
   if (h === "localhost" || h.endsWith(".localhost") || h.endsWith(".internal") || h.endsWith(".local")) return true;
-  // IPv4 literal
+  // IPv4 literal (strict dotted quad)
   const m = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
   if (m) return isReservedIpv4(Number(m[1]), Number(m[2]));
+  // IDX-SSRF-NUMIP-1: any OTHER all-numeric/hex/octal/short IPv4 form (32-bit decimal, 0x hex, leading-0
+  // octal, short a.b / a.b.c). Parse it to four octets and run the reserved-range test; an all-numeric host
+  // that does NOT parse (out of range / invalid octal) is treated as PRIVATE (fail closed).
+  if (isNumericHostForm(h)) {
+    const oct = parseInetAton(h);
+    if (!oct) return true;
+    return isReservedIpv4(oct[0], oct[1]);
+  }
   // IPv6 literal (also catches bracketed forms). CAIRN-SSRF-IDENT-1: the prior prefix-string
   // checks (fc/fd/fe80/::ffff:) missed several reserved ranges (NAT64, site-local, 6to4,
   // multicast). Canonicalize to the 8 hextets and test the reserved CIDRs explicitly; an
@@ -114,7 +165,14 @@ function proofUrlAllowed(u: string, kind: string): boolean {
 // window remains (DNS could flip after the check); acceptable for a blind GET-only 1-bit oracle.
 async function resolvesToPrivate(hostname: string): Promise<boolean> {
   const bare = hostname.replace(/^\[|\]$/g, "");
-  if (/^[0-9.]+$/.test(bare) || bare.includes(":")) return isPrivateHost(bare); // IP literal — already checked upstream
+  // A strict dotted-quad IPv4 or ANY IPv6 literal is already fully classified by isPrivateHost; no DNS.
+  if (/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.test(bare) || bare.includes(":")) return isPrivateHost(bare);
+  // IDX-SSRF-NUMIP-1: do NOT short-circuit other all-numeric forms here. Classify them through isPrivateHost
+  // first (it now parses 32-bit-decimal / octal / hex / short IPv4 and fail-closes an unparseable numeric
+  // host); if it flags private, reject. Only a host that isPrivateHost does NOT flag (a real hostname, or a
+  // numeric form of a genuinely PUBLIC IP) falls through to a real DNS lookup, so getaddrinfo canonicalizes
+  // it and we re-check every resolved A/AAAA — closing the rebinding + numeric-encoding gaps together.
+  if (isPrivateHost(bare)) return true;
   try {
     const { lookup } = await import("node:dns/promises");
     const addrs = await lookup(hostname, { all: true });

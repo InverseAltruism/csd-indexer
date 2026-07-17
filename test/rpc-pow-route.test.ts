@@ -51,6 +51,10 @@ process.env.CSD_RPC = A.url();
 process.env.CSD_RPC_BACKENDS = `${A.url()},${B.url()}`;
 process.env.CSD_RPC_WORK_ESCAPE = "1000";   // high: the forged/hung cases must NOT be rescued by a work-escape
 process.env.CSD_RPC_POW_TIMEOUT = "300";     // short: the hung-header case fails soft fast
+// Empty, isolated local index -> the F6 plausibility gate has no anchor and stays inactive here, so these
+// ROUTE-1 badpow/hung assertions are proven independently (the plausibility gate is tested separately).
+process.env.CSD_INDEX_DB = `/tmp/csd-idx-rpcpow-${process.pid}.db`;
+for (const s of ["", "-wal", "-shm"]) { try { (await import("node:fs")).rmSync(process.env.CSD_INDEX_DB + s); } catch {} }
 const rpc = await import("../src/rpc.js");
 
 // ── unit: the ported tipHeaderPowOk (ROUTE-1 rule) ───────────────────────────────────────────────────

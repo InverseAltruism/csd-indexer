@@ -131,4 +131,30 @@ test("attestationsFor: keyset pagination returns the COMPLETE ordered list with 
   assert.equal(new Set(paged.map((a) => a.txid)).size, paged.length, "no row appears twice across pages");
 });
 
+// L8: the record-set memo keys on the tip HASH, not just the tip height. An EQUAL-height reorg (a
+// same-height tip swap that orphans one registry proposal and makes a different one canonical WITHOUT
+// changing the height or the proposal/attestation counts) must invalidate the memo, else the resolver
+// serves the orphaned name -> address for up to a block. Delete+insert keeps the counts identical, so ONLY
+// the tip hash differs: with a height-only key the stale record would persist; with the hash it rebuilds.
+test("L8: an equal-height reorg (same height + counts, new tip hash) invalidates the registry memo", async () => {
+  const k = keygen();
+  const H1 = "0x" + "11".repeat(32), H2 = "0x" + "22".repeat(32);
+  // fresh tip at height 5000, hash H1
+  await dbStore().run(`INSERT INTO blocks(height,hash,prev,merkle,time,bits,nonce,version,tx_count,chainwork,orphaned) VALUES(5000,?,null,null,0,0,0,1,1,'0',0)`, H1);
+  const v1 = await anchor(buildPeerRecord({ priv: k.priv, peer_id: "PXreorg", multiaddrs: ["/ip4/1.1.1.1/tcp/1"], address: k.addr }), k.addr, 500e6, 4990);
+  let peers = await registry.peers();
+  const before = peers.find((p: any) => p.peer_id === "PXreorg");
+  assert.deepEqual(before?.multiaddrs, ["/ip4/1.1.1.1/tcp/1"], "v1 resolves and is memoized at tip hash H1");
+
+  // EQUAL-HEIGHT REORG: same height 5000, new tip hash H2; swap the PXreorg proposal for a different one
+  // (delete v1, insert v2) so the peer/attestation COUNTS are unchanged — only the tip hash moves.
+  await dbStore().run(`UPDATE blocks SET hash=? WHERE height=5000`, H2);
+  await dbStore().run(`DELETE FROM proposals WHERE txid=?`, v1);
+  await anchor(buildPeerRecord({ priv: k.priv, peer_id: "PXreorg", multiaddrs: ["/ip4/2.2.2.2/tcp/2"], address: k.addr }), k.addr, 500e6, 4990);
+
+  peers = await registry.peers();
+  const after = peers.find((p: any) => p.peer_id === "PXreorg");
+  assert.deepEqual(after?.multiaddrs, ["/ip4/2.2.2.2/tcp/2"], "the new tip hash invalidates the memo -> the canonical (post-reorg) record is served");
+});
+
 test.after(async () => { origin.close(); await closeDb(); });
