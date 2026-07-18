@@ -79,6 +79,9 @@ export function buildApp() {
   // The wall-clock freshness fields (seconds_since_tip, stale) stay live: they are computed per
   // hit from the (cheap, index-backed) tip row, never from the memo.
   const countsByTip = analytics.memoByTip(q.counts);
+  // /domains is a GROUP BY over the whole proposals table on a public unauthenticated read; memoize per
+  // canonical tip like counts so the scan runs once per block, not once per request (event-loop DoS guard).
+  const domainsByTip = analytics.memoByTip(q.domains);
   app.get("/health", h(async (_req, res) => {
     const indexed_height = await indexedHeight();
     const tipH = await q.tipHeight();
@@ -203,7 +206,7 @@ export function buildApp() {
   }));
 
   // ── CSD extras ──
-  app.get("/domains", h(async (_req, res) => res.json(await q.domains())));
+  app.get("/domains", h(async (_req, res) => res.json(await domainsByTip())));
   app.get("/domain/:d/proposals", h(async (req, res) => res.json(await q.proposalsByDomain(
     req.params.d!, Number(req.query.limit) || 100,
     req.query.from !== undefined ? Number(req.query.from) : undefined))));
@@ -211,7 +214,10 @@ export function buildApp() {
     const p = await q.proposal(req.params.id!);
     if (!p) return nf(res, "unknown proposal");
     const atts = await q.attestationsFor(req.params.id!);
-    res.json({ ...p, attestation_count: atts.length, attestations: atts });
+    // atts is capped; report the AUTHORITATIVE count + a truncation flag so a consumer of this inline list
+    // is not misled (the COMPLETE list is the keyset-paginated /proposal/:id/attestations endpoint).
+    const attestation_count = await q.attestationCountFor(req.params.id!);
+    res.json({ ...p, attestation_count, attestation_count_truncated: attestation_count > atts.length, attestations: atts });
   }));
   // Keyset-paginated so a consumer (the CairnX resolver) can fetch the COMPLETE attestation list in
   // bounded pages: pass ?after_height=&after_txid= from the last row of the previous page until a page

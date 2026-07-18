@@ -133,10 +133,13 @@ export async function attestationsFor(
   if (opts.afterHeight !== undefined && opts.afterTxid !== undefined) {
     return jsonSafeAll(await store().all(
       `SELECT ${cols} FROM attestations WHERE proposal_id=? AND (height > ? OR (height = ? AND txid > ?)) ORDER BY height, txid LIMIT ?`,
-      proposalId, Math.floor(Number(opts.afterHeight)), Math.floor(Number(opts.afterHeight)), String(opts.afterTxid), lim));
+      proposalId, Math.floor(Number(opts.afterHeight)), Math.floor(Number(opts.afterHeight)), String(opts.afterTxid).toLowerCase(), lim));
   }
   return jsonSafeAll(await store().all(
     `SELECT ${cols} FROM attestations WHERE proposal_id=? ORDER BY height, txid LIMIT ?`, proposalId, lim));
+}
+export async function attestationCountFor(proposalId: string): Promise<number> {
+  return Number((await store().get<{ n: number }>("SELECT COUNT(*) n FROM attestations WHERE proposal_id=?", proposalId))?.n ?? 0);
 }
 export async function attestationsBy(addr: string, limit = 200): Promise<any[]> {
   return jsonSafeAll(await store().all("SELECT * FROM attestations WHERE attester=? ORDER BY height DESC, txid ASC LIMIT ?", addr.toLowerCase(), limit));

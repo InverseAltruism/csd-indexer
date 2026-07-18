@@ -32,12 +32,15 @@ export function sseHandler(filter?: (e: IndexEvent) => boolean) {
     const cleanup = () => { if (closed) return; closed = true; clearInterval(ping); off(); sseOpen--; };
     // CAIRN-IDX-SSE-1: write a frame only while the socket is draining. res.write() returns false
     // once the outbound buffer fills; res.writableLength is Node's in-flight byte estimate. If the
-    // client isn't reading and the buffer crosses MAX_SSE_BUFFER, end the connection (cleanup runs
-    // via the 'close' handler) instead of buffering without bound.
+    // client isn't reading and the buffer crosses MAX_SSE_BUFFER, TEAR DOWN here instead of buffering
+    // without bound. Call cleanup() (not a bare closed=true): cleanup is the idempotent teardown
+    // (closed=true + clearInterval(ping) + off() + sseOpen--), so it both stops further sends AND frees
+    // the timer/listener/slot; the 'close' handler then no-ops. A bare closed=true would poison cleanup's
+    // own `if (closed) return` sentinel and permanently leak the ping timer, bus listener, and SSE slot.
     const send = (s: string) => {
       if (closed) return;
       res.write(s);
-      if (res.writableLength > MAX_SSE_BUFFER) { try { res.end(); } catch { /* already closing */ } }
+      if (res.writableLength > MAX_SSE_BUFFER) { cleanup(); try { res.end(); } catch { /* already closing */ } }
     };
     send(`event: hello\ndata: {"ok":true}\n\n`);
     const ping = setInterval(() => send(`: ping\n\n`), 25000);

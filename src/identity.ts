@@ -207,7 +207,12 @@ async function safeFetch(url: string, f: typeof fetch): Promise<{ ok: boolean; b
 async function checkOne(p: ExternalProof, handle: string, address: string, f: typeof fetch): Promise<boolean> {
   if (p.type === "signed") return true; // the on-record sig is verified by the resolver
   let url: string | null = null;
-  if (p.type === "dns") url = `https://${p.domain.replace(/^https?:\/\//, "").replace(/\/$/, "")}${p.path.startsWith("/") ? "" : "/"}${p.path}`;
+  if (p.type === "dns") {
+    // p.domain/p.path are attacker-authored on-chain data; a malformed dns proof (missing domain/path)
+    // must FAIL the proof, not throw a TypeError out to an HTTP 500.
+    if (typeof p.domain !== "string" || typeof p.path !== "string") return false;
+    url = `https://${p.domain.replace(/^https?:\/\//, "").replace(/\/$/, "")}${p.path.startsWith("/") ? "" : "/"}${p.path}`;
+  }
   else if (p.type === "github-gist") url = p.url;
   if (!url) return false;
   // SSRF gate: reject internal/loopback/metadata targets (and pin gist proofs to GitHub) BEFORE
