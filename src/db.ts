@@ -95,6 +95,15 @@ const DDL = `
   CREATE INDEX IF NOT EXISTS idx_att_proposal_hk  ON attestations(proposal_id, height, txid);
   DROP INDEX IF EXISTS idx_att_proposal;
   CREATE INDEX IF NOT EXISTS idx_att_attester     ON attestations(attester);
+  -- N17: /block/:hash (queries.ts blockByHash) was an O(chain) seq scan, 2 lookups per height
+  -- behind every cold /api/headers miss. N20: writeBlock's per-height self-clear and unwindAbove
+  -- run height/spent_height-predicate UPDATE/DELETEs on outputs + address_history that seq-scan
+  -- without these, making the from-genesis DR replay effectively quadratic. Additive + idempotent,
+  -- applied at boot on both backends like every index above.
+  CREATE INDEX IF NOT EXISTS idx_blocks_hash      ON blocks(hash);
+  CREATE INDEX IF NOT EXISTS idx_out_height       ON outputs(height);
+  CREATE INDEX IF NOT EXISTS idx_out_spent_height ON outputs(spent_height);
+  CREATE INDEX IF NOT EXISTS idx_addrhist_height  ON address_history(height);
 `;
 
 // ── sqlite backend ──
