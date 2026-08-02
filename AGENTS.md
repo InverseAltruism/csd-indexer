@@ -141,14 +141,51 @@ What 0.2.11 carries (Plan 75-B C4, one restart to activate):
 - **I2** an absence in either reorg walk can no longer WIDEN an unwind (`lowestMismatch` clamp in
   `reconcileTipWindow` and `findReorgAncestor`).
 - **I3** header `time`/`bits`/`nonce`/`version` bind through `safeValue()` like every other integer column.
+- **IDX-VERSION** (completes I3) `blocks.version` is now `BIGINT`. It was the one header column declared
+  `INTEGER`, which is int4 on Postgres, so `safeValue()` handed it a value the column could not hold and the
+  pg bind still failed with SQLSTATE 22003 inside `writeBlock`'s dbTx: rollback, tip never advances, same
+  block re-poisons every poll. The column was widened rather than clamping version into int32 because
+  csd-codec encodes header version as u32, so a clamp would store a value the node never signed for the top
+  half of the legal domain (accept-DIFFERENT, the GRX-WIRE-CLAMP-1 shape) and would newly diverge from
+  sqlite, which stores those exactly today. The live chain already carries u32 values above int4 max in the
+  neighbouring slot (height 29960's nonce is 3795422404), which is why nonce was already BIGINT.
+- **IDX-CHAINWORK-ZERO** (completes I1) `indexedChainwork()` treats a stored `"0"` at a height ABOVE
+  `scanFrom` as UNREADABLE. I1 closed only the ABSENT-field shape; a backend serving `chainwork: "0"` still
+  wrote "0", which parsed as a legitimate `0n`, left `ourWork > 0n` false, and let a matching-but-shorter
+  chain drive `unwindAbove(nodeTip)`, reproducing the 2026-07-05 incident post-fix. Bounded at
+  `> scanFrom` so the first indexed height (genesis when scanFrom is 0) keeps today's behavior and a
+  zero-work genesis cannot freeze ingestion. Measured 2026-08-02 across all three backends (671 heights
+  each, dense at both ends): no absent, zero, unparseable or non-monotonic chainwork anywhere, and the live
+  index's own tip row is positive, so this cannot fail-close on today's traffic.
 - **I4** a non-positive env knob means "unset", so `CSD_INDEX_CHECKPOINT_FLOOR=-1` can no longer disable the
   checkpoint floor while looking configured.
 - **I5** the public `?from=` and `?after_height=` height cursors clamp through `heightOk` (no pg 500, no
   silent ASC/DESC flip). Clamp and widen only: no new 4xx on a read that answers 200 today.
 - **I9** the F6 LWMA plausibility arm logs once per process when it fail-softs to inert (visibility only,
   verdicts unchanged).
-Suites: 109 baseline plus 6 new files (chainwork-absent, reorg-absence-clamp, header-bind-clamp,
-config-knob-positive, cursor-clamp, route-guard-visibility).
+Suites: 109 baseline plus 7 new files (chainwork-absent, chainwork-zero, reorg-absence-clamp,
+header-bind-clamp, config-knob-positive, cursor-clamp, route-guard-visibility). 145 tests, green on sqlite.
+
+OPERATOR-BLOCKED, and IDX-VERSION is inert in production until it runs. A restart alone does NOT widen the
+live column: `CREATE TABLE IF NOT EXISTS` cannot alter an existing table, so the production Postgres keeps
+`version` as int4 and keeps the wedge until this is executed against the live database. sqlite needs
+nothing (its INTEGER is already 64-bit). Idempotent, safe to re-run, measured at 275 ms against a table
+built to the live row count (67,636) with both indexes present; a second run is a 2.6 ms no-op:
+
+```sql
+SET lock_timeout = '5s';
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns
+             WHERE table_schema = current_schema() AND table_name = 'blocks'
+               AND column_name = 'version' AND data_type = 'integer')
+  THEN ALTER TABLE blocks ALTER COLUMN version TYPE BIGINT; END IF;
+END $$;
+```
+
+It rewrites `blocks` under an ACCESS EXCLUSIVE lock, so readers block for the duration of the rewrite. Run
+it in the same window as the restart. Verify with:
+`SELECT data_type FROM information_schema.columns WHERE table_name='blocks' AND column_name='version';`
+which must report `bigint`. Verify by that query, never by this document.
 
 Recent lineage: 0.2.7 (Plan 70 R1) -> 0.2.8 -> 0.2.9 (2026-07-18 certification campaign) -> 0.2.10 (REBIND
 BP5 transport indexes + the csd-light re-pin) -> 0.2.11. Earlier themes: v0.2.6 multi-backend failover +

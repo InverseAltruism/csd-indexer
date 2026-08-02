@@ -52,11 +52,41 @@ export interface Store {
 }
 
 // ── shared DDL (kept to the dialect intersection; BIGINT where a value can pass 2^31) ──
+//
+// IDX-VERSION: `version` was the one header column declared INTEGER. On sqlite that is a 64-bit
+// int so nothing showed, but on Postgres (the PRODUCTION backend) INTEGER is int4, ceiling
+// 2147483647 — below the u32 domain the codec actually encodes this field in (csd-codec writes
+// the header version with u32(), and the live chain already emits u32 values above int4 max in
+// the neighbouring slot: block 67630's nonce is 2982576990). A header version past int4 therefore
+// failed the pg bind with SQLSTATE 22003 INSIDE writeBlock's dbTx: rollback, indexed_height never
+// advances, the same block re-poisons every poll = the permanent wedge I3 exists to close, left
+// open for this one column. time/bits/nonce were already BIGINT, which is why only version wedged.
+//
+// Widened rather than clamping version into int32, because a clamp would truncate half of the
+// PROTOCOL-LEGAL u32 domain: an honest header with version >= 2^31 would store and serve a value
+// that is not the one the node signed, which is "accept DIFFERENT" (the GRX-WIRE-CLAMP-1 shape),
+// and it would newly diverge from sqlite, which stores those exactly today. BIGINT changes no row
+// semantics on either backend and restores the rule this DDL already states one line above.
+//
+// MIGRATION (existing Postgres deployments only — CREATE TABLE IF NOT EXISTS does not alter an
+// existing table, and sqlite's INTEGER is already 64-bit so sqlite needs nothing). Idempotent,
+// re-runnable, rewrites the blocks table under ACCESS EXCLUSIVE (67k rows, sub-second):
+//
+//   SET lock_timeout = '5s';
+//   DO $$ BEGIN
+//     IF EXISTS (SELECT 1 FROM information_schema.columns
+//                WHERE table_schema = current_schema() AND table_name = 'blocks'
+//                  AND column_name = 'version' AND data_type = 'integer')
+//     THEN ALTER TABLE blocks ALTER COLUMN version TYPE BIGINT; END IF;
+//   END $$;
+//
+// Until an operator runs it against the live database the column stays int4 there and the wedge
+// stays open: this is an OPERATOR-BLOCKED step, not a change that activates on restart.
 const DDL = `
   CREATE TABLE IF NOT EXISTS blocks (
     height BIGINT PRIMARY KEY,
     hash TEXT NOT NULL, prev TEXT, merkle TEXT,
-    time BIGINT, bits BIGINT, nonce BIGINT, version INTEGER,
+    time BIGINT, bits BIGINT, nonce BIGINT, version BIGINT,
     tx_count INTEGER, chainwork TEXT, orphaned INTEGER DEFAULT 0
   );
   CREATE TABLE IF NOT EXISTS txs (

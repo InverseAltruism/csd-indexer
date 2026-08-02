@@ -93,10 +93,11 @@ export async function indexedHeight(): Promise<number> {
  * own-work read silently produced 0n, which made the 2026-07-05 regression guard (HOLD only when
  * ourWork > 0n && nodeWork < ourWork) fail OPEN: a garbage read could disable the guard and let a
  * lower-work node drive an unwind. Now:
- *   - `0n`   = a fresh index (below scanFrom) or a genuinely stored "0" (parses cleanly): no work to protect,
+ *   - `0n`   = a fresh index (below scanFrom) or a stored "0" AT scanFrom itself: no work to protect,
  *              guard correctly does not fire.
- *   - `null` = UNREADABLE (store threw, no row at our own tip, missing/empty chainwork, or an unparseable
- *              value): the caller FAILS CLOSED (HOLD) rather than silently disable the guard.
+ *   - `null` = UNREADABLE (store threw, no row at our own tip, missing/empty chainwork, an unparseable
+ *              value, or a "0" above scanFrom): the caller FAILS CLOSED (HOLD) rather than silently
+ *              disable the guard.
  */
 export async function indexedChainwork(): Promise<bigint | null> {
   const h = await indexedHeight();
@@ -108,7 +109,25 @@ export async function indexedChainwork(): Promise<bigint | null> {
   if (!r) return null;                                         // (b) no row at our own tip -> inconsistent/unreadable
   const raw = r.chainwork;
   if (raw == null || String(raw).trim() === "") return null;   // (c) missing/empty chainwork -> unreadable
-  try { return BigInt(String(raw).trim()); } catch { return null; } // (d) garbage -> parse throw -> unreadable
+  let w: bigint;
+  try { w = BigInt(String(raw).trim()); } catch { return null; } // (d) garbage -> parse throw -> unreadable
+  // (e) IDX-CHAINWORK-ZERO. I1 closed only the ABSENT-field shape; a backend that SERVES `chainwork: "0"`
+  // still writes the string "0", which parses cleanly and re-opens the whole 2026-07-05 incident POST-fix:
+  // ourWork = 0n makes `ourWork > 0n` false, the regression guard never fires, reconcileTipWindow walks a
+  // matching-but-shorter chain to converged = nodeTip, and unwindAbove(nodeTip) deletes every row above it
+  // (~41k rows, /names emptied). A cumulative chainwork of exactly zero at a height we have ALREADY indexed
+  // above the scan floor is not a chain with no work, it is a figure we cannot read — so classify it as
+  // UNREADABLE and let the existing fail-closed HOLD handle it. The plan's own pre-flight SQL already
+  // treats chainwork='0' as poison, so this is a state we expect to see, not a hypothetical.
+  //
+  // Bounded at `h > CFG.scanFrom` deliberately, so this cannot fail-close on honest traffic: the FIRST
+  // indexed height (genesis when scanFrom=0) keeps today's behavior exactly, which is what a chain whose
+  // genesis legitimately carries zero cumulative work needs. Nothing is given up there — at h == scanFrom
+  // the index holds a single block, so there is no accumulated history for the guard to protect. Measured
+  // 2026-08-02 against all three live backends: every sampled height from genesis to tip serves a present,
+  // positive chainwork (genesis itself is 16777472), so no real block reaches this branch.
+  if (w === 0n && h > CFG.scanFrom) return null;
+  return w;
 }
 
 /**
