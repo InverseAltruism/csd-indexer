@@ -111,9 +111,20 @@ export async function proposalsByDomain(domain: string, limit = 100, from?: numb
   // `from` = height cursor: rows at height >= from in ASCENDING order, so a resolver can page
   // the ENTIRE domain history deterministically (page until a short page; de-dup by txid at the
   // `from` boundary). Without `from`, the legacy newest-first window is preserved.
-  if (from !== undefined && Number.isFinite(Number(from))) {
+  //
+  // I5 (O-4): this cursor is a PUBLIC GET (reachable through cairn's EXPLORER_READ allowlist), so it gets
+  // heightOk, not a bare Number.isFinite, and it CLAMPS rather than refuses. Two defects that fixed:
+  //   * `?from=1e21` passed isFinite and bound 1e21 as an int8 param, which pg REJECTS -> HTTP 500 (sqlite
+  //     answered 200-empty, so the two backends disagreed on a public read).
+  //   * `?from=abc` fell THROUGH to the legacy DESCENDING window while `?from=0` is ASCENDING, so one
+  //     malformed cursor silently flipped the ordering contract and a consumer applying the short-page
+  //     rule truncated its feed.
+  // The presence of `from` now decides the branch and an unusable value clamps to 0: always ASCENDING, a
+  // SUPERSET of what was asked for, never a truncation, and never a new 4xx on a currently-200 public GET.
+  if (from !== undefined) {
+    const f = Number(from);
     return jsonSafeAll(await store().all("SELECT * FROM proposals WHERE domain=? AND height>=? ORDER BY height ASC, txid ASC LIMIT ?",
-      domain, Math.max(0, Math.floor(Number(from))), lim));
+      domain, heightOk(f) ? f : 0, lim));
   }
   return jsonSafeAll(await store().all("SELECT * FROM proposals WHERE domain=? ORDER BY height DESC, txid ASC LIMIT ?", domain, lim));
 }
@@ -130,10 +141,15 @@ export async function attestationsFor(
   const n = Number(opts.limit);
   const lim = Math.min(Math.max(1, Number.isFinite(n) ? Math.floor(n) : 5_000), 50_000); // 0/NaN→5000, <1→1
   const cols = "proposal_id, attester, score, confidence, fee, txid, height, time";
-  if (opts.afterHeight !== undefined && opts.afterTxid !== undefined) {
+  // I5 (O-4): same public-cursor treatment as proposalsByDomain's `from`. An `?after_height=1e21` passed the
+  // route's isFinite check and bound 1e21 as an int8 param, which pg REJECTS -> HTTP 500 on a public GET.
+  // An unusable cursor now DROPS to the uncursored ascending page below: a superset of the requested page,
+  // never a truncation, and no new 4xx on a read that answers 200 today.
+  const ah = Number(opts.afterHeight);
+  if (opts.afterHeight !== undefined && opts.afterTxid !== undefined && heightOk(ah)) {
     return jsonSafeAll(await store().all(
       `SELECT ${cols} FROM attestations WHERE proposal_id=? AND (height > ? OR (height = ? AND txid > ?)) ORDER BY height, txid LIMIT ?`,
-      proposalId, Math.floor(Number(opts.afterHeight)), Math.floor(Number(opts.afterHeight)), String(opts.afterTxid).toLowerCase(), lim));
+      proposalId, ah, ah, String(opts.afterTxid).toLowerCase(), lim));
   }
   return jsonSafeAll(await store().all(
     `SELECT ${cols} FROM attestations WHERE proposal_id=? ORDER BY height, txid LIMIT ?`, proposalId, lim));

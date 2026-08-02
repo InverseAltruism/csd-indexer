@@ -124,7 +124,14 @@ export async function indexedChainwork(): Promise<bigint | null> {
 export async function writeBlock(b: rpc.RpcBlock): Promise<void> {
   await dbTx(async (d: Store) => {
     const blk = b;
-    const time = Number(blk.header.time ?? 0);
+    // I3 (O-6 / P74-44): header integers are attacker-shaped JSON from the backend, and they bind straight
+    // into 64-bit columns. An unclamped value >= 2^63 THROWS on the pg bind inside this dbTx: the tx rolls
+    // back, the tip never advances, and the same block re-poisons every poll = a PERMANENT indexer wedge
+    // (the exact failure mode safeValue's own clamp already closes for output values). On sqlite the same
+    // input silently stores as a REAL instead, which is a cross-backend divergence in this repo's headline
+    // "byte-identical rows" claim. Rule: every integer bound into a column goes through the SAME clamp
+    // helper, so header time/bits/nonce/version use safeValue() exactly like value, fee and expires_epoch.
+    const time = safeValue(blk.header.time);
     // clear any prior contents of THIS height (keeps a same-height re-write internally consistent)
     await d.run(`UPDATE outputs SET spent_txid=NULL, spent_height=NULL WHERE spent_height=?`, blk.height);
     await d.run(`DELETE FROM address_history WHERE height=?`, blk.height);
@@ -138,8 +145,8 @@ export async function writeBlock(b: rpc.RpcBlock): Promise<void> {
         time=excluded.time, bits=excluded.bits, nonce=excluded.nonce, version=excluded.version,
         tx_count=excluded.tx_count, chainwork=excluded.chainwork, orphaned=0`,
       blk.height, blk.hash, blk.header.prev ?? null, blk.header.merkle ?? null, time,
-      Number(blk.header.bits ?? 0), Number(blk.header.nonce ?? 0), Number(blk.header.version ?? 0),
-      blk.txs.length, String(blk.chainwork ?? "0"));
+      safeValue(blk.header.bits), safeValue(blk.header.nonce), safeValue(blk.header.version),
+      blk.txs.length, blk.chainwork == null ? null : String(blk.chainwork));
 
     const SQL_TX = `INSERT INTO txs(txid,height,pos,app_type,signer,fee,time,n_in,n_out,coinbase)
       VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(txid) DO UPDATE SET
@@ -274,17 +281,26 @@ async function findReorgAncestor(newBlock: rpc.RpcBlock): Promise<number> {
   if (storedPrev == null) return -1;                       // nothing to link against (fresh / gap)
   if (storedPrev === (newBlock.header.prev ?? "")) return -1; // links cleanly — no reorg
   // diverged: walk back until node's hash matches what we stored (bounded by the scan floor)
+  // I2 (O-2 / P74-35): this walk SKIPS heights the node did not answer, so a transient absence below a
+  // confirmed mismatch would otherwise let the ancestor fall past heights the node never contradicted, and
+  // unwindAbove would DELETE them (un-spending their outputs back to live UTXOs). Track the LOWEST height
+  // the node actually CONTRADICTED and clamp the ancestor to lowestMismatch-1: absence is not evidence
+  // (CAIRN-IDXREORG-1/2), so it may never widen an unwind. The link mismatch above is itself a confirmed
+  // contradiction at prevH, so that is where the bound starts.
+  let lowestMismatch = prevH;
+  const clampAncestor = (a: number) => (a < lowestMismatch - 1 ? lowestMismatch - 1 : a);
   let sawNodeAbsence = false;
   for (let h = prevH - 1; h >= CFG.scanFrom; h--) {
     const nodeBlk = await rpc.blockByHeight(h);
     if (!nodeBlk) { sawNodeAbsence = true; continue; }      // node didn't answer — absence, not divergence
     const ours = await storedHash(h);
-    if (ours && nodeBlk.hash === ours) return h;            // common ancestor
+    if (ours && nodeBlk.hash === ours) return clampAncestor(h); // common ancestor
+    if (ours) lowestMismatch = h;                           // confirmed contradiction (walk is descending)
   }
   // CAIRN-IDXREORG-2: only fall to the scan floor on CONFIRMED divergence. If the walk-back found no match
   // because the node withheld deeper blocks, abort+retry instead of wiping the index down to the floor.
   if (sawNodeAbsence) return REORG_ABORT;
-  return CFG.scanFrom - 1;                                  // diverged below the floor → re-scan from scanFrom
+  return clampAncestor(CFG.scanFrom - 1);                   // diverged below the floor → re-scan from scanFrom
 }
 
 /**
@@ -309,6 +325,12 @@ async function reconcileTipWindow(tip: number): Promise<number> {
   // wedge the loop on a deep taller/equal-height reorg (finding D-I1).
   let converged = -1;
   let mismatched = false; // saw a height where the node RETURNED a block whose hash differs from ours
+  // I2 (O-2 / P74-35): the LOWEST height the node actually CONTRADICTED. `mismatched` only latches; it
+  // carries no depth, so one confirmed mismatch at the tip PLUS a transient absence deeper in the same walk
+  // PLUS a match below that made the unwind run to the deeper match, DELETING heights the node never
+  // contradicted and un-spending their outputs back into live UTXOs. Absence is not evidence
+  // (CAIRN-IDXREORG-1/2), so it may never WIDEN an unwind: clamp converged to lowestMismatch-1 below.
+  let lowestMismatch = Number.POSITIVE_INFINITY;
   let sawNodeAbsence = false; // node returned null (didn't answer) for a height in the walk — absence ≠ divergence
   const fastFloor = Math.max(CFG.scanFrom, ceil - CFG.finalDepth);
   for (let h = ceil; h >= fastFloor; h--) {
@@ -318,6 +340,7 @@ async function reconcileTipWindow(tip: number): Promise<number> {
     if (ours) {
       if (nb.hash === ours) { converged = h; break; }
       mismatched = true;
+      if (h < lowestMismatch) lowestMismatch = h;
     }
   }
   if (converged < 0) {                                     // deep divergence — walk on to the floor
@@ -328,6 +351,7 @@ async function reconcileTipWindow(tip: number): Promise<number> {
       if (ours) {
         if (nb.hash === ours) { converged = h; break; }
         mismatched = true;
+        if (h < lowestMismatch) lowestMismatch = h;
       }
     }
     // CAIRN-IDXREORG-1: only unwind to the floor on CONFIRMED contiguous divergence — i.e. the node ANSWERED
@@ -346,6 +370,11 @@ async function reconcileTipWindow(tip: number): Promise<number> {
   // shows a CONFIRMED hash mismatch at a height the node actually returned (or a lowered node tip
   // we matched at, in which case converged === ceil and this guard doesn't fire).
   if (converged < ceil && !mismatched) return 0;
+  // I2 (O-2 / P74-35): never unwind past the lowest height the node CONFIRMED wrong. Every height under
+  // lowestMismatch was either matched or simply not answered, and an unanswered height is absence, not
+  // divergence. Clamping UP here keeps the unwind exactly as deep as the evidence, so the un-answered
+  // heights (and their spends) survive and get re-checked on the next poll instead of being deleted.
+  if (Number.isFinite(lowestMismatch) && converged < lowestMismatch - 1) converged = lowestMismatch - 1;
   if (converged >= top) return 0;                          // consistent up to our tip — nothing to unwind
   // CHECKPOINT-FLOOR backstop (2026-07-05): refuse to unwind below the highest shipped SPV checkpoint.
   // No honest reorg crosses a buried checkpoint; a "reorg" that would is a node tip-regression the
