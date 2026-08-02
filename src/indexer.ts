@@ -126,7 +126,13 @@ export async function indexedChainwork(): Promise<bigint | null> {
   // the index holds a single block, so there is no accumulated history for the guard to protect. Measured
   // 2026-08-02 against all three live backends: every sampled height from genesis to tip serves a present,
   // positive chainwork (genesis itself is 16777472), so no real block reaches this branch.
-  if (w === 0n && h > CFG.scanFrom) return null;
+  //
+  // `<= 0n`, not `=== 0n`. The rationale above is "a figure we cannot read", and a NEGATIVE stored
+  // chainwork is exactly that: cumulative work is a monotonically increasing unsigned quantity, so a
+  // stored "-1" is impossible on any real chain. A `=== 0n` test let it through as a clean parse, left
+  // `ourWork > 0n` false, and reproduced the 2026-07-05 truncation through the identical path the zero
+  // case closes. One comparison covers both poison shapes.
+  if (w <= 0n && h > CFG.scanFrom) return null;
   return w;
 }
 
@@ -438,7 +444,21 @@ export async function syncOnce(): Promise<IndexResult> {
       // and keep serving last-good rather than let an unverifiable own-work figure wave through an unwind.
       // Manual-recovery posture (like the checkpoint floor); CSD_INDEX_WORK_GUARD=0 is the operator override.
       if (ourWork === null) {
-        console.warn(`[indexer] HOLD: own indexed chainwork at h=${top} is unreadable/unparseable (fail-closed) — NOT reconciling/unwinding; manual recovery (or CSD_INDEX_WORK_GUARD=0 to override)`);
+        // Non-latching HOLD: a poisoned stored tip chainwork self-heals when the node still
+        // serves the SAME block (hash-equal) with a readable positive chainwork. Rewrites one
+        // field on one row we already committed; no reconcile/unwind runs on this pass. If the
+        // node cannot re-serve a readable figure, or its block at this height has a different
+        // hash, the UPDATE matches zero rows and the HOLD stands (fail-closed as before).
+        const nb = await rpc.blockByHeight(top);
+        let fresh = 0n;
+        try { fresh = nb?.chainwork != null ? BigInt(String(nb.chainwork).trim()) : 0n; } catch { fresh = 0n; }
+        if (nb && fresh > 0n) {
+          await store().run("UPDATE blocks SET chainwork=? WHERE height=? AND hash=? AND orphaned=0",
+            String(nb.chainwork).trim(), top, nb.hash);
+          console.warn(`[indexer] HOLD(self-heal): rewrote unreadable stored chainwork at h=${top} from hash-matched node payload; next poll re-evaluates`);
+        } else {
+          console.warn(`[indexer] HOLD: own indexed chainwork at h=${top} is unreadable/unparseable (fail-closed) — NOT reconciling/unwinding; manual recovery (or CSD_INDEX_WORK_GUARD=0 to override)`);
+        }
         return { from: top + 1, to: top, tip, blocks, reorgs, reorgDepth };
       }
       const nodeWork = (() => { try { return BigInt(String(nodeTip.chainwork ?? "0")); } catch { return 0n; } })();

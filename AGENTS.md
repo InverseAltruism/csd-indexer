@@ -136,8 +136,12 @@ What 0.2.11 carries (Plan 75-B C4, one restart to activate):
 - **I1** absent `chainwork` on a block payload writes SQL NULL, not "0", so `indexedChainwork()` classifies
   it as UNREADABLE and the 2026-07-05 regression guard fails CLOSED instead of being silently inert.
   Pre-flight recorded 2026-08-02: all three backends (:8789, :8790, :8795) serve `chainwork` on `/tip` and
-  `/block/height/:h`, so this is latent, not live. Caveat kept honest: a backend that NEVER serves
-  chainwork would now freeze ingestion at the HOLD until `CSD_INDEX_WORK_GUARD=0`.
+  `/block/height/:h`, so this is latent, not live. Accurate statement of the cost, replacing the earlier
+  "a backend that NEVER serves chainwork would freeze ingestion" caveat, which overstated it once
+  IDX-HOLD-NONLATCH landed: one unreadable chainwork payload holds ingestion until the backend re-serves a
+  readable figure for the same block, at which point the indexer self-heals and the next poll (about 15s)
+  resumes. Only a backend that never again serves a readable chainwork for our tip block holds
+  indefinitely, and `CSD_INDEX_WORK_GUARD=0` remains the operator override for that state.
 - **I2** an absence in either reorg walk can no longer WIDEN an unwind (`lowestMismatch` clamp in
   `reconcileTipWindow` and `findReorgAncestor`).
 - **I3** header `time`/`bits`/`nonce`/`version` bind through `safeValue()` like every other integer column.
@@ -163,8 +167,50 @@ What 0.2.11 carries (Plan 75-B C4, one restart to activate):
   silent ASC/DESC flip). Clamp and widen only: no new 4xx on a read that answers 200 today.
 - **I9** the F6 LWMA plausibility arm logs once per process when it fail-softs to inert (visibility only,
   verdicts unchanged).
-Suites: 109 baseline plus 7 new files (chainwork-absent, chainwork-zero, reorg-absence-clamp,
-header-bind-clamp, config-knob-positive, cursor-clamp, route-guard-visibility). 145 tests, green on sqlite.
+- **IDX-CHAINWORK-NEG** (finishes IDX-CHAINWORK-ZERO) the classification is `w <= 0n`, not `w === 0n`.
+  Cumulative chainwork is a monotonically increasing unsigned quantity, so a stored NEGATIVE is exactly the
+  "figure we cannot read" the zero case is about, yet it parsed cleanly, left `ourWork > 0n` false, and
+  reproduced the 2026-07-05 truncation through the identical path. One comparison covers both poison shapes.
+- **IDX-HOLD-NONLATCH** the fail-closed HOLD is no longer self-latching. It returns before
+  `reconcileTipWindow` and the forward scan and nothing else rewrote the tip row while held, so ONE
+  transient poisoned payload froze ingestion permanently and the only exit was `CSD_INDEX_WORK_GUARD=0`,
+  which disables the entire 2026-07-05 defense. The HOLD branch now attempts a hash-bound single-row
+  self-heal from the currently selected backend first: if the node still serves the SAME block (hash-equal)
+  with a readable positive chainwork, that one field is rewritten and the next poll re-evaluates. The pass
+  still HOLDs either way, so no reconcile or unwind runs on it. If the node cannot re-serve a readable
+  figure, or its block at that height has a different hash, the UPDATE matches zero rows and the HOLD
+  stands, fail-closed exactly as before. The repair grants the backend no authority it does not already
+  hold over `nodeTip.chainwork`, and it converges the stored row toward what a fresh honest replay would
+  contain, so replay discipline is improved rather than weakened.
+
+**Test measurement, measured rather than quoted (2026-08-02).**
+- sqlite, `npm test` as written: **151 tests, 151 pass, 0 fail, 0 skipped**, exit 0. Deterministic.
+- Postgres, `CSD_INDEX_PG=... npm test` as written: **NONDETERMINISTIC**. Three consecutive runs, each on a
+  freshly created database: 138 pass / 8 fail, 137 pass / 9 fail, 137 pass / 9 fail (151 tests, 5 skipped
+  throughout). An earlier record quoting a single Postgres figure as if it were a gate was wrong: a number
+  that moves run to run is not a gate.
+- Cause, identified and confirmed, not guessed: `npm test` runs the test FILES concurrently, and the 11
+  files that do not set `CSD_INDEX_PG_SCHEMA` all fall back to `CFG.pgSchema` default `public`, so they
+  share one schema in one database. `resetStoreForTests()` (db.ts) DROPs and recreates those tables, which
+  under concurrency happens beneath a peer file mid-run. Every failure in all three runs came from that set
+  (guard-hygiene, rpc-failover, rpc-pow-route, rpc-route-plausibility) and the membership of the failing
+  set moved between runs, which is the signature. Each of those four files passes **0 fail in isolation**
+  against a fresh Postgres database.
+- Postgres, serialized (`npx tsx --test --test-concurrency=1 test/*.test.ts`): **151 tests, 146 pass, 0
+  fail, 5 skipped**, exit 0, reproduced on two separate fresh databases. The 5 skips are backend-conditional
+  by design (3 `EXPLAIN QUERY PLAN` index-plan assertions and the 2 dbtx-isolation sentinel tests are
+  sqlite-only), not flakes. **This is the honest Postgres gate figure**; the parallel invocation is not one.
+- NOT FIXED, and deliberately out of scope for this trim: the 11 files still share `public`. Giving each its
+  own `CSD_INDEX_PG_SCHEMA` is the one-line-per-file fix, and CI's Postgres job runs the same parallel
+  invocation, so CI's Postgres leg is measuring the same flake. Recorded, not chased.
+
+Suites: 109 baseline plus 8 new files (chainwork-absent, chainwork-zero, chainwork-hold-nonlatching,
+reorg-absence-clamp, header-bind-clamp, config-knob-positive, cursor-clamp, route-guard-visibility).
+
+Residual carried by this batch: **None. No residual is carried: the served-"0" and negative classes stay
+closed, and the permanent latch is removed. The only surviving indefinite hold (poisoned tip row while the
+node no longer serves that tip hash) is the state where holding is the correct behavior, and it retains the
+documented CSD_INDEX_WORK_GUARD=0 operator override.**
 
 OPERATOR-BLOCKED, and IDX-VERSION is inert in production until it runs. A restart alone does NOT widen the
 live column: `CREATE TABLE IF NOT EXISTS` cannot alter an existing table, so the production Postgres keeps
@@ -172,20 +218,54 @@ live column: `CREATE TABLE IF NOT EXISTS` cannot alter an existing table, so the
 nothing (its INTEGER is already 64-bit). Idempotent, safe to re-run, measured at 275 ms against a table
 built to the live row count (67,636) with both indexes present; a second run is a 2.6 ms no-op:
 
+The earlier form of this migration predicated on `table_schema = current_schema()` and its verification
+query carried no schema predicate at all. `current_schema()` resolves against the OPERATOR's psql
+`search_path`, not the schema the service uses (`CSD_INDEX_PG_SCHEMA`, default `public`), so run from a
+session with any other search_path the `IF EXISTS` was simply false: the block completed, psql printed `DO`
+and exited 0, and the column was never widened. Measured 2026-08-02 on a scratch cluster, deployment schema
+`csdidx`, operator search_path `public`: old form printed `DO`, exit 0, column still `integer`. A silent
+no-op that looks like a successful migration is the worst outcome available here, so the schema is now
+named literally and a match of NOTHING raises. Substitute this deployment's `CSD_INDEX_PG_SCHEMA` for
+`public` in BOTH places below (the live deployment does not set it, so `public` is correct there).
+
 ```sql
 SET lock_timeout = '5s';
-DO $$ BEGIN
-  IF EXISTS (SELECT 1 FROM information_schema.columns
-             WHERE table_schema = current_schema() AND table_name = 'blocks'
-               AND column_name = 'version' AND data_type = 'integer')
-  THEN ALTER TABLE blocks ALTER COLUMN version TYPE BIGINT; END IF;
+DO $$
+DECLARE v_schema text := 'public';   -- CSD_INDEX_PG_SCHEMA
+        v_type   text;
+BEGIN
+  SELECT data_type INTO v_type FROM information_schema.columns
+    WHERE table_schema = v_schema AND table_name = 'blocks' AND column_name = 'version';
+  IF v_type IS NULL THEN
+    RAISE EXCEPTION 'csd-indexer migration matched NOTHING: no blocks.version column in schema %. Name this deployment''s CSD_INDEX_PG_SCHEMA and re-run.', v_schema;
+  ELSIF v_type = 'integer' THEN
+    EXECUTE format('ALTER TABLE %I.blocks ALTER COLUMN version TYPE BIGINT', v_schema);
+    RAISE NOTICE 'csd-indexer: %.blocks.version widened integer -> bigint', v_schema;
+  ELSE
+    RAISE NOTICE 'csd-indexer: %.blocks.version is already %; no-op', v_schema, v_type;
+  END IF;
 END $$;
 ```
 
-It rewrites `blocks` under an ACCESS EXCLUSIVE lock, so readers block for the duration of the rewrite. Run
-it in the same window as the restart. Verify with:
-`SELECT data_type FROM information_schema.columns WHERE table_name='blocks' AND column_name='version';`
-which must report `bigint`. Verify by that query, never by this document.
+Run it with `ON_ERROR_STOP=1` so the RAISE is a non-zero exit and not just a line in the scrollback, using
+the service's own DSN (`CSD_INDEX_PG` from the unit) and writing the SQL above to a file:
+
+```bash
+psql "$CSD_INDEX_PG" -v ON_ERROR_STOP=1 -f widen-blocks-version.sql; echo "exit=$?"
+```
+
+Measured on the scratch cluster 2026-08-02: wrong schema named raises and psql exits **3**; correct schema
+widens with a NOTICE and exits 0; an immediate re-run prints `already bigint; no-op` and exits 0
+(idempotent). It rewrites `blocks` under an ACCESS EXCLUSIVE lock, so readers block for the duration of the
+rewrite. Run it in the same window as the restart. Verify with a query that also names the schema, which
+must return exactly one row reading `public | bigint`:
+
+```sql
+SELECT table_schema, data_type FROM information_schema.columns
+ WHERE table_schema = 'public' AND table_name = 'blocks' AND column_name = 'version';
+```
+
+Verify by that query, never by this document.
 
 Recent lineage: 0.2.7 (Plan 70 R1) -> 0.2.8 -> 0.2.9 (2026-07-18 certification campaign) -> 0.2.10 (REBIND
 BP5 transport indexes + the csd-light re-pin) -> 0.2.11. Earlier themes: v0.2.6 multi-backend failover +

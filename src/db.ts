@@ -70,15 +70,39 @@ export interface Store {
 //
 // MIGRATION (existing Postgres deployments only — CREATE TABLE IF NOT EXISTS does not alter an
 // existing table, and sqlite's INTEGER is already 64-bit so sqlite needs nothing). Idempotent,
-// re-runnable, rewrites the blocks table under ACCESS EXCLUSIVE (67k rows, sub-second):
+// re-runnable, rewrites the blocks table under ACCESS EXCLUSIVE (67k rows, sub-second).
+//
+// SCHEMA-EXPLICIT AND LOUD, deliberately. The earlier form predicated on `table_schema =
+// current_schema()`, which resolves against the OPERATOR's psql search_path, not the schema this
+// service uses (CSD_INDEX_PG_SCHEMA, default "public"). Run from a session whose search_path is
+// anything else and the IF EXISTS is simply false: the DO block completes, psql prints DO, and the
+// column is never widened. A silent no-op that looks like a successful migration is the worst
+// outcome available here, so the schema is named literally and a match of NOTHING RAISES instead of
+// returning quietly. Substitute this deployment's CSD_INDEX_PG_SCHEMA for 'public' in BOTH places.
 //
 //   SET lock_timeout = '5s';
-//   DO $$ BEGIN
-//     IF EXISTS (SELECT 1 FROM information_schema.columns
-//                WHERE table_schema = current_schema() AND table_name = 'blocks'
-//                  AND column_name = 'version' AND data_type = 'integer')
-//     THEN ALTER TABLE blocks ALTER COLUMN version TYPE BIGINT; END IF;
+//   DO $$
+//   DECLARE v_schema text := 'public';   -- CSD_INDEX_PG_SCHEMA
+//           v_type   text;
+//   BEGIN
+//     SELECT data_type INTO v_type FROM information_schema.columns
+//       WHERE table_schema = v_schema AND table_name = 'blocks' AND column_name = 'version';
+//     IF v_type IS NULL THEN
+//       RAISE EXCEPTION 'csd-indexer migration matched NOTHING: no blocks.version column in schema %. Name this deployment''s CSD_INDEX_PG_SCHEMA and re-run.', v_schema;
+//     ELSIF v_type = 'integer' THEN
+//       EXECUTE format('ALTER TABLE %I.blocks ALTER COLUMN version TYPE BIGINT', v_schema);
+//       RAISE NOTICE 'csd-indexer: %.blocks.version widened integer -> bigint', v_schema;
+//     ELSE
+//       RAISE NOTICE 'csd-indexer: %.blocks.version is already %; no-op', v_schema, v_type;
+//     END IF;
 //   END $$;
+//
+// VERIFY with a query that names the schema too (the old verification query had NO schema predicate
+// at all, so on a database carrying the table in more than one schema it could report `bigint` from
+// a schema the indexer never reads). Exactly one row, reading `public | bigint`:
+//
+//   SELECT table_schema, data_type FROM information_schema.columns
+//    WHERE table_schema = 'public' AND table_name = 'blocks' AND column_name = 'version';
 //
 // Until an operator runs it against the live database the column stays int4 there and the wedge
 // stays open: this is an OPERATOR-BLOCKED step, not a change that activates on restart.
