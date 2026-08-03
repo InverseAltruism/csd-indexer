@@ -127,6 +127,12 @@ async function contenderPlausible(claimedHeight: number, header: unknown): Promi
   return contenderTarget <= threshold;
 }
 
+// I9 (Q-03): one-shot visibility flag for the catch below. A guard that fail-softs to INERT in silence is
+// the same class as I1 and GAP-08: the operator has no way to learn that an arm of ROUTE-1 stopped
+// checking. One line per process is the whole fix; the poll loop runs every ~15s, so anything per-call
+// would be a journal flood, and the flag must never gate behavior.
+let warnedLocalTargetThrow = false;
+
 // Honest expected target AT the local tip, from the local LWMA window (finality-gated blocks table only).
 // Returns null when it cannot be derived (fewer than 2 local headers, or a compute anomaly) so the caller
 // treats the LWMA test as inactive rather than throwing. Never touches the network or the live primary.
@@ -143,7 +149,17 @@ async function expectedLocalTarget(localHeight: number): Promise<bigint | null> 
     const eb = expectedBitsFromWindow(window, localHeight);
     const t = targetToBigInt(bitsToTarget(eb));
     return t > 0n ? t : null;
-  } catch { return null; }
+  } catch (e) {
+    // I9 (Q-03): the fail-soft STAYS (the caller treats a null as "LWMA test inactive" and the ROUTE-1 PoW
+    // arm plus the delta cap remain armed, so this never opens a route). What changes is only that the
+    // disarming is now VISIBLE: without this line the F6 local-anchored plausibility arm could be inert for
+    // the whole process life and nothing would say so. Verdicts are unchanged; this only prints.
+    if (!warnedLocalTargetThrow) {
+      warnedLocalTargetThrow = true;
+      console.warn(`[rpc] F6 plausibility: local LWMA anchor threw (${e instanceof Error ? e.message : String(e)}) at localHeight=${localHeight}; the LWMA arm of ROUTE-1 is INERT until this is fixed (the PoW + delta-cap arms stay armed). Logged once per process.`);
+    }
+    return null;
+  }
 }
 
 // Fetch a backend's tip header (at its claimed tip height), then apply BOTH ROUTE-1 rules with a SINGLE

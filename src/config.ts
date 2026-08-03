@@ -97,7 +97,12 @@ function checkpointDefault(): number {
   try { const v = Number(readFileSync("/opt/cairn_substrate/cairn/deploy/spv-checkpoint", "utf8").trim()); return Number.isFinite(v) && v > 0 ? v : 38142; } catch { return 38142; }
 }
 function env(k: string, d: string): string { return process.env[k] ?? d; }
-function num(k: string, d: number): number { const v = Number(process.env[k]); return Number.isFinite(v) ? v : d; }
+// I4 (O-7 / P74-37): only a POSITIVE finite number is a usable knob value. The old body accepted negatives,
+// so CSD_INDEX_CHECKPOINT_FLOOR=-1 was truthy, survived the `|| checkpointDefault()` fallback at the
+// checkpointFloor site, and silently DISABLED the unwind floor (`converged < -1` never fires) while looking
+// configured. Zero already fell through to the default via that same `||`; this makes non-positive input
+// mean "unset" for every knob, so a typo can never turn a guard off quietly.
+function num(k: string, d: number): number { const v = Number(process.env[k]); return Number.isFinite(v) && v > 0 ? v : d; }
 // Failover backend list: explicit CSD_RPC_BACKENDS (comma list) wins; else the primary CSD_RPC plus the
 // on-host miner + standby RPCs (deduped). Primary stays first so it is preferred on a chainwork tie.
 function backendList(): string[] {

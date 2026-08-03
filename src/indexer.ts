@@ -93,10 +93,11 @@ export async function indexedHeight(): Promise<number> {
  * own-work read silently produced 0n, which made the 2026-07-05 regression guard (HOLD only when
  * ourWork > 0n && nodeWork < ourWork) fail OPEN: a garbage read could disable the guard and let a
  * lower-work node drive an unwind. Now:
- *   - `0n`   = a fresh index (below scanFrom) or a genuinely stored "0" (parses cleanly): no work to protect,
+ *   - `0n`   = a fresh index (below scanFrom) or a stored "0" AT scanFrom itself: no work to protect,
  *              guard correctly does not fire.
- *   - `null` = UNREADABLE (store threw, no row at our own tip, missing/empty chainwork, or an unparseable
- *              value): the caller FAILS CLOSED (HOLD) rather than silently disable the guard.
+ *   - `null` = UNREADABLE (store threw, no row at our own tip, missing/empty chainwork, an unparseable
+ *              value, or a "0" above scanFrom): the caller FAILS CLOSED (HOLD) rather than silently
+ *              disable the guard.
  */
 export async function indexedChainwork(): Promise<bigint | null> {
   const h = await indexedHeight();
@@ -108,7 +109,31 @@ export async function indexedChainwork(): Promise<bigint | null> {
   if (!r) return null;                                         // (b) no row at our own tip -> inconsistent/unreadable
   const raw = r.chainwork;
   if (raw == null || String(raw).trim() === "") return null;   // (c) missing/empty chainwork -> unreadable
-  try { return BigInt(String(raw).trim()); } catch { return null; } // (d) garbage -> parse throw -> unreadable
+  let w: bigint;
+  try { w = BigInt(String(raw).trim()); } catch { return null; } // (d) garbage -> parse throw -> unreadable
+  // (e) IDX-CHAINWORK-ZERO. I1 closed only the ABSENT-field shape; a backend that SERVES `chainwork: "0"`
+  // still writes the string "0", which parses cleanly and re-opens the whole 2026-07-05 incident POST-fix:
+  // ourWork = 0n makes `ourWork > 0n` false, the regression guard never fires, reconcileTipWindow walks a
+  // matching-but-shorter chain to converged = nodeTip, and unwindAbove(nodeTip) deletes every row above it
+  // (~41k rows, /names emptied). A cumulative chainwork of exactly zero at a height we have ALREADY indexed
+  // above the scan floor is not a chain with no work, it is a figure we cannot read — so classify it as
+  // UNREADABLE and let the existing fail-closed HOLD handle it. The plan's own pre-flight SQL already
+  // treats chainwork='0' as poison, so this is a state we expect to see, not a hypothetical.
+  //
+  // Bounded at `h > CFG.scanFrom` deliberately, so this cannot fail-close on honest traffic: the FIRST
+  // indexed height (genesis when scanFrom=0) keeps today's behavior exactly, which is what a chain whose
+  // genesis legitimately carries zero cumulative work needs. Nothing is given up there — at h == scanFrom
+  // the index holds a single block, so there is no accumulated history for the guard to protect. Measured
+  // 2026-08-02 against all three live backends: every sampled height from genesis to tip serves a present,
+  // positive chainwork (genesis itself is 16777472), so no real block reaches this branch.
+  //
+  // `<= 0n`, not `=== 0n`. The rationale above is "a figure we cannot read", and a NEGATIVE stored
+  // chainwork is exactly that: cumulative work is a monotonically increasing unsigned quantity, so a
+  // stored "-1" is impossible on any real chain. A `=== 0n` test let it through as a clean parse, left
+  // `ourWork > 0n` false, and reproduced the 2026-07-05 truncation through the identical path the zero
+  // case closes. One comparison covers both poison shapes.
+  if (w <= 0n && h > CFG.scanFrom) return null;
+  return w;
 }
 
 /**
@@ -124,7 +149,14 @@ export async function indexedChainwork(): Promise<bigint | null> {
 export async function writeBlock(b: rpc.RpcBlock): Promise<void> {
   await dbTx(async (d: Store) => {
     const blk = b;
-    const time = Number(blk.header.time ?? 0);
+    // I3 (O-6 / P74-44): header integers are attacker-shaped JSON from the backend, and they bind straight
+    // into 64-bit columns. An unclamped value >= 2^63 THROWS on the pg bind inside this dbTx: the tx rolls
+    // back, the tip never advances, and the same block re-poisons every poll = a PERMANENT indexer wedge
+    // (the exact failure mode safeValue's own clamp already closes for output values). On sqlite the same
+    // input silently stores as a REAL instead, which is a cross-backend divergence in this repo's headline
+    // "byte-identical rows" claim. Rule: every integer bound into a column goes through the SAME clamp
+    // helper, so header time/bits/nonce/version use safeValue() exactly like value, fee and expires_epoch.
+    const time = safeValue(blk.header.time);
     // clear any prior contents of THIS height (keeps a same-height re-write internally consistent)
     await d.run(`UPDATE outputs SET spent_txid=NULL, spent_height=NULL WHERE spent_height=?`, blk.height);
     await d.run(`DELETE FROM address_history WHERE height=?`, blk.height);
@@ -138,8 +170,8 @@ export async function writeBlock(b: rpc.RpcBlock): Promise<void> {
         time=excluded.time, bits=excluded.bits, nonce=excluded.nonce, version=excluded.version,
         tx_count=excluded.tx_count, chainwork=excluded.chainwork, orphaned=0`,
       blk.height, blk.hash, blk.header.prev ?? null, blk.header.merkle ?? null, time,
-      Number(blk.header.bits ?? 0), Number(blk.header.nonce ?? 0), Number(blk.header.version ?? 0),
-      blk.txs.length, String(blk.chainwork ?? "0"));
+      safeValue(blk.header.bits), safeValue(blk.header.nonce), safeValue(blk.header.version),
+      blk.txs.length, blk.chainwork == null ? null : String(blk.chainwork));
 
     const SQL_TX = `INSERT INTO txs(txid,height,pos,app_type,signer,fee,time,n_in,n_out,coinbase)
       VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(txid) DO UPDATE SET
@@ -274,17 +306,26 @@ async function findReorgAncestor(newBlock: rpc.RpcBlock): Promise<number> {
   if (storedPrev == null) return -1;                       // nothing to link against (fresh / gap)
   if (storedPrev === (newBlock.header.prev ?? "")) return -1; // links cleanly — no reorg
   // diverged: walk back until node's hash matches what we stored (bounded by the scan floor)
+  // I2 (O-2 / P74-35): this walk SKIPS heights the node did not answer, so a transient absence below a
+  // confirmed mismatch would otherwise let the ancestor fall past heights the node never contradicted, and
+  // unwindAbove would DELETE them (un-spending their outputs back to live UTXOs). Track the LOWEST height
+  // the node actually CONTRADICTED and clamp the ancestor to lowestMismatch-1: absence is not evidence
+  // (CAIRN-IDXREORG-1/2), so it may never widen an unwind. The link mismatch above is itself a confirmed
+  // contradiction at prevH, so that is where the bound starts.
+  let lowestMismatch = prevH;
+  const clampAncestor = (a: number) => (a < lowestMismatch - 1 ? lowestMismatch - 1 : a);
   let sawNodeAbsence = false;
   for (let h = prevH - 1; h >= CFG.scanFrom; h--) {
     const nodeBlk = await rpc.blockByHeight(h);
     if (!nodeBlk) { sawNodeAbsence = true; continue; }      // node didn't answer — absence, not divergence
     const ours = await storedHash(h);
-    if (ours && nodeBlk.hash === ours) return h;            // common ancestor
+    if (ours && nodeBlk.hash === ours) return clampAncestor(h); // common ancestor
+    if (ours) lowestMismatch = h;                           // confirmed contradiction (walk is descending)
   }
   // CAIRN-IDXREORG-2: only fall to the scan floor on CONFIRMED divergence. If the walk-back found no match
   // because the node withheld deeper blocks, abort+retry instead of wiping the index down to the floor.
   if (sawNodeAbsence) return REORG_ABORT;
-  return CFG.scanFrom - 1;                                  // diverged below the floor → re-scan from scanFrom
+  return clampAncestor(CFG.scanFrom - 1);                   // diverged below the floor → re-scan from scanFrom
 }
 
 /**
@@ -309,6 +350,12 @@ async function reconcileTipWindow(tip: number): Promise<number> {
   // wedge the loop on a deep taller/equal-height reorg (finding D-I1).
   let converged = -1;
   let mismatched = false; // saw a height where the node RETURNED a block whose hash differs from ours
+  // I2 (O-2 / P74-35): the LOWEST height the node actually CONTRADICTED. `mismatched` only latches; it
+  // carries no depth, so one confirmed mismatch at the tip PLUS a transient absence deeper in the same walk
+  // PLUS a match below that made the unwind run to the deeper match, DELETING heights the node never
+  // contradicted and un-spending their outputs back into live UTXOs. Absence is not evidence
+  // (CAIRN-IDXREORG-1/2), so it may never WIDEN an unwind: clamp converged to lowestMismatch-1 below.
+  let lowestMismatch = Number.POSITIVE_INFINITY;
   let sawNodeAbsence = false; // node returned null (didn't answer) for a height in the walk — absence ≠ divergence
   const fastFloor = Math.max(CFG.scanFrom, ceil - CFG.finalDepth);
   for (let h = ceil; h >= fastFloor; h--) {
@@ -318,6 +365,7 @@ async function reconcileTipWindow(tip: number): Promise<number> {
     if (ours) {
       if (nb.hash === ours) { converged = h; break; }
       mismatched = true;
+      if (h < lowestMismatch) lowestMismatch = h;
     }
   }
   if (converged < 0) {                                     // deep divergence — walk on to the floor
@@ -328,6 +376,7 @@ async function reconcileTipWindow(tip: number): Promise<number> {
       if (ours) {
         if (nb.hash === ours) { converged = h; break; }
         mismatched = true;
+        if (h < lowestMismatch) lowestMismatch = h;
       }
     }
     // CAIRN-IDXREORG-1: only unwind to the floor on CONFIRMED contiguous divergence — i.e. the node ANSWERED
@@ -346,6 +395,11 @@ async function reconcileTipWindow(tip: number): Promise<number> {
   // shows a CONFIRMED hash mismatch at a height the node actually returned (or a lowered node tip
   // we matched at, in which case converged === ceil and this guard doesn't fire).
   if (converged < ceil && !mismatched) return 0;
+  // I2 (O-2 / P74-35): never unwind past the lowest height the node CONFIRMED wrong. Every height under
+  // lowestMismatch was either matched or simply not answered, and an unanswered height is absence, not
+  // divergence. Clamping UP here keeps the unwind exactly as deep as the evidence, so the un-answered
+  // heights (and their spends) survive and get re-checked on the next poll instead of being deleted.
+  if (Number.isFinite(lowestMismatch) && converged < lowestMismatch - 1) converged = lowestMismatch - 1;
   if (converged >= top) return 0;                          // consistent up to our tip — nothing to unwind
   // CHECKPOINT-FLOOR backstop (2026-07-05): refuse to unwind below the highest shipped SPV checkpoint.
   // No honest reorg crosses a buried checkpoint; a "reorg" that would is a node tip-regression the
@@ -390,7 +444,21 @@ export async function syncOnce(): Promise<IndexResult> {
       // and keep serving last-good rather than let an unverifiable own-work figure wave through an unwind.
       // Manual-recovery posture (like the checkpoint floor); CSD_INDEX_WORK_GUARD=0 is the operator override.
       if (ourWork === null) {
-        console.warn(`[indexer] HOLD: own indexed chainwork at h=${top} is unreadable/unparseable (fail-closed) — NOT reconciling/unwinding; manual recovery (or CSD_INDEX_WORK_GUARD=0 to override)`);
+        // Non-latching HOLD: a poisoned stored tip chainwork self-heals when the node still
+        // serves the SAME block (hash-equal) with a readable positive chainwork. Rewrites one
+        // field on one row we already committed; no reconcile/unwind runs on this pass. If the
+        // node cannot re-serve a readable figure, or its block at this height has a different
+        // hash, the UPDATE matches zero rows and the HOLD stands (fail-closed as before).
+        const nb = await rpc.blockByHeight(top);
+        let fresh = 0n;
+        try { fresh = nb?.chainwork != null ? BigInt(String(nb.chainwork).trim()) : 0n; } catch { fresh = 0n; }
+        if (nb && fresh > 0n) {
+          await store().run("UPDATE blocks SET chainwork=? WHERE height=? AND hash=? AND orphaned=0",
+            String(nb.chainwork).trim(), top, nb.hash);
+          console.warn(`[indexer] HOLD(self-heal): rewrote unreadable stored chainwork at h=${top} from hash-matched node payload; next poll re-evaluates`);
+        } else {
+          console.warn(`[indexer] HOLD: own indexed chainwork at h=${top} is unreadable/unparseable (fail-closed) — NOT reconciling/unwinding; manual recovery (or CSD_INDEX_WORK_GUARD=0 to override)`);
+        }
         return { from: top + 1, to: top, tip, blocks, reorgs, reorgDepth };
       }
       const nodeWork = (() => { try { return BigInt(String(nodeTip.chainwork ?? "0")); } catch { return 0n; } })();

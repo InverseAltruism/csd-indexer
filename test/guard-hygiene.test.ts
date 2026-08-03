@@ -61,8 +61,17 @@ test("F7 legit POSITIVE chainwork -> parsed exactly (guard active)", async () =>
   assert.equal(await indexedChainwork(), 123456789012345678901234567890n);
 });
 
-test("F7 legit stored '0' -> 0n (NOT null): a real zero, guard correctly inert", async () => {
+// IDX-CHAINWORK-ZERO revises this one case: F7 classified EVERY cleanly-parsing "0" as a legit zero, which
+// left the 2026-07-05 incident reproducible against a backend that serves chainwork:"0" instead of omitting
+// it. A zero at a height we have already indexed ABOVE the scan floor is now UNREADABLE; a zero AT scanFrom
+// (a chain whose genesis legitimately carries no cumulative work) still reads as a real zero.
+test("IDX-CHAINWORK-ZERO: stored '0' ABOVE scanFrom -> null (unreadable, fail closed)", async () => {
   await seedTip(5, "0");
+  assert.equal(await indexedChainwork(), null);
+});
+
+test("IDX-CHAINWORK-ZERO: stored '0' AT scanFrom -> 0n (NOT null): unchanged, guard correctly inert", async () => {
+  await seedTip(0, "0");   // CSD_INDEX_FROM=0 in this suite, so height 0 IS scanFrom
   assert.equal(await indexedChainwork(), 0n);
 });
 

@@ -52,11 +52,65 @@ export interface Store {
 }
 
 // ── shared DDL (kept to the dialect intersection; BIGINT where a value can pass 2^31) ──
+//
+// IDX-VERSION: `version` was the one header column declared INTEGER. On sqlite that is a 64-bit
+// int so nothing showed, but on Postgres (the PRODUCTION backend) INTEGER is int4, ceiling
+// 2147483647 — below the u32 domain the codec actually encodes this field in (csd-codec writes
+// the header version with u32(), and the live chain already emits u32 values above int4 max in
+// the neighbouring slot: block 67630's nonce is 2982576990). A header version past int4 therefore
+// failed the pg bind with SQLSTATE 22003 INSIDE writeBlock's dbTx: rollback, indexed_height never
+// advances, the same block re-poisons every poll = the permanent wedge I3 exists to close, left
+// open for this one column. time/bits/nonce were already BIGINT, which is why only version wedged.
+//
+// Widened rather than clamping version into int32, because a clamp would truncate half of the
+// PROTOCOL-LEGAL u32 domain: an honest header with version >= 2^31 would store and serve a value
+// that is not the one the node signed, which is "accept DIFFERENT" (the GRX-WIRE-CLAMP-1 shape),
+// and it would newly diverge from sqlite, which stores those exactly today. BIGINT changes no row
+// semantics on either backend and restores the rule this DDL already states one line above.
+//
+// MIGRATION (existing Postgres deployments only — CREATE TABLE IF NOT EXISTS does not alter an
+// existing table, and sqlite's INTEGER is already 64-bit so sqlite needs nothing). Idempotent,
+// re-runnable, rewrites the blocks table under ACCESS EXCLUSIVE (67k rows, sub-second).
+//
+// SCHEMA-EXPLICIT AND LOUD, deliberately. The earlier form predicated on `table_schema =
+// current_schema()`, which resolves against the OPERATOR's psql search_path, not the schema this
+// service uses (CSD_INDEX_PG_SCHEMA, default "public"). Run from a session whose search_path is
+// anything else and the IF EXISTS is simply false: the DO block completes, psql prints DO, and the
+// column is never widened. A silent no-op that looks like a successful migration is the worst
+// outcome available here, so the schema is named literally and a match of NOTHING RAISES instead of
+// returning quietly. Substitute this deployment's CSD_INDEX_PG_SCHEMA for 'public' in BOTH places.
+//
+//   SET lock_timeout = '5s';
+//   DO $$
+//   DECLARE v_schema text := 'public';   -- CSD_INDEX_PG_SCHEMA
+//           v_type   text;
+//   BEGIN
+//     SELECT data_type INTO v_type FROM information_schema.columns
+//       WHERE table_schema = v_schema AND table_name = 'blocks' AND column_name = 'version';
+//     IF v_type IS NULL THEN
+//       RAISE EXCEPTION 'csd-indexer migration matched NOTHING: no blocks.version column in schema %. Name this deployment''s CSD_INDEX_PG_SCHEMA and re-run.', v_schema;
+//     ELSIF v_type = 'integer' THEN
+//       EXECUTE format('ALTER TABLE %I.blocks ALTER COLUMN version TYPE BIGINT', v_schema);
+//       RAISE NOTICE 'csd-indexer: %.blocks.version widened integer -> bigint', v_schema;
+//     ELSE
+//       RAISE NOTICE 'csd-indexer: %.blocks.version is already %; no-op', v_schema, v_type;
+//     END IF;
+//   END $$;
+//
+// VERIFY with a query that names the schema too (the old verification query had NO schema predicate
+// at all, so on a database carrying the table in more than one schema it could report `bigint` from
+// a schema the indexer never reads). Exactly one row, reading `public | bigint`:
+//
+//   SELECT table_schema, data_type FROM information_schema.columns
+//    WHERE table_schema = 'public' AND table_name = 'blocks' AND column_name = 'version';
+//
+// Until an operator runs it against the live database the column stays int4 there and the wedge
+// stays open: this is an OPERATOR-BLOCKED step, not a change that activates on restart.
 const DDL = `
   CREATE TABLE IF NOT EXISTS blocks (
     height BIGINT PRIMARY KEY,
     hash TEXT NOT NULL, prev TEXT, merkle TEXT,
-    time BIGINT, bits BIGINT, nonce BIGINT, version INTEGER,
+    time BIGINT, bits BIGINT, nonce BIGINT, version BIGINT,
     tx_count INTEGER, chainwork TEXT, orphaned INTEGER DEFAULT 0
   );
   CREATE TABLE IF NOT EXISTS txs (
