@@ -121,7 +121,13 @@ Gotcha: stale dev servers squat :8793; find the squatter and kill it by PID (che
 
 ## State snapshot (2026-08-02, Plan 75-B batch C4; verify with git before trusting)
 
-Version **0.2.11** (authored on branch `plan75b/c4-indexer`; the tag `v0.2.11` and the restart are OPERATOR
+★**SHIPPED 2026-08-03.** Version **0.2.11** is MERGED (`03b2dea`), TAGGED `v0.2.11`, the production
+`blocks.version` int4 to bigint ALTER has RUN (`NOTICE ... widened integer -> bigint`, verification row
+`public | bigint`), and the service has been RESTARTED: `/health` reports **0.2.11** with
+`indexed == tip`. The migration is committed as `widen-blocks-version.sql`. The paragraph below is the
+pre-ship record.
+
+(historical) Version **0.2.11** (authored on branch `plan75b/c4-indexer`; the tag `v0.2.11` and the restart are OPERATOR
 steps, not done here). Pins: csd-codec 0.1.16, csd-crypto 0.1.15, csd-registry 0.1.17, csd-light 0.1.19
 (note this repo does NOT pin cairnx-core at all: it feeds the resolver raw rows, it does not replay them).
 0.2.11 exists because `3e5890d` moved three of those pins under the unchanged string "0.2.10", so that
