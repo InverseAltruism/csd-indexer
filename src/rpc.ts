@@ -282,6 +282,12 @@ export async function blockByHeight(h: number): Promise<RpcBlock | null> {
     const j = await getJson(`/block/height/${h}`);
     const b = j.block ?? j;
     if (!b || !b.header || !Array.isArray(b.txs)) return null;
+    // Bind the response to the REQUESTED height: the node answers 200 with a mismatched/null
+    // height for a height beyond tip, and a mismatched payload must never be written as a
+    // canonical row (it would resurrect spent outputs as live UTXOs). Reject-more; the honest path
+    // (every sampled height echoes the request) is unchanged. `typeof` first: Number(null)===0
+    // would otherwise let a null height pass for h=0.
+    if (typeof b.height !== "number" || !Number.isSafeInteger(b.height) || b.height !== h) return null;
     return b as RpcBlock;
   } catch { return null; }
 }
