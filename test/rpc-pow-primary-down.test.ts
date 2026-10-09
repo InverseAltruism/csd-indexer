@@ -46,6 +46,7 @@ process.env.CSD_RPC_WORK_ESCAPE = "1000";
 // failover assertion holds on its own; the plausibility gate is exercised in rpc-route-plausibility.
 process.env.CSD_INDEX_DB = `/tmp/csd-idx-rpcpd-${process.pid}.db`;
 for (const s of ["", "-wal", "-shm"]) { try { (await import("node:fs")).rmSync(process.env.CSD_INDEX_DB + s); } catch {} }
+process.env.CSD_INDEX_PG_SCHEMA = "t_rpcpd";   // own schema: the route gate reads `blocks`, which peer files seed
 const rpc = await import("../src/rpc.js");
 
 test("primary DOWN, 3 backends: a forged-work standby (invalid PoW) does NOT win; the honest standby does", async () => {
