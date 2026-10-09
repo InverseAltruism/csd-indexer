@@ -1,12 +1,12 @@
 # csd-indexer
 
-> Onboarding briefing for coding agents and human contributors. AGENTS.md is the canonical briefing; CLAUDE.md imports it, so edit AGENTS.md only. Production and operations specifics (hosts, service management, deployment cadence) are intentionally out of scope here and are maintained privately by the maintainers.
+> Onboarding briefing for coding agents and human contributors. AGENTS.md is the canonical briefing; CLAUDE.md is a symlink to it. Production and operations specifics (hosts, service management, deployment cadence) are intentionally out of scope here and are maintained privately by the maintainers.
 
 L2 of the CSD (Compute Substrate) stack: a standalone, reorg-safe chain indexer + block explorer + Esplora-style REST/streaming API. The CSD node's RPC is deliberately minimal; this service reads raw blocks into a relational DB and re-serves what the node omits: address history/balances/UTXOs, per-attester attestation data, merkle inclusion proofs for the L0 light client, L3 registry resolution, miner/holder/supply analytics, and a live SSE/WS event stream.
 
 Trust model (README "Honest limits", enforced by design): the indexer is a convenient derived view, not an authority. Inclusion proofs are trustless (clients re-fold them against PoW headers); everything else is reproducible rather than signed. The audit story is "run your own indexer, get byte-identical rows".
 
-Version state is ephemeral: see the dated State snapshot at the bottom. Not npm-published (`private: true`); it runs straight from source. Default listen address is 127.0.0.1:8793 (`CSD_INDEX_LISTEN`, documented in the README and Dockerfile). The maintainers run a production instance behind the public front door at https://cairn-substrate.com/explorer; deployment specifics are maintained privately.
+The version and the dependency pins live in `package.json` only; git tags mark releases. Not npm-published (`private: true`); it runs straight from source. Default listen address is 127.0.0.1:8793 (`CSD_INDEX_LISTEN`, documented in the README and Dockerfile). The maintainers run a production instance behind the public front door at https://cairn-substrate.com/explorer; deployment specifics are maintained privately.
 
 ## The stack around it
 
@@ -32,7 +32,7 @@ TypeScript, run directly via `tsx` (no build step, no native deps; `node:sqlite`
 - `src/cli.ts` - entry. `index` = one sync pass + exit (cron/CI); `run` = continuous poll loop AND API server in one process.
 - `src/config.ts` - `CFG` from env. Key vars: `CSD_RPC` (default http://127.0.0.1:8789), `CSD_RPC_BACKENDS`, `CSD_INDEX_DB`, `CSD_INDEX_PG` (set => Postgres instead of sqlite), `CSD_INDEX_LISTEN` (127.0.0.1:8793), `CSD_SWARM_GATEWAY` (:8791), `CSD_CONFIRMATIONS_FINAL` (6), `CSD_INDEX_POLL` (15s), `CSD_STALE_SECS` (600), `CSD_INDEX_CHECKPOINT_FLOOR` (default read from the shared spv-checkpoint file whose path is baked into config.ts, hard fallback 38142), `CSD_INDEX_WORK_GUARD` (chainwork-guard kill switch, default on).
 - `src/rpc.ts` - node RPC client (`/tip`, `/block/height/:h`) + multi-backend failover: `selectBackend()` picks the reachable backend with max cumulative chainwork; 3-block height hysteresis, sticky, plus work-escape (`CSD_RPC_WORK_ESCAPE`, 20 cycles) so hysteresis can't pin a same-height lower-chainwork fork. Default backend list [:8789, :8790, :8795] is auto-appended only when `CSD_RPC` is the default. ROUTE-1: a non-primary backend may only WIN on work/height if its tip header is PoW-valid + hash-bound (`tipHeaderPowOk`) AND F6-plausible (`contenderPlausible`): a delta cap (`CSD_RPC_MAX_AHEAD`, 128) plus an LWMA ease factor (`CSD_RPC_MAX_EASE`, 16) anchored on the indexer's OWN local finality-gated headers (never the live primary), so a real min-difficulty header claiming huge chainwork cannot capture the feed while a genuinely-ahead honest secondary still wins. Kill switch `CSD_RPC_ROUTE_PLAUSIBILITY=0`. Every serial-poll read is bounded by an AbortSignal timeout (`CSD_RPC_TIMEOUT`, 10s) so a backend that stalls /block cannot wedge the loop.
-- `src/db.ts` - one async `Store` interface, two backends: `SqliteStore` (node:sqlite DatabaseSync, WAL) and `PgStore` (pg Pool, ?->$n translation, exact int8/NUMERIC parsers). Selected purely by `CFG.pg` (db.ts:274). Tables: blocks, txs, outputs, address_history, proposals, attestations, meta; every row carries `height` (the reorg invariant). Exact-integer policy: number within 2^53, bigint past it, never lossy. BP5 (REBIND, closes N17+N20): four additive idempotent transport indexes in the shared DDL constant, applied at BOOT on both backends like every other index (blocks(hash) for the header-batch lookups, plus outputs(height)/outputs(spent_height)/address_history(height) for the write/unwind paths).
+- `src/db.ts` - one async `Store` interface, two backends: `SqliteStore` (node:sqlite DatabaseSync, WAL) and `PgStore` (pg Pool, ?->$n translation, exact int8/NUMERIC parsers). Selected purely by `CFG.pg` (`store()` in db.ts). Tables: blocks, txs, outputs, address_history, proposals, attestations, meta; every row carries `height` (the reorg invariant). Exact-integer policy: number within 2^53, bigint past it, never lossy. BP5 (REBIND, closes N17+N20): four additive idempotent transport indexes in the shared DDL constant, applied at BOOT on both backends like every other index (blocks(hash) for the header-batch lookups, plus outputs(height)/outputs(spent_height)/address_history(height) for the write/unwind paths).
 - `src/indexer.ts` - the sync engine: `syncOnce()` (chainwork regression guard -> `reconcileTipWindow` -> forward scan), `writeBlock()` (one db tx per block, self-clearing per height), `unwindAbove()` (reorg undo), `findReorgAncestor()`. Anti-wedge parsers `safeValue`/`safeEpoch`/`clampInt`.
 - `src/decode.ts` - signer addr from scriptSig (via @inversealtruism/csd-crypto), addr from p2pkh script_pubkey, tx classification (Coinbase/Propose/Attest/Transfer).
 - `src/merkle.ts` - Electrum-format merkle proofs built with csd-codec's `merkleBranch` (the same function the L0 light client folds); returns the PoW-committed header root, never a self-recomputed one.
@@ -61,7 +61,7 @@ API: Esplora core (`/blocks/tip/height` 503s on empty index, `/block/:hash[/txid
 - sqlite dbTx isolation invariant (db.ts, guarded by test/dbtx-isolation.test.ts): BEGIN..COMMIT atomicity vs HTTP readers holds only because every await inside a dbTx callback is a store call (microtask). Never add fetch/fs/timer awaits inside a dbTx callback.
 - Exact-integer policy end to end: CSD max supply exceeds 2^53, so values parse as BigInt (`safeValue`), store as BIGINT, serialize via `amt()`/`jsonSafe()`. A stray bigint in a response object crashes JSON.stringify and 500s the endpoint.
 - Anti-wedge clamps: `safeValue` clamps to int64 max (an over-range bind throws inside writeBlock -> rollback -> same block re-poisons every poll = permanent wedge). `safeEpoch` clamps >2^53 expires_epoch to a NON-safe-int sentinel; using `clampInt` there forked the live resolver vs SPV replay (GRX-WIRE-CLAMP-1). `clampInt` is only legal for app ints compared against small exact enums.
-- Determinism deps exact-pinned, no carets (CI enforces): csd-codec 0.1.16, csd-crypto 0.1.15, csd-registry 0.1.17, csd-light 0.1.19 (the ecosystem-pinned LWMA source; used by the rpc.ts F6 route-plausibility gate via expectedBitsFromWindow). A floated version is a determinism fork seam across the ecosystem. A dep bump that does not also move `version` is a declaration-integrity defect: one version string would then denote two different determinism-dep sets (O-3, the reason 0.2.11 exists).
+- Determinism deps (csd-codec, csd-crypto, csd-registry, csd-light) are exact-pinned in `package.json`, no carets (CI enforces). csd-light is the ecosystem-pinned LWMA source for the rpc.ts F6 route-plausibility gate (`expectedBitsFromWindow`). A floated version is a determinism fork seam across the ecosystem. A dep bump must also move `version`, so one version string never denotes two determinism-dep sets.
 - Error responses never leak internals; /content self-certifies bytes; identity fetches are SSRF-guarded.
 - There is deliberately NO sqlite->pg copy tool: a fresh replay IS the integrity check.
 - Never point anything at :8790 as the default RPC (that is the miner's RPC; :8789 is primary, :8790 is fallback only).
@@ -92,7 +92,8 @@ Gotcha: stale dev servers squat :8793; find the squatter and kill it by PID (che
 
 ## Testing
 
-- `npm test` globs `test/*.test.ts`; never hand-list files (a hand-listed set once silently dropped analytics.test.ts, the money math). 20 suites at this writing, incl.: indexer (reorg unwind/replay, incident regression), checkpoint-floor, rpc-failover, dbtx-isolation, analytics + analytics-lockstep (pins codec emission values, so a bad codec bump fails loudly here) + analytics-memo, decode, health, identity, registry, pagination, reorg-e2e, stream.
+- `npm test` globs `test/*.test.ts`; never hand-list files (a hand-listed set once silently dropped analytics.test.ts, the money math). Suites include indexer (reorg unwind/replay, incident regression), checkpoint-floor, rpc-failover, dbtx-isolation, analytics + analytics-lockstep (pins codec emission values, so a bad codec bump fails loudly here) + analytics-memo, decode, health, identity, registry, pagination, reorg-e2e, stream.
+- Test files run concurrently. On Postgres every file that touches the store sets its own `CSD_INDEX_PG_SCHEMA` before importing `src/`; files left on the default `public` schema read each other's `blocks` rows (that shared schema was the Postgres CI failure from July to October 2026).
 - CI runs the whole suite TWICE: sqlite job + postgres job against a postgres:16 service, plus the exact-pin check.
 - Live gate scripts (not CI, run via tsx against a live deployment): test/_live_check.mjs, _reconcile.mjs (per-attester rows sum to node aggregates), _browser_verify.mjs, _backend-diff.mjs (sqlite-vs-pg row diff at a finalized height; used to validate the production Postgres cutover), _backend-bench.mjs.
 
@@ -118,165 +119,6 @@ Gotcha: stale dev servers squat :8793; find the squatter and kill it by PID (che
 - Explorer through the reverse proxy: the explorer is also served through the production front door's reverse proxy (https://cairn-substrate.com/explorer) under a strict per-response nonce CSP (`script-src 'self' 'nonce-...'`), and a nonce never authorizes inline event-handler attributes. The search form's inline `onsubmit=` was silently blocked there (search dead on the public origin) while working fine on a direct local :8793 hit, which is exactly why it slipped through. Fixed in db7b198 by binding via addEventListener inside the nonced script. ALWAYS browser-test explorer changes through the proxy, never only a direct hit; use addEventListener, never inline handlers. The asymmetry cuts both ways: `/header.js` (unified nav) exists only on the front-door origin and 404s on a direct :8793 hit (empty placeholder hidden, 8d93597). The proxy does NOT forward SSE, so the explorer auto-refresh polls /blocks/recent every 12s. The front door sits behind an edge cache; a freshly deployed explorer may need a cache purge to show up.
 - Low-hashrate regime (after a dominant pool left the network): staleSecs=600 can false-flag until LWMA retargets; raise CSD_STALE_SECS if noisy.
 - Open items: /domains could get the same memoByTip treatment as the analytics endpoints; a server-side inclusion-verification convenience endpoint; explorer registration-label humanization. A second independent indexer for cross-checking is under consideration.
-
-## State snapshot (2026-08-02, Plan 75-B batch C4; verify with git before trusting)
-
-★**SHIPPED 2026-08-03.** Version **0.2.11** is MERGED (`03b2dea`), TAGGED `v0.2.11`, the production
-`blocks.version` int4 to bigint ALTER has RUN (`NOTICE ... widened integer -> bigint`, verification row
-`public | bigint`), and the service has been RESTARTED: `/health` reports **0.2.11** with
-`indexed == tip`. The migration is committed as `widen-blocks-version.sql`. The paragraph below is the
-pre-ship record.
-
-(historical) Version **0.2.11** (authored on branch `plan75b/c4-indexer`; the tag `v0.2.11` and the restart are OPERATOR
-steps, not done here). Pins: csd-codec 0.1.16, csd-crypto 0.1.15, csd-registry 0.1.17, csd-light 0.1.19
-(note this repo does NOT pin cairnx-core at all: it feeds the resolver raw rows, it does not replay them).
-0.2.11 exists because `3e5890d` moved three of those pins under the unchanged string "0.2.10", so that
-string denoted two different determinism-dep sets and a byte-scoped declaration could not name unambiguous
-bytes (O-3).
-
-LIVE process check 2026-08-02: `/health` reports **0.2.10**, backend postgres, `indexed_height` == node tip
-(67,592 at the check). The 0.2.10 activation restart HAS happened; the older snapshot line claiming
-"/health still reports 0.2.9, restart owed" was stale and is retired.
-
-What 0.2.11 carries (Plan 75-B C4, one restart to activate):
-- **I1** absent `chainwork` on a block payload writes SQL NULL, not "0", so `indexedChainwork()` classifies
-  it as UNREADABLE and the 2026-07-05 regression guard fails CLOSED instead of being silently inert.
-  Pre-flight recorded 2026-08-02: all three backends (:8789, :8790, :8795) serve `chainwork` on `/tip` and
-  `/block/height/:h`, so this is latent, not live. Accurate statement of the cost, replacing the earlier
-  "a backend that NEVER serves chainwork would freeze ingestion" caveat, which overstated it once
-  IDX-HOLD-NONLATCH landed: one unreadable chainwork payload holds ingestion until the backend re-serves a
-  readable figure for the same block, at which point the indexer self-heals and the next poll (about 15s)
-  resumes. Only a backend that never again serves a readable chainwork for our tip block holds
-  indefinitely, and `CSD_INDEX_WORK_GUARD=0` remains the operator override for that state.
-- **I2** an absence in either reorg walk can no longer WIDEN an unwind (`lowestMismatch` clamp in
-  `reconcileTipWindow` and `findReorgAncestor`).
-- **I3** header `time`/`bits`/`nonce`/`version` bind through `safeValue()` like every other integer column.
-- **IDX-VERSION** (completes I3) `blocks.version` is now `BIGINT`. It was the one header column declared
-  `INTEGER`, which is int4 on Postgres, so `safeValue()` handed it a value the column could not hold and the
-  pg bind still failed with SQLSTATE 22003 inside `writeBlock`'s dbTx: rollback, tip never advances, same
-  block re-poisons every poll. The column was widened rather than clamping version into int32 because
-  csd-codec encodes header version as u32, so a clamp would store a value the node never signed for the top
-  half of the legal domain (accept-DIFFERENT, the GRX-WIRE-CLAMP-1 shape) and would newly diverge from
-  sqlite, which stores those exactly today. The live chain already carries u32 values above int4 max in the
-  neighbouring slot (height 29960's nonce is 3795422404), which is why nonce was already BIGINT.
-- **IDX-CHAINWORK-ZERO** (completes I1) `indexedChainwork()` treats a stored `"0"` at a height ABOVE
-  `scanFrom` as UNREADABLE. I1 closed only the ABSENT-field shape; a backend serving `chainwork: "0"` still
-  wrote "0", which parsed as a legitimate `0n`, left `ourWork > 0n` false, and let a matching-but-shorter
-  chain drive `unwindAbove(nodeTip)`, reproducing the 2026-07-05 incident post-fix. Bounded at
-  `> scanFrom` so the first indexed height (genesis when scanFrom is 0) keeps today's behavior and a
-  zero-work genesis cannot freeze ingestion. Measured 2026-08-02 across all three backends (671 heights
-  each, dense at both ends): no absent, zero, unparseable or non-monotonic chainwork anywhere, and the live
-  index's own tip row is positive, so this cannot fail-close on today's traffic.
-- **I4** a non-positive env knob means "unset", so `CSD_INDEX_CHECKPOINT_FLOOR=-1` can no longer disable the
-  checkpoint floor while looking configured.
-- **I5** the public `?from=` and `?after_height=` height cursors clamp through `heightOk` (no pg 500, no
-  silent ASC/DESC flip). Clamp and widen only: no new 4xx on a read that answers 200 today.
-- **I9** the F6 LWMA plausibility arm logs once per process when it fail-softs to inert (visibility only,
-  verdicts unchanged).
-- **IDX-CHAINWORK-NEG** (finishes IDX-CHAINWORK-ZERO) the classification is `w <= 0n`, not `w === 0n`.
-  Cumulative chainwork is a monotonically increasing unsigned quantity, so a stored NEGATIVE is exactly the
-  "figure we cannot read" the zero case is about, yet it parsed cleanly, left `ourWork > 0n` false, and
-  reproduced the 2026-07-05 truncation through the identical path. One comparison covers both poison shapes.
-- **IDX-HOLD-NONLATCH** the fail-closed HOLD is no longer self-latching. It returns before
-  `reconcileTipWindow` and the forward scan and nothing else rewrote the tip row while held, so ONE
-  transient poisoned payload froze ingestion permanently and the only exit was `CSD_INDEX_WORK_GUARD=0`,
-  which disables the entire 2026-07-05 defense. The HOLD branch now attempts a hash-bound single-row
-  self-heal from the currently selected backend first: if the node still serves the SAME block (hash-equal)
-  with a readable positive chainwork, that one field is rewritten and the next poll re-evaluates. The pass
-  still HOLDs either way, so no reconcile or unwind runs on it. If the node cannot re-serve a readable
-  figure, or its block at that height has a different hash, the UPDATE matches zero rows and the HOLD
-  stands, fail-closed exactly as before. The repair grants the backend no authority it does not already
-  hold over `nodeTip.chainwork`, and it converges the stored row toward what a fresh honest replay would
-  contain, so replay discipline is improved rather than weakened.
-
-**Test measurement, measured rather than quoted (2026-08-02).**
-- sqlite, `npm test` as written: **151 tests, 151 pass, 0 fail, 0 skipped**, exit 0. Deterministic.
-- Postgres, `CSD_INDEX_PG=... npm test` as written: **NONDETERMINISTIC**. Three consecutive runs, each on a
-  freshly created database: 138 pass / 8 fail, 137 pass / 9 fail, 137 pass / 9 fail (151 tests, 5 skipped
-  throughout). An earlier record quoting a single Postgres figure as if it were a gate was wrong: a number
-  that moves run to run is not a gate.
-- Cause, identified and confirmed, not guessed: `npm test` runs the test FILES concurrently, and the 11
-  files that do not set `CSD_INDEX_PG_SCHEMA` all fall back to `CFG.pgSchema` default `public`, so they
-  share one schema in one database. `resetStoreForTests()` (db.ts) DROPs and recreates those tables, which
-  under concurrency happens beneath a peer file mid-run. Every failure in all three runs came from that set
-  (guard-hygiene, rpc-failover, rpc-pow-route, rpc-route-plausibility) and the membership of the failing
-  set moved between runs, which is the signature. Each of those four files passes **0 fail in isolation**
-  against a fresh Postgres database.
-- Postgres, serialized (`npx tsx --test --test-concurrency=1 test/*.test.ts`): **151 tests, 146 pass, 0
-  fail, 5 skipped**, exit 0, reproduced on two separate fresh databases. The 5 skips are backend-conditional
-  by design (3 `EXPLAIN QUERY PLAN` index-plan assertions and the 2 dbtx-isolation sentinel tests are
-  sqlite-only), not flakes. **This is the honest Postgres gate figure**; the parallel invocation is not one.
-- NOT FIXED, and deliberately out of scope for this trim: the 11 files still share `public`. Giving each its
-  own `CSD_INDEX_PG_SCHEMA` is the one-line-per-file fix, and CI's Postgres job runs the same parallel
-  invocation, so CI's Postgres leg is measuring the same flake. Recorded, not chased.
-
-Suites: 109 baseline plus 8 new files (chainwork-absent, chainwork-zero, chainwork-hold-nonlatching,
-reorg-absence-clamp, header-bind-clamp, config-knob-positive, cursor-clamp, route-guard-visibility).
-
-Residual carried by this batch: **None. No residual is carried: the served-"0" and negative classes stay
-closed, and the permanent latch is removed. The only surviving indefinite hold (poisoned tip row while the
-node no longer serves that tip hash) is the state where holding is the correct behavior, and it retains the
-documented CSD_INDEX_WORK_GUARD=0 operator override.**
-
-OPERATOR-BLOCKED, and IDX-VERSION is inert in production until it runs. A restart alone does NOT widen the
-live column: `CREATE TABLE IF NOT EXISTS` cannot alter an existing table, so the production Postgres keeps
-`version` as int4 and keeps the wedge until this is executed against the live database. sqlite needs
-nothing (its INTEGER is already 64-bit). Idempotent, safe to re-run, measured at 275 ms against a table
-built to the live row count (67,636) with both indexes present; a second run is a 2.6 ms no-op:
-
-The earlier form of this migration predicated on `table_schema = current_schema()` and its verification
-query carried no schema predicate at all. `current_schema()` resolves against the OPERATOR's psql
-`search_path`, not the schema the service uses (`CSD_INDEX_PG_SCHEMA`, default `public`), so run from a
-session with any other search_path the `IF EXISTS` was simply false: the block completed, psql printed `DO`
-and exited 0, and the column was never widened. Measured 2026-08-02 on a scratch cluster, deployment schema
-`csdidx`, operator search_path `public`: old form printed `DO`, exit 0, column still `integer`. A silent
-no-op that looks like a successful migration is the worst outcome available here, so the schema is now
-named literally and a match of NOTHING raises. Substitute this deployment's `CSD_INDEX_PG_SCHEMA` for
-`public` in BOTH places below (the live deployment does not set it, so `public` is correct there).
-
-```sql
-SET lock_timeout = '5s';
-DO $$
-DECLARE v_schema text := 'public';   -- CSD_INDEX_PG_SCHEMA
-        v_type   text;
-BEGIN
-  SELECT data_type INTO v_type FROM information_schema.columns
-    WHERE table_schema = v_schema AND table_name = 'blocks' AND column_name = 'version';
-  IF v_type IS NULL THEN
-    RAISE EXCEPTION 'csd-indexer migration matched NOTHING: no blocks.version column in schema %. Name this deployment''s CSD_INDEX_PG_SCHEMA and re-run.', v_schema;
-  ELSIF v_type = 'integer' THEN
-    EXECUTE format('ALTER TABLE %I.blocks ALTER COLUMN version TYPE BIGINT', v_schema);
-    RAISE NOTICE 'csd-indexer: %.blocks.version widened integer -> bigint', v_schema;
-  ELSE
-    RAISE NOTICE 'csd-indexer: %.blocks.version is already %; no-op', v_schema, v_type;
-  END IF;
-END $$;
-```
-
-Run it with `ON_ERROR_STOP=1` so the RAISE is a non-zero exit and not just a line in the scrollback, using
-the service's own DSN (`CSD_INDEX_PG` from the unit) and writing the SQL above to a file:
-
-```bash
-psql "$CSD_INDEX_PG" -v ON_ERROR_STOP=1 -f widen-blocks-version.sql; echo "exit=$?"
-```
-
-Measured on the scratch cluster 2026-08-02: wrong schema named raises and psql exits **3**; correct schema
-widens with a NOTICE and exits 0; an immediate re-run prints `already bigint; no-op` and exits 0
-(idempotent). It rewrites `blocks` under an ACCESS EXCLUSIVE lock, so readers block for the duration of the
-rewrite. Run it in the same window as the restart. Verify with a query that also names the schema, which
-must return exactly one row reading `public | bigint`:
-
-```sql
-SELECT table_schema, data_type FROM information_schema.columns
- WHERE table_schema = 'public' AND table_name = 'blocks' AND column_name = 'version';
-```
-
-Verify by that query, never by this document.
-
-Recent lineage: 0.2.7 (Plan 70 R1) -> 0.2.8 -> 0.2.9 (2026-07-18 certification campaign) -> 0.2.10 (REBIND
-BP5 transport indexes + the csd-light re-pin) -> 0.2.11. Earlier themes: v0.2.6 multi-backend failover +
-chainwork guard + checkpoint floor + explorer hardening; the Postgres backend (production since
-2026-07-03); the (height,txid) address-pagination keyset; anti-wedge clamps.
 
 ## Cross-repo map
 
