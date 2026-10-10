@@ -41,6 +41,7 @@ await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
 process.env.CSD_RPC = `http://127.0.0.1:${(server.address() as any).port}`;
 process.env.CSD_RPC_BACKENDS = process.env.CSD_RPC;   // single mock backend
 process.env.CSD_INDEX_DB = DB;
+process.env.CSD_INDEX_PG_SCHEMA = "t_guardhyg";
 process.env.CSD_INDEX_FROM = "0";
 process.env.CSD_CONFIRMATIONS_FINAL = "6";
 process.env.CSD_INDEX_CHECKPOINT_FLOOR = "0";         // don't let the floor mask the guard behavior

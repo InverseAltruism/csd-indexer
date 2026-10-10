@@ -56,6 +56,7 @@ process.env.CSD_RPC_MAX_EASE = "16";
 const DB = `/tmp/csd-idx-plaus-${process.pid}.db`;
 for (const s of ["", "-wal", "-shm"]) { try { rmSync(DB + s); } catch {} }
 process.env.CSD_INDEX_DB = DB;
+process.env.CSD_INDEX_PG_SCHEMA = "t_rpcplaus";
 process.env.CSD_INDEX_FROM = "0";
 
 const rpc = await import("../src/rpc.js");

@@ -42,6 +42,7 @@ process.env.CSD_RPC_WORK_ESCAPE = "3";   // small so the work-escape test does n
 // these honest-failover assertions must hold on their own (the gate is exercised in rpc-route-plausibility).
 process.env.CSD_INDEX_DB = `/tmp/csd-idx-rpcfo-${process.pid}.db`;
 for (const s of ["", "-wal", "-shm"]) { try { (await import("node:fs")).rmSync(process.env.CSD_INDEX_DB + s); } catch {} }
+process.env.CSD_INDEX_PG_SCHEMA = "t_rpcfo";   // own schema: the route gate reads `blocks`, which peer files seed
 const rpc = await import("../src/rpc.js");
 
 test("failover: prefers the primary on a chainwork tie", async () => {

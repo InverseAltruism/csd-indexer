@@ -55,6 +55,7 @@ process.env.CSD_RPC_POW_TIMEOUT = "300";     // short: the hung-header case fail
 // ROUTE-1 badpow/hung assertions are proven independently (the plausibility gate is tested separately).
 process.env.CSD_INDEX_DB = `/tmp/csd-idx-rpcpow-${process.pid}.db`;
 for (const s of ["", "-wal", "-shm"]) { try { (await import("node:fs")).rmSync(process.env.CSD_INDEX_DB + s); } catch {} }
+process.env.CSD_INDEX_PG_SCHEMA = "t_rpcpow";   // same isolation on the Postgres job (the default `public` is shared)
 const rpc = await import("../src/rpc.js");
 
 // ── unit: the ported tipHeaderPowOk (ROUTE-1 rule) ───────────────────────────────────────────────────
