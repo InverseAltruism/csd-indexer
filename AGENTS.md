@@ -8,6 +8,18 @@ Trust model (README "Honest limits", enforced by design): the indexer is a conve
 
 The version and the dependency pins live in `package.json` only; git tags mark releases. Not npm-published (`private: true`); it runs straight from source. Default listen address is 127.0.0.1:8793 (`CSD_INDEX_LISTEN`, documented in the README and Dockerfile). The maintainers run a production instance behind the public front door at https://cairn-substrate.com/explorer; deployment specifics are maintained privately.
 
+## Cross-repo standard
+
+This repo follows the maintainers' cross-repo engineering standard (a private document). The rules that matter for a contributor here:
+
+- One home per concept: consensus values and codec shapes come from the published csd-sdk packages and are never re-declared here. Replay stays byte-identical: reject more, never accept different.
+- TypeScript `strict` with `noUncheckedIndexedAccess`, no `@ts-ignore`, `any` only at a parse boundary. Money is integer base units (`bigint`), never floats. No empty `catch {}`; on money paths no catch-and-continue that hides a failure.
+- Tests check behaviour at boundaries. A fix ships with a test that fails without it, plus an assertion that the honest path still passes with the call shape production sends. A skipped test names its reason and when it un-skips. `npm test` is offline and deterministic.
+- Comments state constraints and non-obvious invariants, not history or audit IDs. Removing code needs the same evidence as adding it.
+- Docs: this file holds what stays true (no version tables, no status snapshots; versions live in `package.json` and tags, live state comes from a live query). Dates are absolute, no em dashes.
+
+Known deviations (checked 2026-10-11, not exhaustive): there is no `lint` script; `src/rpc.ts` and `src/stream.ts` read `process.env` directly instead of going through `src/config.ts`; `src/config.ts` reads the shared SPV checkpoint file from a sibling checkout when present and falls back to the built-in floor; the dependency lockfile is `package-lock.json` (npm).
+
 ## The stack around it
 
 The chain is the only source of truth; every layer above is a deterministic replay of chain events, hardened "reject more, never accept different" so historical replays stay byte-identical. Trust is never laundered: every read carries an honest trust level and UI gates fail closed.
@@ -119,6 +131,16 @@ Gotcha: stale dev servers squat :8793; find the squatter and kill it by PID (che
 - Explorer through the reverse proxy: the explorer is also served through the production front door's reverse proxy (https://cairn-substrate.com/explorer) under a strict per-response nonce CSP (`script-src 'self' 'nonce-...'`), and a nonce never authorizes inline event-handler attributes. The search form's inline `onsubmit=` was silently blocked there (search dead on the public origin) while working fine on a direct local :8793 hit, which is exactly why it slipped through. Fixed in db7b198 by binding via addEventListener inside the nonced script. ALWAYS browser-test explorer changes through the proxy, never only a direct hit; use addEventListener, never inline handlers. The asymmetry cuts both ways: `/header.js` (unified nav) exists only on the front-door origin and 404s on a direct :8793 hit (empty placeholder hidden, 8d93597). The proxy does NOT forward SSE, so the explorer auto-refresh polls /blocks/recent every 12s. The front door sits behind an edge cache; a freshly deployed explorer may need a cache purge to show up.
 - Low-hashrate regime (after a dominant pool left the network): staleSecs=600 can false-flag until LWMA retargets; raise CSD_STALE_SECS if noisy.
 - Open items: /domains could get the same memoByTip treatment as the analytics endpoints; a server-side inclusion-verification convenience endpoint; explorer registration-label humanization. A second independent indexer for cross-checking is under consideration.
+
+## Docs
+
+| Doc | Holds |
+|---|---|
+| `README.md` | what the indexer is, how to run it, the API, the explorer, honest limits |
+| `CHANGELOG.md` | one entry per release |
+| `.githooks/README.md` | the secret-scan pre-commit hook |
+
+The cross-repo standard is a private document; the summary above is the part that binds a contributor here.
 
 ## Cross-repo map
 
