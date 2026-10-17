@@ -8,6 +8,7 @@
 // JSON.stringify; total emission crosses 2^53 in a few years and must never 500 these endpoints).
 import { store } from "./db.js";
 import { amt, tipRow as tipRowCanonical } from "./queries.js";
+import { workForBits } from "@inversealtruism/csd-codec";
 
 // nominal blocks per window at the 120s target (heights, not wall-time — deterministic)
 const WINDOWS: Record<string, number> = { "1d": 720, "7d": 5040, "30d": 21600 };
@@ -16,8 +17,13 @@ const WINDOWS: Record<string, number> = { "1d": 720, "7d": 5040, "30d": 21600 };
 // ?window / ?limit cannot defeat the per-tip dedup or grow the cache one entry per distinct value:
 // every unknown window collapses to "all" (minersImpl already treats unknown as all-time), and limit
 // clamps to the same [1,500] range richlistImpl uses. Bounds the cache to 4 window keys + the limit set.
-const normWindow = (w: string): string => (w in WINDOWS ? w : "all");
+const normWindow = (w: string): string => (Object.hasOwn(WINDOWS, w) ? w : "all");
 const normLimit = (limit: number): number => Math.max(1, Math.min(500, Math.floor(Number(limit)) || 100));
+// /analytics/series bucket count: same canonicalize-before-memo rule, [1,200], default 56.
+const SERIES_POINTS_DEFAULT = 56;
+const SERIES_POINTS_MAX = 200;
+const normPoints = (points: number): number =>
+  Math.max(1, Math.min(SERIES_POINTS_MAX, Math.floor(Number(points)) || SERIES_POINTS_DEFAULT));
 
 // Emission schedule: SINGLE-SOURCED from csd-codec since 0.1.15 (Plan 57 B8c; the local
 // hand-encoded table this file carried is retired). blockReward/maxSupply keep their exported
@@ -71,15 +77,22 @@ export function memoByTip<A extends unknown[]>(fn: (...args: A) => Promise<unkno
   };
 }
 
-/** Network hashrate over [from..to] derived from cumulative chainwork — exact, no bits math. */
-async function windowHashrate(fromHeight: number, toHeight: number): Promise<{ hashrate: number; seconds: number } | null> {
-  const a = await store().get<{ time: number; chainwork: string }>("SELECT time, chainwork FROM blocks WHERE orphaned=0 AND height=?", fromHeight);
-  const b = await store().get<{ time: number; chainwork: string }>("SELECT time, chainwork FROM blocks WHERE orphaned=0 AND height=?", toHeight);
+type WorkPoint = { time: number | bigint; chainwork: string };
+
+/** Hashrate between two blocks from their cumulative chainwork. null when the span has no positive time or work. */
+function rateBetween(a: WorkPoint | undefined, b: WorkPoint | undefined): { hashrate: number; seconds: number } | null {
   if (!a?.chainwork || !b?.chainwork) return null;
   const dw = BigInt(b.chainwork) - BigInt(a.chainwork);
   const dt = Number(b.time) - Number(a.time);
   if (dt <= 0 || dw <= 0n) return null;
   return { hashrate: Number(dw) / dt, seconds: dt };
+}
+
+/** Network hashrate over [from..to] derived from cumulative chainwork: exact, no bits math. */
+async function windowHashrate(fromHeight: number, toHeight: number): Promise<{ hashrate: number; seconds: number } | null> {
+  const a = await store().get<WorkPoint>("SELECT time, chainwork FROM blocks WHERE orphaned=0 AND height=?", fromHeight);
+  const b = await store().get<WorkPoint>("SELECT time, chainwork FROM blocks WHERE orphaned=0 AND height=?", toHeight);
+  return rateBetween(a ?? undefined, b ?? undefined);
 }
 
 async function minersImpl(window: string): Promise<unknown> {
@@ -188,6 +201,56 @@ async function supplyImpl(): Promise<unknown> {
   };
 }
 
+interface SeriesPoint { t: number; height: number; ghs: number | null; difficulty: number | null; intervalSecs: number | null }
+type SeriesRow = WorkPoint & { height: number | bigint; bits: number | bigint | null };
+
+// Bucket math ported from cairn's netstats rangeStats: the window's n blocks are split into buckets
+// whose end indexes are round(k*(n-1)/B); a point's ghs is the chainwork delta over the time delta
+// from the previous bucket end (the first bucket starts at the window's first block). The window is
+// a contiguous height range (the indexer writes heights in order), so bucket ends are addressed by
+// height and only B+1 rows are read instead of the whole window. B is capped at n-1 so a short
+// window yields no zero-width bucket.
+// difficulty = expected hashes for the bucket-end block, workForBits(bits) from csd-codec.
+async function seriesImpl(window: string, points: number): Promise<unknown> {
+  const tip = await tipRow();
+  if (!tip) return { window, from: null, to: null, points: [] as SeriesPoint[] };
+  const to = Number(tip.height);
+  const minH = Number((await store().get<{ h: number | bigint | null }>("SELECT MIN(height) AS h FROM blocks WHERE orphaned=0"))?.h ?? to);
+  const span = WINDOWS[window];
+  const from = span ? Math.max(minH, to - span) : minH;
+  const n = to - from + 1;
+  const buckets = n >= 2 ? Math.min(points, n - 1) : 0;
+
+  const endHeights: number[] = [];
+  for (let k = 1; k <= buckets; k++) endHeights.push(from + Math.min(n - 1, Math.round((k * (n - 1)) / buckets)));
+  if (!buckets) endHeights.push(to);
+  const wanted = [from, ...endHeights];
+  const rows = await store().all<SeriesRow>(
+    `SELECT height, time, bits, chainwork FROM blocks WHERE orphaned=0 AND height IN (${wanted.map(() => "?").join(",")})`,
+    ...wanted,
+  );
+  const byHeight = new Map(rows.map((r) => [Number(r.height), r]));
+
+  const out: SeriesPoint[] = [];
+  let prev = byHeight.get(from);
+  let prevHeight = from;
+  for (const h of endHeights) {
+    const b = byHeight.get(h);
+    if (!b) continue; // a gap in the canonical rows (not produced by ordered ingest): omit the point
+    const rate = h > prevHeight ? rateBetween(prev, b) : null;
+    const bits = b.bits == null ? null : Number(b.bits);
+    const difficulty = bits == null ? null : Number(workForBits(bits));
+    out.push({
+      t: Number(b.time), height: h,
+      ghs: rate ? rate.hashrate / 1e9 : null,
+      difficulty: difficulty != null && Number.isFinite(difficulty) && difficulty > 0 ? difficulty : null,
+      intervalSecs: rate ? rate.seconds / (h - prevHeight) : null,
+    });
+    prev = b; prevHeight = h;
+  }
+  return { window, from, to, points: out };
+}
+
 // Public endpoints (server.ts) — args canonicalized (normWindow/normLimit) THEN memoized per canonical
 // tip, so the cache key is bounded and the dedup fires for repeated AND garbage-varied params. The
 // *Impl functions above are the uncached source of truth (and what the offline analytics test exercises
@@ -197,3 +260,5 @@ const richlistMemo = memoByTip(richlistImpl);
 export const miners = (window: string): Promise<unknown> => minersMemo(normWindow(window));
 export const richlist = (limit = 100): Promise<unknown> => richlistMemo(normLimit(limit));
 export const supply = memoByTip(supplyImpl);
+const seriesMemo = memoByTip(seriesImpl);
+export const series = (window: string, points = SERIES_POINTS_DEFAULT): Promise<unknown> => seriesMemo(normWindow(window), normPoints(points));
