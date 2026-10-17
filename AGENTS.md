@@ -49,7 +49,7 @@ TypeScript, run directly via `tsx` (no build step, no native deps; `node:sqlite`
 - `src/decode.ts` - signer addr from scriptSig (via @inversealtruism/csd-crypto), addr from p2pkh script_pubkey, tx classification (Coinbase/Propose/Attest/Transfer).
 - `src/merkle.ts` - Electrum-format merkle proofs built with csd-codec's `merkleBranch` (the same function the L0 light client folds); returns the PoW-committed header root, never a self-recomputed one.
 - `src/queries.ts` - read-side SQL; `amt()`/`jsonSafe()` bigint->JSON-safe serialization; `heightOk` guard.
-- `src/analytics.ts` - /analytics/{miners,richlist,supply}; emission schedule single-sourced from csd-codec; `memoByTip` per-tip memoization.
+- `src/analytics.ts` - /analytics/{miners,richlist,supply,series}; emission schedule single-sourced from csd-codec; `memoByTip` per-tip memoization.
 - `src/registry.ts` + `src/identity.ts` - L3: feeds ChainRecords to @inversealtruism/csd-registry's pure resolvers; identity external-proof re-validation with a serious SSRF guard (private/loopback/metadata IPs blocked, pinned gist hosts, no redirects).
 - `src/server.ts` - Express app, all routes; error wrapper `h()` never leaks pg DSN/SQL/paths.
 - `src/stream.ts` + `src/events.ts` - event bus -> SSE firehoses + WS /ws; caps: 500 SSE, 500 WS, 1000 sub keys, 4MB per-conn outbound buffer.

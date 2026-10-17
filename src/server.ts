@@ -243,6 +243,7 @@ export function buildApp() {
   app.get("/analytics/miners", h(async (req, res) => res.json(await analytics.miners(String(req.query.window ?? "1d")))));
   app.get("/analytics/richlist", h(async (req, res) => res.json(await analytics.richlist(Number(req.query.limit ?? 100)))));
   app.get("/analytics/supply", h(async (_req, res) => res.json(await analytics.supply())));
+  app.get("/analytics/series", h(async (req, res) => res.json(await analytics.series(String(req.query.window ?? "1d"), Number(req.query.points ?? 56)))));
 
   // ── L3 registry resolvers (deterministic; clients can recompute via csd-registry) ──
   // CAIRN-IDX-ERR-1: routed through the same h() wrapper so a thrown error is logged server-side
