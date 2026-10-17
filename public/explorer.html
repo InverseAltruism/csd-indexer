@@ -180,9 +180,8 @@ const API = (() => {
 // CairnX proxy enables token/name enrichment. Standalone (:8793) degrades gracefully.
 const SIB = (() => {
   const m = location.pathname.match(/(.*)\/explorer\/?$/);
-  if (!m) return { node:null, cairnx:null, market:null };
-  return { node: location.origin + m[1] + "/api/rpc", cairnx: location.origin + m[1] + "/trade/api/cairnx",
-           market: location.origin + m[1] + "/api/market" };
+  if (!m) return { node:null, cairnx:null };
+  return { node: location.origin + m[1] + "/api/rpc", cairnx: location.origin + m[1] + "/trade/api/cairnx" };
 })();
 const jx = async(base,p)=>{ if(!base) return null; try{ const r=await fetch(base+p); if(!r.ok) return null; return await r.json(); }catch{ return null; } };
 
@@ -486,26 +485,10 @@ async function home(v){
       <span>max supply <b style="color:var(--fg)">${supply?fmtCSD(supply.max_supply):'-'}</b></span>
       <span>block reward <b style="color:var(--fg)">${supply?fmtCSD(supply.block_reward):'-'}</b></span>
       <span>emitted <b class="green">${supply?supply.pct_emitted.toFixed(2)+'%':'-'}</b></span></div>
-    <div id="mktrow" style="display:none;gap:20px;flex-wrap:wrap;font-size:13px;color:var(--dim2);margin-bottom:10px"></div>
     <div class="bar" style="height:6px"><i style="width:${supply?Math.max(1,supply.pct_emitted):0}%"></i></div>
     <div class="muted" style="margin:16px 0 6px">emission schedule: 50 CSD/block, halving every 1,051,200 blocks (~4 years), secured by SHA-NI proof-of-work</div>
     <div id="emchart"></div></div>`);
   v.appendChild(csdPanel);
-  // live market context (SafeTrade CSD/USDT via the front door's /api/market/csd) — shown only
-  // when the feed answers; Mcap/FDV = price × the SAME emitted/max supply displayed above
-  (async()=>{
-    const m=await jx(SIB.market,'/csd'); const row=$('#mktrow',csdPanel);
-    if(!m||!m.ok||!(m.price>0)||!row||!supply) return;
-    const usd=(v,d)=>v==null||!isFinite(v)?'-':'$'+Number(v).toLocaleString(undefined,{minimumFractionDigits:d,maximumFractionDigits:d});
-    const coins=(base)=>Number(BigInt(base)/10000n)/10000;
-    const chg=m.changePct==null?'':` <span class="${m.changePct>=0?'green':'red'}">${m.changePct>=0?'▲':'▼'}${Math.abs(m.changePct).toFixed(1)}%</span>`;
-    row.style.display='flex';
-    row.innerHTML=`<span>price <b style="color:var(--fg)">${usd(m.price,m.price<1?4:2)}</b>${chg}</span>
-      <span>market cap <b style="color:var(--fg)">${usd(m.price*coins(supply.emitted_supply),0)}</b></span>
-      <span>FDV <b style="color:var(--fg)">${usd(m.price*coins(supply.max_supply),0)}</b></span>
-      ${m.volQuote!=null?`<span>24h volume <b style="color:var(--fg)">${usd(m.volQuote,0)}</b></span>`:''}
-      <span class="dim">via <a href="https://safetrade.com/exchange/CSD-USDT" target="_blank" rel="noopener">${esc(m.source||'SafeTrade')} ↗</a>${m.stale?' · <span class="amber">stale</span>':''}</span>`;
-  })();
   (()=>{ const genesisTime=recent.length?recent[recent.length-1].time-recent[recent.length-1].height*120:(Date.now()/1000-(health.indexed_height||0)*120);
     const HALVE=1051200,maxH=8*HALVE,N=44;
     const pts=Array.from({length:N},(_,k)=>{const hh=Math.round(k/(N-1)*maxH);const csd=emittedAt(hh)/1e8;const yr=new Date((genesisTime+hh*120)*1000).getUTCFullYear();return{y:csd,tip:`<b>${yr}</b> · ${compactNum(csd)} CSD emitted`};});
