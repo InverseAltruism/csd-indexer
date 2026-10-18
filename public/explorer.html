@@ -486,8 +486,9 @@ async function marketPanel(box){
   const c=MKT.c, C=c?await charts():null, rate=C?C.csdRate(c):null;
   if(!rate){ dropCharts(box); box.hidden=true; box.replaceChildren(); return; }
   const R=(basis)=>C.rateEl(rate,C.fmtUsd,undefined,basis,{disclaim:false});
-  const usd=(x)=>x!=null&&Number.isFinite(Number(x))?`${C.fmtUsd(x)} USD`:'-';
-  const n=(x,d=0)=>Number(x).toLocaleString('en-US',{maximumFractionDigits:d});
+  const fin=(x)=>x!=null&&Number.isFinite(Number(x));   // Number(null) is 0: an absent number must not print as 0
+  const n=(x,d=0)=>fin(x)?Number(x).toLocaleString('en-US',{maximumFractionDigits:d}):'-';
+  const usd=(x)=>fin(x)?`${C.fmtUsd(x)} USD`:'-';
   const at=(basis)=>basis==='vwap24h'?'at the 24h VWAP':'at the last price';
   const fig=(label,value,second,source)=>{ const b=tag('div','mkt-fig'); b.append(tag('div','mkt-l',label),tag('div','mkt-v',value));
     if(second) b.append(tag('div','mkt-u',second)); const s=tag('div','mkt-s'); s.append(source); b.append(s); return b; };
@@ -495,7 +496,7 @@ async function marketPanel(box){
   if(rate.source==='SafeTrade'){ const a=tag('a','','SafeTrade'); a.href=C.SAFETRADE_URL; a.rel='noopener'; a.target='_blank'; sub.append(' · CSD prices from ',a,', an exchange we do not operate'); }
   const grid=tag('div','mkt-grid');
   grid.append(
-    fig('price',usd(c.price.last),c.range24h?`24h range ${C.fmtUsd(c.range24h.low)} to ${C.fmtUsd(c.range24h.high)}`:'',R('last trade')),
+    fig('price',usd(c.price.last),c.range24h&&fin(c.range24h.low)&&fin(c.range24h.high)?`24h range ${C.fmtUsd(c.range24h.low)} to ${C.fmtUsd(c.range24h.high)}`:'',R('last trade')),
     fig('24h VWAP',usd(c.vwap24h),'',R('24h volume / 24h amount')),
     fig('market cap',usd(c.marketCap&&c.marketCap.usd),c.supply?`emitted ${n(c.supply.emitted)} CSD at block ${n(c.supply.height)}`:'',R(`${at(c.marketCap&&c.marketCap.basis)} · thin market`)),
     fig('fully diluted',usd(c.fdv&&c.fdv.usd),c.supply?`max supply ${n(c.supply.max,2)} CSD`:'',R(at(c.fdv&&c.fdv.basis))),
@@ -531,7 +532,7 @@ async function home(v){
   const hrSpan=miners&&Number.isFinite(miners.from_height)?`Δchainwork ÷ Δtime over blocks ${Number(miners.from_height).toLocaleString()} to ${Number(miners.to_height).toLocaleString()}, from the indexer`:'';
   v.appendChild(el(`<div class="pulse">
     <div class="pu hot"><div class="n">${health.indexed_height.toLocaleString()}</div><div class="l">block height</div></div>
-    <div class="pu" id="pu-hr" title="${esc(hrSpan)}"><div class="n">${hr?`${hr.val} <span class="u">${hr.unit}</span>`:'-'}</div><div class="l">hashrate${hrWin?' · '+hrWin:''}</div></div>
+    <div class="pu" id="pu-hr" title="${esc(hrSpan)}"><div class="n">${hr?`${hr.val} <span class="u">${hr.unit}</span>`:'-'}</div><div class="l">hashrate${hrWin?' · '+esc(hrWin):''}</div></div>
     <div class="pu"><div class="n">${miners?Math.round(miners.avg_interval_secs):'-'} <span class="u">s</span></div><div class="l">avg block time (24h)</div></div>
     <div class="pu"><div class="n">${miners?miners.miner_count:'-'}</div><div class="l">miners (24h)</div></div>
     <div class="pu gold"><div class="n">${supply?fmtCSD(supply.emitted_supply).replace(' CSD',''):'-'} <span class="u">CSD</span></div><div class="l">circulating (${supply?supply.pct_emitted.toFixed(2):'-'}% of max)</div></div>
@@ -702,8 +703,8 @@ function blockRow(b,live){
     <td>${link('/block/'+b.hash,short(b.hash,12),'mono')}</td><td>${b.tx_count}</td><td class="dim" data-ts="${b.time||''}">${b.time?ago(b.time):''}</td></tr>`);
 }
 async function recentBlocks(){
-  // one round-trip (newest-first); 31 blocks feeds the feed (12 shown), the ~1h hashrate
-  // estimate AND the block-times chart from a single fetch
+  // one round-trip (newest-first); 31 blocks feed the block list (12 shown), the emission chart's
+  // newest block AND the block-times chart from a single fetch
   try{ const r=await j('/blocks/recent?limit=31'); if(Array.isArray(r)) return r; }catch{}
   // fallback for an indexer without /blocks/recent (older deploy / different host)
   const tip=await j('/blocks/tip/height');const out=[];

@@ -7,7 +7,10 @@
 // no USD text with the market off, never NaN or a 0 USD; the hashrate window named from the series; the request
 // cadence; no chart of a replaced view left alive. Needs playwright-core (PLAYWRIGHT_CORE or installed), a Chromium (PLAYWRIGHT_CHROMIUM or playwright's
 // own) and CAIRN_PUBLIC_DIR; each missing one skips the file by name.
-// Run: PLAYWRIGHT_CORE=<cairn>/node_modules/playwright-core CAIRN_PUBLIC_DIR=<cairn>/public npx tsx --test test/explorer-browser.test.ts
+// Run (cairn's playwright-core wants a Chromium build this host may not have, so name one):
+//   CAIRN_PUBLIC_DIR=<cairn>/public PLAYWRIGHT_CORE=<cairn>/node_modules/playwright-core \
+//   PLAYWRIGHT_CHROMIUM=~/.cache/ms-playwright/chromium_headless_shell-1243/chrome-headless-shell-linux64/chrome-headless-shell \
+//   npx tsx --test test/explorer-browser.test.ts
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type ServerResponse } from "node:http";
@@ -67,16 +70,18 @@ function csdBody(): unknown {
   const age = S.market === "stale" ? 40 * 60 : 60;
   const base = { ok: true, pair: "CSD/USD", quote: "USDT", price: { last: 0.0455, at: iso(NOW - age), source: "safetrade" }, range24h: { low: 0.023, high: 0.0899 },
     change24h: null, stale: S.market === "stale", ageSecs: age, fallback: false, disagree: false, dropped: [] };
-  return S.thin
-    ? { ...base, vwap24h: null, volume24h: { usd: null, csd: null }, supply: null, marketCap: null, fdv: null }
-    : { ...base, vwap24h: VWAP, volume24h: { usd: 25620.23, csd: 431012.5 }, supply: { emitted: EMITTED, max: MAX, height: TIP, at: iso(NOW - 30) },
-        marketCap: { usd: EMITTED * VWAP, basis: "vwap24h" }, fdv: { usd: MAX * VWAP, basis: "vwap24h" } };
+  const full = { ...base, vwap24h: VWAP, volume24h: { usd: 25620.23, csd: 431012.5 }, supply: { emitted: EMITTED, max: MAX, height: TIP, at: iso(NOW - 30) },
+    marketCap: { usd: EMITTED * VWAP, basis: "vwap24h" }, fdv: { usd: MAX * VWAP, basis: "vwap24h" } };
+  if (S.thin) return { ...base, vwap24h: null, volume24h: { usd: null, csd: null }, supply: null, marketCap: null, fdv: null };
+  // a range without its low and a supply without its emitted figure (Number(null) is 0, so a careless page prints 0)
+  if (S.partial) return { ...full, range24h: { low: null, high: 0.0899 }, supply: { ...full.supply, emitted: null } };
+  return full;
 }
 const day0 = NOW - (NOW % 86_400);
 const csdSeries = (q: URLSearchParams) => ({ ok: true, pair: "csd-usd", period: q.get("period"), range: q.get("range"), source: "coinpaprika",
   points: Array.from({ length: 30 }, (_, i) => { const c = 0.045 + 0.01 * Math.sin(i / 4); return [day0 - (29 - i) * 86_400, c, c * 1.04, c * 0.96, c, 9000]; }) });
 
-const S = { market: "fresh" as "fresh" | "stale" | "off", thin: false, series: true };
+const S = { market: "fresh" as "fresh" | "stale" | "off", thin: false, partial: false, series: true };
 const REQS: string[] = [];
 const json = (res: ServerResponse, status: number, body: unknown, extra: Record<string, string> = {}) => {
   res.writeHead(status, { "content-type": "application/json", ...extra }); res.end(JSON.stringify(body));
@@ -105,7 +110,9 @@ const server = createServer(async (req, res) => {
   }
   if (p.startsWith("/api/market/")) {
     const body = S.market === "off" ? null : p === "/api/market/csd" ? csdBody() : p === "/api/market/series" ? csdSeries(url.searchParams) : null;
-    return body ? json(res, 200, body, { "cache-control": "public, max-age=60" }) : json(res, 503, { ok: false, error: "market data off" }, { "cache-control": "no-store" });
+    // no-store, unlike the real route's max-age=60: a fake clock runs ahead of the browser's HTTP cache, which would
+    // otherwise answer the page's re-reads with the earlier body
+    return body ? json(res, 200, body, { "cache-control": "no-store" }) : json(res, 503, { ok: false, error: "market data off" }, { "cache-control": "no-store" });
   }
   if (p.startsWith("/trade/api/cairnx/")) {
     const k = p.slice(17);
@@ -158,7 +165,8 @@ const charted = () => ["#emchart", "#hrchart", "#btchart"].every((s) => !!docume
 const OFF = "503 /api/market/csd";
 const bad = /NaN|undefined|Infinity|(^|\s)\$?0(\.0+)? USD/;
 const figures = (page: any) => page.evaluate(() => [...document.querySelectorAll("#csd-mkt .mkt-fig")].map((f) => ({
-  label: f.querySelector(".mkt-l")?.textContent ?? "", value: f.querySelector(".mkt-v")?.textContent ?? "", source: f.querySelector(".mkt-s")?.textContent ?? "" })));
+  label: f.querySelector(".mkt-l")?.textContent ?? "", value: f.querySelector(".mkt-v")?.textContent ?? "", second: f.querySelector(".mkt-u")?.textContent ?? "",
+  source: f.querySelector(".mkt-s")?.textContent ?? "" })));
 
 for (const market of ["fresh", "stale", "off"] as const) for (const width of [390, 1280]) {
   test(`${market}, ${width} px: no error, no overflow, every chart drawn, the hashrate window named, the CSD/USD figures sourced or hidden`, { skip: why || false }, async () => {
@@ -213,6 +221,18 @@ test("a body without a VWAP, supply or volume: dashes for those figures, never a
   } finally { await v.close(); S.thin = false; }
 });
 
+test("a range without its low and a supply without its emitted figure: no range line, a dash, never a 0", { skip: why || false }, async () => {
+  Object.assign(S, { market: "fresh", thin: false, partial: true, series: true });
+  const v = await open("/explorer", 1280, withMarket);
+  try {
+    const figs = await figures(v.page);
+    assert.equal(figs[0].second, "", "no 24h range line without both ends");
+    assert.equal(figs[2].second, "emitted - CSD at block 121,800");
+    assert.equal(figs[3].second, "max supply 105,119,999.88 CSD", "the honest part of the same body still shown");
+    assert.doesNotMatch(await v.page.textContent("#csd-mkt"), /(^|\s)0( to| CSD)/);
+  } finally { await v.close(); S.partial = false; }
+});
+
 test("the indexer without /analytics/series (404): the tile names the blocks, the hashrate chart says it has no series", { skip: why || false }, async () => {
   Object.assign(S, { market: "off", series: false });
   const v = await open("/explorer", 1280, () => !!document.querySelector("#emchart canvas") && !!document.querySelector("#hrchart .cc-empty"));
@@ -237,6 +257,18 @@ test("standalone (the page at /): no market read, no chart module, the figures w
   } finally { await v.close(); }
 });
 
+/** Canvases alive in the page's heap after a GC, less those in its document (the library keeps a constant few). */
+async function strayCanvases(page: any): Promise<number> {
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    await cdp.send("HeapProfiler.collectGarbage");
+    const proto = await cdp.send("Runtime.evaluate", { expression: "HTMLCanvasElement.prototype" });
+    const found = await cdp.send("Runtime.queryObjects", { prototypeObjectId: proto.result.objectId });
+    const live = await cdp.send("Runtime.callFunctionOn", { objectId: found.objects.objectId, functionDeclaration: "function () { return this.length; }", returnByValue: true });
+    await cdp.send("Runtime.releaseObject", { objectId: found.objects.objectId }); // the array itself holds the canvases
+    return live.result.value - (await page.evaluate(() => document.querySelectorAll("canvas").length));
+  } finally { await cdp.detach(); }
+}
 /** Advance the page's fake clock a minute at a time, letting each minute's reads finish. */
 async function minutes(page: any, n: number): Promise<void> {
   for (let i = 0; i < n; i++) { await page.clock.runFor(60_000); await sleep(150); }
@@ -272,23 +304,29 @@ test("leaving and re-opening the home view destroys the charts it replaces: live
   Object.assign(S, { market: "fresh", thin: false, series: true });
   const v = await open("/explorer", 1280, withMarket);
   try {
-    const cdp = await v.page.context().newCDPSession(v.page);
-    // canvases alive in the heap (after a GC) less those in the document: the library keeps a constant few
-    const detached = async () => {
-      await cdp.send("HeapProfiler.collectGarbage");
-      const proto = await cdp.send("Runtime.evaluate", { expression: "HTMLCanvasElement.prototype" });
-      const found = await cdp.send("Runtime.queryObjects", { prototypeObjectId: proto.result.objectId });
-      const live = await cdp.send("Runtime.callFunctionOn", { objectId: found.objects.objectId, functionDeclaration: "function () { return this.length; }", returnByValue: true });
-      await cdp.send("Runtime.releaseObject", { objectId: found.objects.objectId }); // the array itself holds the canvases
-      return live.result.value - (await v.page.evaluate(() => document.querySelectorAll("canvas").length));
-    };
-    const before = await detached();
+    const before = await strayCanvases(v.page);
     for (let i = 0; i < 3; i++) {
       await v.page.evaluate(() => { location.hash = "#/address/0x" + "11".repeat(20); });
       await until(v.page, () => !document.querySelector("#emchart"));
       await v.page.evaluate(() => { location.hash = "#/"; });
       await until(v.page, withMarket);
     }
-    assert.equal(await detached(), before, "no chart of a replaced view left alive");
+    assert.equal(await strayCanvases(v.page), before, "no chart of a replaced view left alive");
   } finally { await v.close(); }
+});
+
+test("the market going from fresh to 503 while the page is open hides the CSD/USD block and destroys its chart", { skip: why || false }, async () => {
+  Object.assign(S, { market: "fresh", thin: false, partial: false, series: true });
+  const v = await open("/explorer", 1280, withMarket, { clock: true });
+  try {
+    assert.equal(await v.page.isVisible("#csd-mkt"), true);
+    const before = await strayCanvases(v.page);
+    S.market = "off";
+    await minutes(v.page, 3); // past the 2 min re-read
+    assert.ok(v.failed.includes(OFF), "the re-read answered 503");
+    assert.equal(await v.page.isVisible("#csd-mkt"), false, "the block hidden");
+    assert.equal(await v.page.locator("#csdusd-chart").count(), 0, "the chart's host gone");
+    assert.doesNotMatch(await v.page.evaluate(() => document.body.innerText), /USD/, "no USD text left");
+    assert.equal(await strayCanvases(v.page), before, "the CSD/USD chart destroyed, not left alive detached");
+  } finally { await v.close(); S.market = "fresh"; }
 });
