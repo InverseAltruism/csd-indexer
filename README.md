@@ -86,11 +86,16 @@ each, and a from-genesis reindex of mainnet matches row-for-row across backends.
 
 ## The explorer
 
-A single self-contained page (no build step) with a live block feed, and pages for blocks,
+A single-file page (no build step) with a live block feed, and pages for blocks,
 transactions, addresses, proposals, and categories. The key feature: on a transaction page it
 **re-verifies the merkle proof in your browser** against the proof-of-work header, and on a proposal
 page it **re-hashes the content** to confirm it matches the chain - so the page trusts the indexer
 for nothing it can check itself.
+
+Served through the cairn front door (https://cairn-substrate.com/explorer) it also shows the CSD price in USD
+with the venue and time beside every figure, and charts of the emission schedule, the CSD/USD price, the network
+hashrate and recent block times, drawn by the front door's chart module. A standalone instance shows the same
+chain figures without the USD figures and charts.
 
 ## Honest limits
 
