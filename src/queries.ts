@@ -59,9 +59,30 @@ export async function blockTxids(height: number): Promise<string[]> {
 export async function tx(txid: string): Promise<TxRow | null> {
   return jsonSafe(((await store().get<TxRow>("SELECT * FROM txs WHERE txid=?", txid)) as TxRow) ?? null);
 }
-export async function txOutputs(txid: string): Promise<OutRow[]> {
-  const rows = await store().all<OutRow>("SELECT * FROM outputs WHERE txid=? ORDER BY vout", txid);
-  return rows.map((r) => ({ ...r, value: amt(r.value as never) }));
+// The tx rows of one block in block order: one query, where a per-txid lookup would hold one pool
+// connection per tx of the block.
+export async function blockTxs(height: number): Promise<TxRow[]> {
+  return jsonSafeAll(await store().all<TxRow>("SELECT * FROM txs WHERE height=? ORDER BY pos", height));
+}
+// Tx rows with their outputs for a list of txids, in the list's order (an unknown txid is left out),
+// in two queries whatever the list length. Callers pass a page (at most addressTxids' limit), so the
+// IN list stays far below both engines' bind-parameter limits.
+export async function txsWithOutputs(txids: string[]): Promise<(TxRow & { outputs: OutRow[] })[]> {
+  if (txids.length === 0) return [];
+  const marks = txids.map(() => "?").join(",");
+  const rows = jsonSafeAll(await store().all<TxRow>(`SELECT * FROM txs WHERE txid IN (${marks})`, ...txids));
+  const outs = await store().all<OutRow>(`SELECT * FROM outputs WHERE txid IN (${marks}) ORDER BY txid, vout`, ...txids);
+  const byTx = new Map<string, OutRow[]>();
+  for (const o of outs) {
+    const list = byTx.get(o.txid) ?? [];
+    list.push({ ...o, value: amt(o.value as never) });
+    byTx.set(o.txid, list);
+  }
+  const byId = new Map(rows.map((r) => [r.txid, r]));
+  return txids.flatMap((id) => {
+    const t = byId.get(id);
+    return t ? [{ ...t, outputs: byTx.get(id) ?? [] }] : [];
+  });
 }
 
 // Esplora-style address tx list: distinct txids touching addr, newest-first.

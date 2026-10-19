@@ -139,23 +139,16 @@ export function buildApp() {
   app.get("/block/:hash/txs", h(async (req, res) => {
     const b = await q.blockByHash(req.params.hash!);
     if (!b) return nf(res, "unknown block");
-    const txids = await q.blockTxids(b.height);
-    // filter(Boolean): on pg a concurrent reorg can unwind a txid between the list query
-    // and the row fetch — drop the hole rather than emit a null element (sqlite: impossible)
-    res.json((await Promise.all(txids.map((t) => q.tx(t)))).filter(Boolean));
+    res.json(await q.blockTxs(b.height));
   }));
 
   // ── tx ──
-  // Full tx shape (row + outputs), shared by /tx/:id AND the address tx lists below. The explorer's
-  // address page needs outputs for its Δ column; when the list rows lacked them it re-fetched
-  // /tx/<id> once per row (25 extra round-trips per address view). Additive response change.
-  const txFull = async (txid: string) => {
-    const t = await q.tx(txid);
-    return t ? { ...t, outputs: await q.txOutputs(t.txid) } : null;
-  };
+  // Full tx shape (row + outputs), shared by /tx/:id AND the address tx lists below (the explorer's
+  // address page reads the outputs for its delta column). q.txsWithOutputs reads a whole page in two
+  // queries, so one request holds at most one pool connection at a time.
   app.get("/tx/:id", h(async (req, res) => {
     if (!TXID.test(req.params.id!)) return bad(res, "want /tx/0x<64-hex>");
-    const t = await txFull(req.params.id!);
+    const [t] = await q.txsWithOutputs([req.params.id!]);
     if (!t) return nf(res, "unknown tx");
     res.json(t);
   }));
@@ -184,7 +177,7 @@ export function buildApp() {
   app.get("/address/:a/txs", h(async (req, res) => {
     if (!ADDR.test(req.params.a!.toLowerCase())) return bad(res, "want /address/0x<40-hex>");
     const ids = await q.addressTxids(req.params.a!, null);
-    res.json((await Promise.all(ids.map((r) => txFull(r.txid)))).filter(Boolean));
+    res.json(await q.txsWithOutputs(ids.map((r) => r.txid)));
   }));
   app.get("/address/:a/txs/chain/:last", h(async (req, res) => {
     // Esplora `/address/:addr/txs/chain/:last_seen_txid` — page by the last-seen TXID (not a raw height).
@@ -198,7 +191,7 @@ export function buildApp() {
     const h0 = await q.addressTxidHeight(req.params.a!, last);
     if (h0 == null) return res.json([]); // cursor txid not in this address's history → no further pages
     const ids = await q.addressTxids(req.params.a!, { height: h0, txid: last });
-    res.json((await Promise.all(ids.map((r) => txFull(r.txid)))).filter(Boolean));
+    res.json(await q.txsWithOutputs(ids.map((r) => r.txid)));
   }));
   app.get("/address/:a/utxo", h(async (req, res) => {
     if (!ADDR.test(req.params.a!.toLowerCase())) return bad(res, "want /address/0x<40-hex>");
