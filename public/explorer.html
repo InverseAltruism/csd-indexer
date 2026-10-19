@@ -701,7 +701,7 @@ async function tokenPage(v,ticker){
       <div>minted / max</div><div class="v"><b>${fmtAmt(t.minted,t.decimals)}</b> / ${fmtAmt(t.supply,t.decimals)} <span class="dim">(${pct.toFixed(1)}%)</span></div>
       <div>decimals</div><div class="v">${t.decimals}</div>
       <div>deployed</div><div class="v">${link('/block/'+t.height,t.height)} by ${addrLink(t.deployer)} <span class="dim">· tx ${txidLink(t.deployId)}</span></div>
-      ${t.tmeta?`<div>metadata</div><div class="v mono dim">${esc(t.tmeta)} <span class="dim">(content-addressed, csd-swarm)</span></div>`:''}
+      ${t.tmeta?`<div>metadata</div><div class="v mono dim">${esc(t.tmeta)} <span class="dim">(the sha256 of the issuer's metadata document; this page does not fetch it)</span></div>`:''}
       <div>holders</div><div class="v">${holders.length}</div>
       <div>trade</div><div class="v"><a href="https://cairn-substrate.com/trade" target="_blank">cairn-substrate.com/trade ↗</a></div>
     </div></div>`));

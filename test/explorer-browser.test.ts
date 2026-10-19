@@ -164,6 +164,8 @@ const server = createServer(async (req, res) => {
       RECORD_READS.push(ids.length);
       return json(res, 200, { ok: true, tipHeight: TIP, records: Object.fromEntries(ids.filter((id) => id in VERDICTS).map((id) => [id, VERDICTS[id]])) });
     }
+    if (k === "/token/ZED") return json(res, 200, { ticker: "ZED", name: "Zed", decimals: 0, supply: "1000", minted: "10", mint: "issuer", height: TIP - 5,
+      deployer: MINER, deployId: "0x" + "de".repeat(32), tmeta: "0x" + "4d".repeat(32), holders: {} });
     if (k === "/name/onsale") return json(res, 200, { ok: true, owner: MINER, height: TIP - 9, effectiveHeight: TIP - 9, lease: {}, offer: { give: { name: "onsale" }, want: null } });
     if (k === "/log") return json(res, 200, Object.entries(VERDICTS).map(([id, v]) => ({ id, ok: v.applied, note: v.note, height: v.height })));
     return json(res, 200, k === "/primaries" ? { ok: true, primaries: {} } : []);
@@ -556,4 +558,14 @@ test("domain page: record lines separate their parts with a colon or comma, neve
       assert.equal(acts.filter((a) => / - /.test(a)).length, 0);
     } finally { await v.close(); }
   } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; }
+});
+
+test("token page: the metadata hash is described as what it is, with no claim about a content swarm", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true });
+  const v = await open("/explorer#/token/ZED", 1280, () => /metadata/.test(document.body.innerText));
+  try {
+    assert.deepEqual(v.errors, []);
+    const row: string = await v.page.evaluate(() => [...document.querySelectorAll(".kv > div")].find((d: any) => d.textContent === "metadata")!.nextElementSibling.textContent);
+    assert.equal(row, `0x${"4d".repeat(32)} (the sha256 of the issuer's metadata document; this page does not fetch it)`);
+  } finally { await v.close(); }
 });
