@@ -82,7 +82,7 @@ API: Esplora core (`/blocks/tip/height` 503s on empty index, `/block/:hash[/txid
 
 1. Maintainers deploy. Contributions and agent sessions must never assume deploy or restart access; this indexes a live financial system with real users and real CSD. Default to design-first: agree on the approach before editing shared behavior, keep diffs small and reviewed, and treat approval as scoped to the single change discussed.
 2. Security fixes must not regress UX. Never add latency or a decline path to a legitimate hot path. Prefer warn over hard-block, fail-soft with an availability valve over hard fail-closed, removing a false UI claim over adding machinery. Decline disproportionate hardening explicitly, with reasoning.
-3. No em dashes in READMEs or any user-facing doc; avoid AI-slop phrasing (excessive bolding, "not just X but Y", filler intensifiers). Search the doc for the em dash character before committing; the count must be zero.
+3. No em dashes in READMEs or any user-facing doc; avoid AI-slop phrasing (excessive bolding, "not just X but Y", filler intensifiers). Search the doc for the em dash character before committing; the count must be zero (`npm run check:dashes-paths` checks every tracked doc in CI).
 4. Commit/push/tag only when asked. Investigations default to read-only.
 5. Never weaken the replay discipline: hardening may reject MORE, it must never accept DIFFERENT, or historical replays fork.
 
@@ -96,6 +96,7 @@ npm run index                                  # one sync pass, exits
 npm run serve                                  # API only
 npm run typecheck                              # tsc --noEmit
 npm run lint                                   # Biome: unused imports, empty blocks (warn), focused tests, @ts-ignore
+npm run check:dashes-paths                     # em dashes in tracked docs, sibling-checkout paths in code (exceptions in the script)
 npm test                                       # tsx --test test/*.test.ts (offline, deterministic)
 # Postgres mode:
 CSD_INDEX_PG=postgres://... npx tsx src/cli.ts index

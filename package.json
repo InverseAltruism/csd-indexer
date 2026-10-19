@@ -14,6 +14,7 @@
     "run-all": "tsx src/cli.ts run",
     "typecheck": "tsc --noEmit",
     "lint": "biome lint --max-diagnostics=none .",
+    "check:dashes-paths": "node scripts/check-dashes-paths.mjs",
     "test": "tsx --test test/*.test.ts"
   },
   "dependencies": {
