@@ -178,7 +178,9 @@ export async function attestationsFor(
 export async function attestationCountFor(proposalId: string): Promise<number> {
   return Number((await store().get<{ n: number }>("SELECT COUNT(*) n FROM attestations WHERE proposal_id=?", proposalId))?.n ?? 0);
 }
-export async function attestationsBy(addr: string, limit = 200): Promise<any[]> {
+// /address/:a/reputation aggregates over at most this many of an attester's newest attestations.
+export const REPUTATION_WINDOW = 200;
+export async function attestationsBy(addr: string, limit: number): Promise<any[]> {
   return jsonSafeAll(await store().all("SELECT * FROM attestations WHERE attester=? ORDER BY height DESC, txid ASC LIMIT ?", addr.toLowerCase(), limit));
 }
 export async function domains(): Promise<{ domain: string; proposals: number }[]> {

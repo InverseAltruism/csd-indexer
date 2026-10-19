@@ -223,13 +223,20 @@ export function buildApp() {
       afterTxid: req.query.after_txid !== undefined ? String(req.query.after_txid) : undefined,
     }));
   }));
+  // Aggregates over the newest REPUTATION_WINDOW attestations; one extra row tells whether older ones exist,
+  // and then `truncated` is true and `note` names the window, so the figures are not read as lifetime totals.
   app.get("/address/:a/reputation", h(async (req, res) => {
-    const atts = await q.attestationsBy(req.params.a!);
+    const rows = await q.attestationsBy(req.params.a!, q.REPUTATION_WINDOW + 1);
+    const truncated = rows.length > q.REPUTATION_WINDOW;
+    const atts = truncated ? rows.slice(0, q.REPUTATION_WINDOW) : rows;
     const n = atts.length;
     const avgScore = n ? atts.reduce((s, a) => s + Number(a.score || 0), 0) / n : 0;
     const avgConf = n ? atts.reduce((s, a) => s + Number(a.confidence || 0), 0) / n : 0;
     const feesPaid = atts.reduce((s, a) => s + Number(a.fee || 0), 0);
-    res.json({ address: req.params.a!.toLowerCase(), attestations: n, avg_score: avgScore, avg_confidence: avgConf, fees_paid: feesPaid });
+    res.json({
+      address: req.params.a!.toLowerCase(), attestations: n, avg_score: avgScore, avg_confidence: avgConf, fees_paid: feesPaid,
+      truncated, ...(truncated ? { note: `newest ${q.REPUTATION_WINDOW} attestations only` } : {}),
+    });
   }));
 
   // ── miner / holder / supply analytics (read-only aggregates; see src/analytics.ts) ──
