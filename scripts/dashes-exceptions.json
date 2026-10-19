@@ -1,0 +1,7 @@
+{
+  "dashes": {},
+  "paths": {
+    "src/config.ts": "the default checkpoint floor is read from the host's shared spv-checkpoint file when present, with a built-in fallback (AGENTS.md deviation); moving it is a runtime change",
+    "test/check-dashes-paths.test.ts": "fixtures for this check"
+  }
+}

@@ -95,7 +95,7 @@ npm run index                                  # one sync pass, exits
 npm run serve                                  # API only
 npm run typecheck                              # tsc --noEmit
 npm run lint                                   # Biome: unused imports, empty blocks (warn), focused tests, @ts-ignore
-npm run check:dashes-paths                     # em dashes in tracked docs, sibling-checkout paths in code (exceptions in the script)
+npm run check:dashes-paths                     # em dashes in tracked docs, sibling-checkout paths in code (exceptions in scripts/dashes-exceptions.json)
 npm test                                       # tsx --test test/*.test.ts (offline, deterministic)
 # Postgres mode:
 CSD_INDEX_PG=postgres://... npx tsx src/cli.ts index
