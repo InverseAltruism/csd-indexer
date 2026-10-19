@@ -160,6 +160,7 @@ const server = createServer(async (req, res) => {
       RECORD_READS.push(ids.length);
       return json(res, 200, { ok: true, tipHeight: TIP, records: Object.fromEntries(ids.filter((id) => id in VERDICTS).map((id) => [id, VERDICTS[id]])) });
     }
+    if (k === "/name/onsale") return json(res, 200, { ok: true, owner: MINER, height: TIP - 9, effectiveHeight: TIP - 9, lease: {}, offer: { give: { name: "onsale" }, want: null } });
     if (k === "/log") return json(res, 200, Object.entries(VERDICTS).map(([id, v]) => ({ id, ok: v.applied, note: v.note, height: v.height })));
     return json(res, 200, k === "/primaries" ? { ok: true, primaries: {} } : []);
   }
@@ -399,7 +400,7 @@ for (const records of ["on", "404", "400"] as const) {
         assert.deepEqual(v.errors, []);
         const row: string = await v.page.evaluate((id: string) => [...document.querySelectorAll("tr")].find((r: any) => r.innerHTML.includes(id))?.textContent ?? "", REFUSED);
         assert.match(row, /no effect/);
-        assert.match(row, /mint past supply/);
+        assert.match(row, /no effect: mint past supply/);
         const logReads = v.asked.filter((x) => x === "/trade/api/cairnx/log").length;
         if (records === "on") {
           assert.deepEqual(RECORD_READS.sort((a, b) => b - a), [100, 30]);
@@ -481,7 +482,16 @@ test("domain page: a name reveal reads as reserved, a direct claim as claimed, a
     try {
       assert.deepEqual(v.errors, []);
       const acts: string[] = await v.page.evaluate(() => [...document.querySelectorAll("td.act")].map((c: any) => c.textContent));
-      assert.deepEqual(acts, ["\u{1F4DB} Reserved name alpha.csd", "\u{1F4DB} Claimed name beta.csd", "\u2705 Finalized name alpha.csd - registration paid, the lease starts"]);
+      assert.deepEqual(acts, ["\u{1F4DB} Reserved name alpha.csd", "\u{1F4DB} Claimed name beta.csd", "\u{1F4DB} Finalized name alpha.csd: registration paid, the lease starts"]);
     } finally { await v.close(); }
   } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; }
+});
+
+test("name page: an offer without a price reads \"Listed for sale\", no dash in place of the price", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true });
+  const v = await open("/explorer#/name/onsale", 1280, () => /for sale/.test(document.body.innerText));
+  try {
+    assert.deepEqual(v.errors, []);
+    assert.equal(await v.page.textContent(".panel:has(h2:text-is('for sale')) .action"), "\u{1F3F7} Listed for sale \u00b7 open offer");
+  } finally { await v.close(); }
 });

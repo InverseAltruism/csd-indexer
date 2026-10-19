@@ -330,7 +330,7 @@ async function paintNames(root){
 // ── .csd name page helpers ──
 // 1 epoch = 30 blocks ≈ 1 hour, so an epoch count reads as hours; roll up to days/months.
 const epochsToHuman=(e)=>{e=Math.max(0,Math.round(e));if(e<48)return e+'h';if(e<24*60)return Math.round(e/24)+'d';return Math.round(e/24/30.4)+'mo';};
-const KIND_LABEL={ncommit:'🔒 sealed a commitment',name:'📛 claimed',nfinalize:'✅ finalized',nset:'📍 set address',nxfer:'🎁 transferred',nrenew:'♻️ renewed lease',offer:'🏷 listed for sale',ocancel:'✕ cancelled listing',bid:'🙋 bid',claim:'📌 reserved (open offer)',fill:'🤝 bought / sold (fill)',cancel:'✕ cancelled'};
+const KIND_LABEL={ncommit:'🔒 sealed a commitment',name:'📛 claimed',nfinalize:'📛 finalized',nset:'📍 set address',nxfer:'🎁 transferred',nrenew:'♻️ renewed lease',offer:'🏷 listed for sale',ocancel:'✕ cancelled listing',bid:'🙋 bid',claim:'📌 reserved (open offer)',fill:'🤝 bought / sold (fill)',cancel:'✕ cancelled'};
 const kindLabel=(k)=>KIND_LABEL[k]||esc(k||'record');
 // deterministic name-hash colour + initial, so a name has a recognisable "face" (cheap, no deps)
 const nameHue=(s)=>{let h=0;for(let i=0;i<s.length;i++)h=(h*31+s.charCodeAt(i))>>>0;return h%360;};
@@ -411,7 +411,7 @@ async function verdictsFromLog(){ const log=await jx(SIB.cairnx,'/log?limit=5000
 function cxVerdict(body,verdict){
   if(body==null) return body;
   if(verdict&&verdict.applied===false)
-    return `<span class="cx-void">${body}</span> <span class="cx-noeffect" title="The CairnX resolver REJECTED this record. It has no effect on token state, and anyone re-running the open resolver gets the same result. The transaction is real and paid its anchor fee; only the CairnX action was a no-op.">✕ no effect${verdict.note?` - ${esc(verdict.note)}`:''}</span>`;
+    return `<span class="cx-void">${body}</span> <span class="cx-noeffect" title="The CairnX resolver REJECTED this record. It has no effect on token state, and anyone re-running the open resolver gets the same result. The transaction is real and paid its anchor fee; only the CairnX action was a no-op.">✕ no effect${verdict.note?`: ${esc(verdict.note)}`:''}</span>`;
   return body;
 }
 function describeCairnx(rec){
@@ -433,7 +433,7 @@ function describeCairnx(rec){
       case 'ocancel': return `✕ <span class="what">Cancelled all open offers</span>${rec.ticker?` in <b class="amber">${esc(rec.ticker)}</b>`:rec.name?` on <b class="green">${esc(rec.name)}.csd</b>`:''}`;
       case 'ncommit': return `🔒 <span class="what">Sealed a name commitment</span> - the name is revealed later (front-run defense)`;
       case 'name': return `📛 <span class="what">${rec.salt?'Reserved':'Claimed'} name <b class="green">${esc(rec.name)}.csd</b></span>`;
-      case 'nfinalize': return `✅ <span class="what">Finalized name <b class="green">${esc(rec.name)}.csd</b></span> - registration paid, the lease starts`;
+      case 'nfinalize': return `📛 <span class="what">Finalized name <b class="green">${esc(rec.name)}.csd</b></span>: registration paid, the lease starts`;
       case 'nxfer': return `🎁 <span class="what">Transferred name <b class="green">${esc(rec.name)}.csd</b></span> to ${addrLink(rec.to)}`;
       case 'nset': return `📍 <span class="what">Pointed <b class="green">${esc(rec.name)}.csd</b></span> at ${addrLink(rec.addr)}`;
       case 'nrenew': return `♻️ <span class="what">Renewed the lease on <b class="green">${esc(rec.name)}.csd</b></span> - +1 year`;
@@ -983,8 +983,8 @@ async function namePage(v,label){
   </div></div>`));
   const prof=n.profile||{}, pk=Object.keys(prof).filter(k=>prof[k]);
   if(pk.length) v.appendChild(el(`<div class="panel"><h2>profile</h2><div class="kv">${pk.map(k=>`<div>${esc(k)}</div><div class="v">${esc(String(prof[k]))}</div>`).join('')}</div></div>`));
-  if(n.offer){ const o=n.offer, price=o.want&&o.want.value!=null?fmtCSD(o.want.value):(o.want?`${esc(o.want.amount)} ${esc(o.want.ticker)}`:'-');
-    v.appendChild(el(`<div class="panel"><h2>for sale</h2><div class="action">🏷 <span class="what">Listed for <b>${price}</b></span>${o.taker?' · reserved (RFQ)':' · open offer'}</div>
+  if(n.offer){ const o=n.offer, price=o.want&&o.want.value!=null?fmtCSD(o.want.value):(o.want?`${esc(o.want.amount)} ${esc(o.want.ticker)}`:null);
+    v.appendChild(el(`<div class="panel"><h2>for sale</h2><div class="action">🏷 <span class="what">Listed ${price?`for <b>${price}</b>`:'for sale'}</span>${o.taker?' · reserved (RFQ)':' · open offer'}</div>
       <div class="muted">Buy at <a href="https://cairn-substrate.com/names" target="_blank" rel="noopener">/names ↗</a></div></div>`));
   }
   const hist=await jx(SIB.cairnx,'/name-history/'+encodeURIComponent(label));
