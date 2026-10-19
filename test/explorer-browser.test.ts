@@ -248,6 +248,11 @@ for (const market of ["fresh", "stale", "off"] as const) for (const width of [39
       assert.equal(await v.page.textContent(".panel:has(#hrchart) .pill"), "series of 56 points", "the same window on the chart");
       assert.equal(await v.page.getAttribute("#hrchart canvas", "data-points"), "56", "the series' 56 points handed to the chart");
       assert.equal(await v.page.evaluate(() => (globalThis as any).__chartStubLive), market === "off" ? 3 : 4, "one live mount per chart host");
+      // the library lays its pane out in the first row of a table, whose cells this page's own td rules once capped
+      const narrow = await v.page.evaluate(() => ["#emchart", "#hrchart", "#btchart", "#csdusd-chart"].filter((s) => document.querySelector(`${s} canvas`)).map((s) => ({
+        s, plot: Math.round(document.querySelector(`${s} .cc-plot`).getBoundingClientRect().width),
+        pane: Math.round(Math.max(...[...document.querySelectorAll(`${s} .cc-plot tr:first-child > td`)].map((c: any) => c.getBoundingClientRect().width))) })).filter((x) => x.pane < 0.65 * x.plot));
+      assert.deepEqual(narrow, [], "each chart's pane fills its plot");
       const text: string = await v.page.evaluate(() => document.body.innerText);
       assert.doesNotMatch(text, bad);
       if (market === "off") {

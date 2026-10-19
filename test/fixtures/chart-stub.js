@@ -41,13 +41,26 @@ export async function mountChart(host, opts) {
     if (o.points.length) {
       const plot = document.createElement("div");
       plot.className = "cc-plot";
+      // The library's layout (lightweight-charts, measured 2026-10-19): one table row of an empty left-axis cell, the
+      // pane cell (position relative, a pixel width) holding a full-size box with the canvas, and the right-axis cell.
+      // explorer.html's td max-width caps the pane cell at 280 px unless the page undoes it under .cc-plot.
       const table = document.createElement("table");
-      const cell = table.insertRow().insertCell();
+      table.setAttribute("cellspacing", "0");
+      const row = table.insertRow();
+      const left = row.insertCell(), pane = row.insertCell(), axis = row.insertCell();
+      for (const c of [left, pane, axis]) c.style.padding = "0";
+      pane.style.position = "relative";
+      pane.style.width = `${Math.max(0, host.clientWidth - 120)}px`;
+      pane.style.height = "232px";
+      const box = document.createElement("div");
+      Object.assign(box.style, { width: "100%", height: "100%", position: "relative", overflow: "hidden" });
       const canvas = document.createElement("canvas");
       canvas.style.width = "100%";
+      canvas.style.display = "block";
       canvas.dataset.label = o.label ?? "";
       canvas.dataset.points = String(o.points.length);
-      cell.append(canvas);
+      box.append(canvas);
+      pane.append(box);
       plot.append(table);
       root.append(plot);
     } else {
