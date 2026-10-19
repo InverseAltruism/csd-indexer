@@ -1,7 +1,7 @@
-// biome.json enables exactly four rules: unused imports, focused tests and ts-ignore directives are errors, so
-// `npm run lint` fails on them; empty blocks are a warning until the existing ones are fixed (`npm run lint` lists
-// them). Every other rule and the formatter are off. Runs the real Biome binary on a throwaway git sandbox holding
-// one violation of each rule plus code that the recommended preset would flag.
+// biome.json enables exactly four rules, each an error, so `npm run lint` fails on any of them: unused imports, empty
+// blocks (a comment inside the block is accepted as its reason), focused tests and ts-ignore directives. Every other
+// rule and the formatter are off. Runs the real Biome binary on a throwaway git sandbox holding one violation of each
+// rule plus code that the recommended preset would flag.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -38,7 +38,7 @@ test("biome.json enables exactly the four rules with their severities", () => {
     const found = diagnostics.filter((d) => d.category?.startsWith("lint/")).map((d) => `${d.location?.path}|${d.category}|${d.severity}`).sort();
     assert.deepEqual(found, [
       "violations.ts|lint/correctness/noUnusedImports|error",
-      "violations.ts|lint/suspicious/noEmptyBlockStatements|warning",
+      "violations.ts|lint/suspicious/noEmptyBlockStatements|error",
       "violations.ts|lint/suspicious/noFocusedTests|error",
       "violations.ts|lint/suspicious/noTsIgnore|error",
     ]);

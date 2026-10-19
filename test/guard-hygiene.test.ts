@@ -1,5 +1,5 @@
-// F7 (chainwork-guard hygiene). indexedChainwork() used to collapse THREE cases to 0n — a missing row, an
-// empty chainwork string, AND a BigInt parse THROW on garbage — so an UNREADABLE own-work read produced a
+// F7 (chainwork-guard hygiene). indexedChainwork() used to collapse THREE cases to 0n: a missing row, an
+// empty chainwork string, AND a BigInt parse THROW on garbage; so an UNREADABLE own-work read produced a
 // silent 0n, which disabled the 2026-07-05 regression guard (it HOLDs only when ourWork > 0n). A garbage
 // read could therefore let a lower-work node drive an unwind. Now indexedChainwork distinguishes a
 // LEGITIMATE stored 0 (-> 0n, guard correctly inert) from an UNREADABLE read (-> null, caller FAILS
@@ -11,7 +11,7 @@ import { rmSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 
 const DB = `/tmp/csd-idx-guard-${process.pid}.db`;
-for (const s of ["", "-wal", "-shm"]) { try { rmSync(DB + s); } catch {} }
+for (const s of ["", "-wal", "-shm"]) rmSync(DB + s, { force: true });
 
 // mock node (checkpoint-floor pattern): a settable chain, so we can drive an equal/heavier reorg.
 type Blk = { hash: string; height: number; chainwork: string; header: any; txs: any[] };

@@ -7,11 +7,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
-
-// A REAL on-chain header (block 32803): sha256d(serializeHeader) <= target(bits) -> PoW-valid, and it
-// hashes to realTipHash (hash-binding). Same vector cairn's ROUTE-1 selftest uses.
-const realHeader = { version: 1, prev: "0x00000000000023001088ebb25d88a0657092d00129c76aaaa28a0f5dd5609095", merkle: "0xe0a002b0c98a8e64ecf2d7d2c2c1d6863b5dd9e03e6a3f22aaea6f03788cf5ef", time: 1781476758, bits: 453072620, nonce: 2749131683 };
-const realTipHash = "0x0000000000010c70c936f93ee4acbf76016d9c1f51dcffc78924d561bbcf4928";
+import { realHeader, realTipHash } from "./fixtures/header-32803.js";
 
 function mockNode() {
   let height = 0, work = 0n, up = true;
@@ -38,10 +34,10 @@ await new Promise<void>((r) => B.srv.listen(0, "127.0.0.1", () => r()));
 process.env.CSD_RPC = A.url();
 process.env.CSD_RPC_BACKENDS = `${A.url()},${B.url()}`;
 process.env.CSD_RPC_WORK_ESCAPE = "3";   // small so the work-escape test does not need 20 cycles
-// Isolate an EMPTY local index so the F6 route-plausibility gate has no anchor and stays inactive here —
+// Isolate an EMPTY local index so the F6 route-plausibility gate has no anchor and stays inactive here:
 // these honest-failover assertions must hold on their own (the gate is exercised in rpc-route-plausibility).
 process.env.CSD_INDEX_DB = `/tmp/csd-idx-rpcfo-${process.pid}.db`;
-for (const s of ["", "-wal", "-shm"]) { try { (await import("node:fs")).rmSync(process.env.CSD_INDEX_DB + s); } catch {} }
+for (const s of ["", "-wal", "-shm"]) (await import("node:fs")).rmSync(process.env.CSD_INDEX_DB + s, { force: true });
 process.env.CSD_INDEX_PG_SCHEMA = "t_rpcfo";   // own schema: the route gate reads `blocks`, which peer files seed
 const rpc = await import("../src/rpc.js");
 

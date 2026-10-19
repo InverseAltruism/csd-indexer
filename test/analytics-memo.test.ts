@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { rmSync } from "node:fs";
 
 const DB = `/tmp/csd-idx-memo-${process.pid}.db`;
-for (const s of ["", "-wal", "-shm"]) { try { rmSync(DB + s); } catch {} }
+for (const s of ["", "-wal", "-shm"]) rmSync(DB + s, { force: true });
 process.env.CSD_INDEX_DB = DB;
 process.env.CSD_INDEX_PG_SCHEMA = "t_memo";
 
@@ -44,7 +44,7 @@ test("same tip → cached object (hit); new block → recompute (bust)", async (
   assert.equal(l1, await richlist(50), "richlist cached at the same tip (keyed by args)");
 
   // canonicalized keys: garbage-varied params dedup to one entry (the cache cannot be flooded/grown
-  // by varying ?limit / ?window — the whole point of normWindow/normLimit ahead of the memo).
+  // by varying ?limit / ?window: the whole point of normWindow/normLimit ahead of the memo).
   assert.equal(await richlist(600), await richlist(700), "limits >500 both clamp to 500 → one cached object");
   assert.equal(l1, await richlist(50.9), "fractional limit floors to the same key as 50");
   assert.equal(m1, await miners("bogus"), "unknown window collapses to 'all' → same cached object");

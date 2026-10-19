@@ -10,21 +10,22 @@ import { fileURLToPath } from "node:url";
 const html = readFileSync(fileURLToPath(new URL("../public/explorer.html", import.meta.url)), "utf8");
 const SIB_SRC = /const SIB = \(\(\) => \{[\s\S]*?\n\}\)\(\);/.exec(html)?.[0] ?? "";
 
-type Sib = { node: string | null; cairnx: string | null; market: string | null; charts: string | null };
+type Sib = { node: string | null; cairnx: string | null; market: string | null; charts: string | null; content: string | null };
 const sibAt = (origin: string, pathname: string): Sib =>
   new Function("location", `${SIB_SRC}\nreturn SIB;`)({ origin, pathname }) as Sib;
 
-test("through the front door the page builds the node, cairnx, market and chart-module bases under its prefix", () => {
+test("through the front door the page builds the node, cairnx, market, chart-module and content bases under its prefix", () => {
   assert.ok(SIB_SRC, "the SIB builder is in the page");
   assert.deepEqual(sibAt("https://cairn-substrate.com", "/explorer"), {
     node: "https://cairn-substrate.com/api/rpc", cairnx: "https://cairn-substrate.com/trade/api/cairnx",
     market: "https://cairn-substrate.com/api/market", charts: "https://cairn-substrate.com/charts/chart.js",
+    content: "https://cairn-substrate.com/content/",
   });
   assert.equal(sibAt("https://h.example", "/mirror/explorer/").market, "https://h.example/mirror/api/market");
 });
 
-test("standalone (the indexer serving the page at /) there is no market base and no chart module", () => {
-  assert.deepEqual(sibAt("http://127.0.0.1:8793", "/"), { node: null, cairnx: null, market: null, charts: null });
+test("standalone (the indexer serving the page at /) there is no market base, no chart module and no content base", () => {
+  assert.deepEqual(sibAt("http://127.0.0.1:8793", "/"), { node: null, cairnx: null, market: null, charts: null, content: null });
 });
 
 test("no code outside the SIB builder names /api/market or /charts/", () => {

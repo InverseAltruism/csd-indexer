@@ -21,7 +21,7 @@ import { rmSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 
 const DB = `/tmp/csd-idx-cwhold-${process.pid}.db`;
-for (const s of ["", "-wal", "-shm"]) { try { rmSync(DB + s); } catch {} }
+for (const s of ["", "-wal", "-shm"]) rmSync(DB + s, { force: true });
 
 type B = { hash: string; height: number; chainwork: string; header: any; txs: any[] };
 let CHAIN: B[] = [];

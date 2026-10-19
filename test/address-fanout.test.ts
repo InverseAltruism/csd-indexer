@@ -8,7 +8,7 @@ import { rmSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 
 const DB = `/tmp/csd-idx-fanout-${process.pid}.db`;
-for (const s of ["", "-wal", "-shm"]) { try { rmSync(DB + s); } catch {} }
+for (const s of ["", "-wal", "-shm"]) rmSync(DB + s, { force: true });
 process.env.CSD_INDEX_DB = DB;
 process.env.CSD_INDEX_PG_SCHEMA = "t_fanout";
 process.env.CSD_INDEX_PG_POOL = "2";   // a small pool: its wait-queue bound is then max(64, 2*8) = 64

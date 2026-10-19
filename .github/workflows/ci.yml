@@ -17,7 +17,7 @@ jobs:
       - run: npm ci
       - name: typecheck
         run: npm run typecheck
-      # biome.json: unused imports, focused tests and ts-ignore directives fail the step; empty blocks are warnings for now.
+      # biome.json: unused imports, empty blocks, focused tests and ts-ignore directives fail the step.
       - name: lint (Biome, four rules)
         run: npm run lint
       - name: no em dash in tracked docs, no sibling-checkout reads outside the listed exceptions
@@ -25,15 +25,20 @@ jobs:
       # CAIRN-IDX CI-1: use `npm test` (globs test/*.test.ts) so a new test file is NEVER silently dropped.
       # The old hand-listed set omitted analytics.test.ts: exactly the emission/supply money-math that the
       # DUP-ANALYTICS lockstep guard now lives in.
+      # The explorer's browser tests run here and fail rather than skip without a browser. The headless shell is the
+      # build the pinned playwright-core names; cairn's chart module is a stub in test/fixtures.
+      - name: Chromium headless shell for the explorer's browser tests
+        run: npx playwright-core install --with-deps chromium-headless-shell
       - name: test (offline, deterministic; glob, no hand-listing)
         run: npm test
-      # CAIRN-IDX-LOCKSTEP-1: the determinism-bearing codec/registry MUST be exact-pinned to the ecosystem
+        env: { EXPLORER_BROWSER_REQUIRED: "1" }
+      # CAIRN-IDX-LOCKSTEP-1: the determinism-bearing codec/light MUST be exact-pinned to the ecosystem
       # lockstep version (no caret → no silent float on a fresh install; the stale 0.1.2/0.1.1 was the fork seam).
       - name: determinism deps exact-pinned (no caret)
         run: |
           node -e '
             const p = require("./package.json");
-            for (const k of ["@inversealtruism/csd-codec", "@inversealtruism/csd-registry", "@inversealtruism/csd-light"]) {
+            for (const k of ["@inversealtruism/csd-codec", "@inversealtruism/csd-light"]) {
               const v = p.dependencies[k];
               if (!v || /^[\^~]/.test(v)) { console.error(`::error::${k} must be EXACT-pinned to the lockstep version, got ${v}`); process.exit(1); }
               console.log(`${k} exact-pinned at ${v}`);

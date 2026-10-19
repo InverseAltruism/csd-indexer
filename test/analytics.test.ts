@@ -1,4 +1,4 @@
-// Offline analytics proof — synthetic blocks/txs/outputs in a throwaway DB, then assert
+// Offline analytics proof: synthetic blocks/txs/outputs in a throwaway DB, then assert
 // the miner-leaderboard math (shares, chainwork-derived hashrate, Poisson error, HHI),
 // the rich list (spent exclusion, ordering, pct-of-emitted), and the supply/halving schedule.
 //
@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { rmSync } from "node:fs";
 
 const DB = `/tmp/csd-idx-analytics-${process.pid}.db`;
-for (const s of ["", "-wal", "-shm"]) { try { rmSync(DB + s); } catch {} }
+for (const s of ["", "-wal", "-shm"]) rmSync(DB + s, { force: true });
 process.env.CSD_INDEX_DB = DB;
 process.env.CSD_INDEX_PG_SCHEMA = "t_analytics";
 

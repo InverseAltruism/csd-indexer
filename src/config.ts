@@ -3,6 +3,9 @@
 // indexer (determinism is the audit; see the roadmap's honest limits).
 import { readFileSync } from "node:fs";
 
+// Declared before CFG: CFG's checkpointFloor calls checkpointDefault() while this module initializes.
+export const SPV_CHECKPOINT_FILE = "/opt/cairn_substrate/cairn/deploy/spv-checkpoint";
+
 export const CFG = {
   // Node RPC (the source of truth). 8789 = the node itself. (8790 was the MINER's RPC:
   // the miner is disabled since 2026-06-12; never default to it.)
@@ -25,10 +28,8 @@ export const CFG = {
   pgSchema: env("CSD_INDEX_PG_SCHEMA", "public"),
   // Postgres pool size (readers + the single writer).
   pgPoolSize: num("CSD_INDEX_PG_POOL", 10),
-  // HTTP bind for the REST + streaming API (8789 node, 8790 miner, 8791 swarm, 7777 cairn).
+  // HTTP bind for the REST + streaming API (8789 node, 8790 miner, 7777 cairn).
   listen: env("CSD_INDEX_LISTEN", "127.0.0.1:8793"),
-  // L1 swarm gateway used to resolve content bytes by payload_hash (optional join).
-  swarmGateway: env("CSD_SWARM_GATEWAY", "http://127.0.0.1:8791"),
   // First height to index. Genesis is 0; raise it to skip pre-CSD history if desired.
   scanFrom: num("CSD_INDEX_FROM", 0),
   // Blocks deeper than this are treated as final and never unwound (reorg bound).
@@ -107,8 +108,9 @@ export function port(): number { return Number(CFG.listen.split(":")[1] || 8793)
 // Single source for the SPV checkpoint floor, shared with the watchdog (cairn/deploy/spv-checkpoint) so a
 // new checkpoint updates ONE file. The CSD_INDEX_CHECKPOINT_FLOOR env still overrides; the file is the
 // default; 38142 is the hard fallback if the file is absent (e.g. a third-party deploy).
-function checkpointDefault(): number {
-  try { const v = Number(readFileSync("/opt/cairn_substrate/cairn/deploy/spv-checkpoint", "utf8").trim()); return Number.isFinite(v) && v > 0 ? v : 38142; } catch { return 38142; }
+/** The positive number in `file`, else 38142 (file absent, unreadable, empty or not a positive number). */
+export function checkpointDefault(file = SPV_CHECKPOINT_FILE): number {
+  try { const v = Number(readFileSync(file, "utf8").trim()); return Number.isFinite(v) && v > 0 ? v : 38142; } catch { return 38142; }
 }
 function env(k: string, d: string): string { return process.env[k] ?? d; }
 // I4 (O-7 / P74-37): only a POSITIVE finite number is a usable knob value. The old body accepted negatives,

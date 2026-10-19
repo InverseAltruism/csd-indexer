@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0
+
+Removed, since the content swarm they served is gone (owner decision P-5, 2026-10-13):
+
+- `GET /registry/peers`, `/registry/gateways`, `/identity/:handle`, `/address/:a/identity` and `/content/0x<hash>`,
+  with `src/registry.ts`, `src/identity.ts` and the `CSD_SWARM_GATEWAY` setting. Those routes now answer 404.
+- The `@inversealtruism/csd-registry` dependency.
+
 ## 0.2.13
 
 Dependency changes only; no source change.

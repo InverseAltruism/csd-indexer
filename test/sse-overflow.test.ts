@@ -9,7 +9,7 @@ import { rmSync } from "node:fs";
 import { connect, type Socket, type AddressInfo } from "node:net";
 
 const DB = `/tmp/csd-idx-sse-overflow-${process.pid}.db`;
-for (const s of ["", "-wal", "-shm"]) { try { rmSync(DB + s); } catch {} }
+for (const s of ["", "-wal", "-shm"]) rmSync(DB + s, { force: true });
 process.env.CSD_INDEX_DB = DB;
 process.env.CSD_INDEX_PG_SCHEMA = "t_sseoverflow";
 process.env.CSD_INDEX_MAX_SSE = "1";

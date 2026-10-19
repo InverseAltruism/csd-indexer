@@ -9,7 +9,7 @@
 // the signed-int64 ceiling the column can actually hold, exactly as it already does for output values.
 //
 // IDX-VERSION: safeValue's ceiling is int64 max, but `blocks.version` was declared `version INTEGER`, which
-// is int4 on Postgres — the PRODUCTION backend. So I3 routed version through the clamp and then bound the
+// is int4 on Postgres: the PRODUCTION backend. So I3 routed version through the clamp and then bound the
 // clamped value into a column that tops out at 2147483647: the pg bind still failed with SQLSTATE 22003
 // inside writeBlock's dbTx and the wedge stayed open for this one column. bits/nonce/time were already
 // BIGINT and were genuinely fixed. The column is now BIGINT too (db.ts carries the operator migration for
@@ -24,7 +24,7 @@ import { rmSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 
 const DB = `/tmp/csd-idx-hdrclamp-${process.pid}.db`;
-for (const s of ["", "-wal", "-shm"]) { try { rmSync(DB + s); } catch {} }
+for (const s of ["", "-wal", "-shm"]) rmSync(DB + s, { force: true });
 
 const INT64_MAX = "9223372036854775807";
 const INT32_MAX = 2147483647;          // the int4 ceiling `version INTEGER` used to impose on Postgres
@@ -63,7 +63,7 @@ const { store, resetStoreForTests, closeDb } = await import("../src/db.js");
 const row = async (h: number) => (await store().get<Record<string, unknown>>("SELECT * FROM blocks WHERE height=? AND orphaned=0", h))!;
 
 // Declared column types, backend-agnostic. The DDL is ONE shared constant, so asserting the declaration on
-// whichever backend this suite runs against also gates the Postgres column — which is the whole point: the
+// whichever backend this suite runs against also gates the Postgres column: which is the whole point: the
 // behavioral arms below pass on sqlite whether version is INTEGER or BIGINT (sqlite's INTEGER is already a
 // 64-bit int), so the original suite was green on the one backend that never had the defect.
 async function declaredTypes(table: string): Promise<Record<string, string | undefined>> {

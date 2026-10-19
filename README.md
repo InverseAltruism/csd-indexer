@@ -12,9 +12,9 @@ It reads the blockchain into a regular database and serves it back as:
   **merkle inclusion proofs** that let a light client (or your browser) prove a transaction is
   really in the chain.
 
-It's safe to trust because **you don't have to**: the explorer re-checks every proof *in your own
-browser* against the proof-of-work block headers, and anyone who runs their own indexer against the
-same node gets byte-for-byte identical data. There's nothing to take on faith.
+You don't have to take it on faith: a light client checks the merkle proofs against proof-of-work
+block headers it verifies itself, and anyone who runs their own indexer against the same node gets
+byte-for-byte identical data.
 
 ## Run your own
 
@@ -39,7 +39,6 @@ docker run -p 8793:8793 -v csd-index:/data -e CSD_RPC=http://host.docker.interna
 | `CSD_INDEX_PG_SCHEMA` | `public` | Postgres schema (namespace) for the tables |
 | `CSD_INDEX_PG_POOL` | `10` | Postgres connection-pool size |
 | `CSD_INDEX_LISTEN` | `127.0.0.1:8793` | where the explorer + API listen |
-| `CSD_SWARM_GATEWAY` | `http://127.0.0.1:8791` | a content server, for showing post contents (optional) |
 | `CSD_INDEX_FROM` | `0` | first block to index |
 | `CSD_CONFIRMATIONS_FINAL` | `6` | depth after which blocks are treated as final |
 
@@ -64,8 +63,8 @@ CSD_INDEX_PG=postgres://user:pass@127.0.0.1:5432/csd_index npx tsx src/cli.ts in
 CSD_INDEX_PG=postgres://user:pass@127.0.0.1:5432/csd_index npm run run-all            # serve
 ```
 
-Both backends produce identical API responses, the test suite runs the same 37 tests against
-each, and a from-genesis reindex of mainnet matches row-for-row across backends.
+Both backends produce identical API responses, the test suite runs against each, and a
+from-genesis reindex of mainnet matches row-for-row across backends.
 
 ## The API
 
@@ -80,17 +79,16 @@ each, and a from-genesis reindex of mainnet matches row-for-row across backends.
 - `GET /proposal/:id/attestations` - the individual attestations behind a proposal (the node only
   gives totals).
 - `GET /domains`, `/domain/:d/proposals` - browse posts by category.
-- `GET /content/0x<hash>` - the off-chain content for a post, re-verified against its on-chain hash.
-- `GET /registry/peers`, `/registry/gateways`, `/identity/:handle` - name → address lookups and
-  network directories that anyone can recompute and get the same answer.
 
 ## The explorer
 
 A single-file page (no build step) with a live block feed, and pages for blocks,
-transactions, addresses, proposals, and categories. The key feature: on a transaction page it
-**re-verifies the merkle proof in your browser** against the proof-of-work header, and on a proposal
-page it **re-hashes the content** to confirm it matches the chain - so the page trusts the indexer
-for nothing it can check itself.
+transactions, addresses, proposals, and categories. On a transaction page it **folds the merkle
+proof in your browser** and checks that it matches the merkle root of the block header the same
+indexer reports: a consistency check, not a proof-of-work check (for that, use the L0 light client).
+On a proposal page served through the front door it fetches the content from the front door's
+`/content` and **hashes it in your browser**, calling it verified only when that hash matches the
+on-chain payload hash.
 
 Served through the cairn front door (https://cairn-substrate.com/explorer) it also shows the CSD price in USD
 with the venue and time beside every figure, and charts of the emission schedule, the CSD/USD price, the network
@@ -100,7 +98,8 @@ chain figures without the USD figures and charts.
 ## Honest limits
 
 The indexer is a **convenient view of the chain, not an authority**. Inclusion proofs are trustless
-(your browser/light client re-checks them against proof-of-work). The derived data - per-attester
+when a light client checks them against proof-of-work headers it verified itself; the explorer only
+checks them against the indexer's own headers. The derived data - per-attester
 breakdowns, rankings, address history - is **reproducible rather than signed**: the way you audit it
 is to run your own indexer and confirm you get the same numbers. SQLite comfortably handles one
 indexer with many readers. MIT licensed.

@@ -19,7 +19,7 @@ import assert from "node:assert/strict";
 import { rmSync } from "node:fs";
 
 const DB = `/tmp/csd-idx-cursor-${process.pid}.db`;
-for (const s of ["", "-wal", "-shm"]) { try { rmSync(DB + s); } catch {} }
+for (const s of ["", "-wal", "-shm"]) rmSync(DB + s, { force: true });
 process.env.CSD_INDEX_DB = DB;
 process.env.CSD_INDEX_PG_SCHEMA = "t_cursor";
 process.env.CSD_INDEX_FROM = "0";
