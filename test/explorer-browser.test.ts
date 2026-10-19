@@ -25,7 +25,7 @@ const CHART_STUB = fileURLToPath(new URL("./fixtures/chart-stub.js", import.meta
 
 // playwright-core is loaded untyped, and the page callbacks below run in the browser (this file has no DOM lib):
 // `any` at those two boundaries only.
-declare const document: any, location: any;
+declare const document: any, location: any, innerWidth: number;
 let chromium: any = null, why = "";
 try { chromium = createRequire(import.meta.url)(process.env.PLAYWRIGHT_CORE || "playwright-core").chromium; }
 catch { why = "playwright-core not found (set PLAYWRIGHT_CORE to its path)"; }
@@ -109,7 +109,7 @@ const sha = (b: Buffer) => "0x" + createHash("sha256").update(b).digest("hex");
 const GOOD = Buffer.from('{"v":1,"t":"peer"}'), BINARY = Buffer.from([0xff, 0xfe, 0x00, 0x41, 0xc3]);
 const CONTENT = new Map<string, Buffer>([[sha(GOOD), GOOD], [sha(BINARY), BINARY], [sha(Buffer.from("claimed")), Buffer.from("served instead")]]);
 const contentProp = (n: number, payload_hash: string) => ({ txid: "0x" + (0xc0 + n).toString(16).padStart(64, "0"), domain: "csd:test", payload_hash, uri: "",
-  proposer: MINER, fee: 25000000, expires_epoch: 5000, height: TIP - n, attestation_count: 0, attestation_count_truncated: false, attestations: [] });
+  proposer: MINER, fee: 25000000, expires_epoch: 5000, height: TIP - n, attestation_count: 0, attestation_count_truncated: false, attestations: [] as unknown[] });
 const CONTENT_PROPS = { good: contentProp(1, sha(GOOD)), binary: contentProp(2, sha(BINARY)), tampered: contentProp(3, sha(Buffer.from("claimed"))),
   absent: contentProp(4, sha(Buffer.from("not held"))) };
 const REQS: string[] = [];
@@ -484,4 +484,26 @@ test("name page: an offer without a price reads \"Listed for sale\", no dash in 
     assert.deepEqual(v.errors, []);
     assert.equal(await v.page.textContent(".panel:has(h2:text-is('for sale')) .action"), "\u{1F3F7} Listed for sale \u00b7 open offer");
   } finally { await v.close(); }
+});
+
+test("proposal page at 390 px: the attestations table scrolls inside its own box, the page does not widen", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true });
+  const prop = CONTENT_PROPS.good;
+  const saved = prop.attestations;
+  prop.attestations = Array.from({ length: 3 }, (_, i) => ({ attester: MINER, score: 100, confidence: 1000000, fee: 2500000000 + i, txid: "0x" + "ab".repeat(31) + String(i).padStart(2, "0") }));
+  try {
+    const v = await open(`/explorer#/proposal/${prop.txid}`, 390, () => document.querySelectorAll("tbody tr td").length > 3);
+    try {
+      const m = await v.page.evaluate(() => {
+        const t = [...document.querySelectorAll("h2")].find((h: any) => /^attestations/.test(h.textContent))!.parentElement.querySelector("table");
+        const box = t.closest(".scroll-x");
+        return { boxed: !!box, boxRight: box ? box.getBoundingClientRect().right : Infinity, width: innerWidth, body: document.body.scrollWidth,
+          scrolls: box ? box.scrollWidth > box.clientWidth : false };
+      });
+      assert.ok(m.boxed, "the table sits in a .scroll-x box");
+      assert.ok(m.boxRight <= m.width, `the box ends inside the viewport (${m.boxRight} > ${m.width})`);
+      assert.ok(m.scrolls, "the wide table scrolls inside the box");
+      assert.ok(m.body <= m.width, `the page does not widen (body ${m.body} px at ${m.width} px)`);
+    } finally { await v.close(); }
+  } finally { prop.attestations = saved; }
 });

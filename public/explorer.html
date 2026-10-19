@@ -1020,9 +1020,9 @@ async function proposalPage(v,id){
     <div>expires</div><div class="v">epoch ${p.expires_epoch} <span class="dim">(~block ${(Number(p.expires_epoch)*30).toLocaleString()})</span></div>
     <div>attestations</div><div class="v">${p.attestation_count}</div>
   </div></div>`));
-  v.appendChild(el(`<div class="panel"><h2>attestations (${(p.attestations||[]).length}) <span class="pill">per-attester - not on-chain aggregate</span></h2>
-    <table><thead><tr><th>attester</th><th>score</th><th>confidence</th><th>fee</th><th>tx</th></tr></thead>
-    <tbody>${(p.attestations||[]).map(a=>`<tr><td>${addrLink(a.attester)}</td><td class="amber">${a.score}</td><td>${a.confidence}</td><td>${fmtCSD(a.fee)}</td><td>${txidLink(a.txid)}</td></tr>`).join('')||'<tr><td colspan=5 class="dim">none yet</td></tr>'}</tbody></table></div>`));
+  v.appendChild(el(`<div class="panel"><h2>attestations (${(p.attestations||[]).length}) <span class="pill">per-attester, not on-chain aggregate</span></h2>
+    <div class="scroll-x"><table><thead><tr><th>attester</th><th>score</th><th>confidence</th><th>fee</th><th>tx</th></tr></thead>
+    <tbody>${(p.attestations||[]).map(a=>`<tr><td>${addrLink(a.attester)}</td><td class="amber">${a.score}</td><td>${a.confidence}</td><td>${fmtCSD(a.fee)}</td><td>${txidLink(a.txid)}</td></tr>`).join('')||'<tr><td colspan=5 class="dim">none yet</td></tr>'}</tbody></table></div></div>`));
   await contentBadge($('#cibadge'),p.payload_hash);
 }
 // The proposal's content, from cairn's /content (same origin, front door only): served bytes are hashed here, as
