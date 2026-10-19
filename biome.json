@@ -9,7 +9,7 @@
     "rules": {
       "preset": "none",
       "correctness": { "noUnusedImports": "error" },
-      "suspicious": { "noEmptyBlockStatements": "warn", "noFocusedTests": "error", "noTsIgnore": "error" }
+      "suspicious": { "noEmptyBlockStatements": "error", "noFocusedTests": "error", "noTsIgnore": "error" }
     }
   }
 }

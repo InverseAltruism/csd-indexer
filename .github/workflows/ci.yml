@@ -17,7 +17,7 @@ jobs:
       - run: npm ci
       - name: typecheck
         run: npm run typecheck
-      # biome.json: unused imports, focused tests and ts-ignore directives fail the step; empty blocks are warnings for now.
+      # biome.json: unused imports, empty blocks, focused tests and ts-ignore directives fail the step.
       - name: lint (Biome, four rules)
         run: npm run lint
       - name: no em dash in tracked docs, no sibling-checkout reads outside the listed exceptions

@@ -1,5 +1,5 @@
 // Streaming: a real HTTP server + real WS/SSE clients receive bus events, honor
-// subscription filters, and ALWAYS receive reorg events. Offline (no node) — we
+// subscription filters, and ALWAYS receive reorg events. Offline (no node): we
 // drive the in-process bus directly, which is exactly what the indexer publishes.
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -7,7 +7,7 @@ import { rmSync } from "node:fs";
 import { WebSocket } from "ws";
 
 const DB = `/tmp/csd-idx-stream-${process.pid}.db`;
-for (const s of ["", "-wal", "-shm"]) { try { rmSync(DB + s); } catch {} }
+for (const s of ["", "-wal", "-shm"]) rmSync(DB + s, { force: true });
 process.env.CSD_INDEX_DB = DB;
 
 const { serve } = await import("../src/server.js");
@@ -54,7 +54,7 @@ test("WS always delivers reorg events regardless of subscription", async () => {
 });
 
 // CAIRN-IDX-WS-2: a non-track-all WS client (e.g. track-domain only) must NOT receive `block`
-// events — there is no per-block WS subscription; clients use {track-all} or SSE /stream/blocks.
+// events: there is no per-block WS subscription; clients use {track-all} or SSE /stream/blocks.
 test("WS does NOT deliver block events to a non-track-all subscriber", async () => {
   const ws = new WebSocket(`ws://127.0.0.1:${PORT}/ws`);
   await new Promise((r) => ws.on("open", r));

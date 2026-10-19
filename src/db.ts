@@ -212,8 +212,10 @@ class PgStore implements Store {
     // that takes the whole process down; log and let the pool replace the client.
     this.pool.on("error", (e) => console.error(`[pg pool] idle client error: ${e.message}`));
     this.schemaSafe = schema.replace(/[^a-zA-Z0-9_]/g, "");
-    // every pooled connection joins the schema; errors here surface on the user query
-    this.pool.on("connect", (client) => { client.query(`SET search_path TO ${this.schemaSafe}`).catch(() => {}); });
+    // every pooled connection joins the schema
+    this.pool.on("connect", (client) => {
+      client.query(`SET search_path TO ${this.schemaSafe}`).catch(() => { /* a broken connection fails the user query queued behind it */ });
+    });
   }
   // Lazily (re)established: if the first connect/DDL fails (pg still starting, network
   // blip), the failure must NOT be cached forever; the next call retries from scratch,
@@ -264,8 +266,8 @@ class PgStore implements Store {
       get: async (sql, ...p) => (await c.query(toPg(sql), p as unknown[])).rows[0],
       all: async (sql, ...p) => (await c.query(toPg(sql), p as unknown[])).rows,
       tx: () => { throw new Error("nested tx"); },
-      checkpoint: async () => {},
-      close: async () => {},
+      checkpoint: async () => { /* autovacuum's job, as on the pool */ },
+      close: async () => { /* the client goes back to the pool in this method's finally */ },
     };
     try {
       await c.query("BEGIN");

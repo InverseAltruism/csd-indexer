@@ -30,7 +30,7 @@ await new Promise<void>((r) => srv.listen(0, "127.0.0.1", () => r()));
 process.env.CSD_RPC = `http://127.0.0.1:${(srv.address() as any).port}`;
 process.env.CSD_RPC_BACKENDS = process.env.CSD_RPC;
 process.env.CSD_INDEX_DB = `/tmp/csd-idx-heightecho-${process.pid}.db`;
-for (const s of ["", "-wal", "-shm"]) { try { rmSync(process.env.CSD_INDEX_DB + s); } catch {} }
+for (const s of ["", "-wal", "-shm"]) rmSync(process.env.CSD_INDEX_DB + s, { force: true });
 const rpc = await import("../src/rpc.js");
 
 test("honest path: a height that echoes the request is accepted", async () => {

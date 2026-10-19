@@ -23,7 +23,7 @@ process.env.CSD_RPC = `http://127.0.0.1:${(srv.address() as any).port}`;
 process.env.CSD_RPC_BACKENDS = process.env.CSD_RPC;
 process.env.CSD_RPC_TIMEOUT = "400";                         // short so the stall test is fast
 process.env.CSD_INDEX_DB = `/tmp/csd-idx-timeout-${process.pid}.db`;
-for (const s of ["", "-wal", "-shm"]) { try { rmSync(process.env.CSD_INDEX_DB + s); } catch {} }
+for (const s of ["", "-wal", "-shm"]) rmSync(process.env.CSD_INDEX_DB + s, { force: true });
 const rpc = await import("../src/rpc.js");
 
 test("healthy path: /tip and a fast /block return normally (no false abort)", async () => {

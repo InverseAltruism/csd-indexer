@@ -39,7 +39,7 @@ process.env.CSD_RPC_POW_TIMEOUT = "800";
 process.env.CSD_RPC_MAX_AHEAD = "128";
 process.env.CSD_RPC_MAX_EASE = "16";
 const DB = `/tmp/csd-idx-guardvis-${process.pid}.db`;
-for (const s of ["", "-wal", "-shm"]) { try { rmSync(DB + s); } catch {} }
+for (const s of ["", "-wal", "-shm"]) rmSync(DB + s, { force: true });
 process.env.CSD_INDEX_DB = DB;
 process.env.CSD_INDEX_FROM = "0";
 process.env.CSD_INDEX_PG_SCHEMA = "t_guardvis";

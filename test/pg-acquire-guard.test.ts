@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { rmSync } from "node:fs";
 
 const DB = `/tmp/csd-idx-acquire-${process.pid}.db`;
-for (const s of ["", "-wal", "-shm"]) { try { rmSync(DB + s); } catch {} }
+for (const s of ["", "-wal", "-shm"]) rmSync(DB + s, { force: true });
 process.env.CSD_INDEX_DB = DB;
 process.env.CSD_INDEX_PG_SCHEMA = "t_acquire";
 process.env.CSD_INDEX_PG_POOL = "2";   // wait-queue bound: max(64, 2 * 8) = 64

@@ -1,7 +1,7 @@
 // End-to-end reorg test for syncOnce() against a MOCK node (the real rpc.ts fetches it), driving
 // the actual fork-detection + unwind/replay paths that the unit test (which calls writeBlock/
 // unwindAbove directly) never reaches. Covers: forward (taller) reorg, the EQUAL-height tip-swap
-// and the SHORTER-higher-work reorg (HIGH-1 — these are missed by the forward scan), and the
+// and the SHORTER-higher-work reorg (HIGH-1: these are missed by the forward scan), and the
 // scanFrom floor. No network.
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -9,7 +9,7 @@ import { rmSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 
 const DB = `/tmp/csd-idx-reorg-${process.pid}.db`;
-for (const s of ["", "-wal", "-shm"]) { try { rmSync(DB + s); } catch {} }
+for (const s of ["", "-wal", "-shm"]) rmSync(DB + s, { force: true });
 
 // ── mock node serving a mutable chain: chain[h] = { hash, header, txs } ──
 type B = { hash: string; height: number; chainwork: string; header: any; txs: any[] };
@@ -77,7 +77,7 @@ test("HIGH-1 EQUAL-height tip-swap: same height, different block → must unwind
   await syncOnce();
   assert.equal(await indexedHeight(), 3);
   assert.equal(await propCount("dom-Pc"), 1);
-  // node swaps the tip block at the SAME height 3 (Pc → Pq) — forward scan would miss this
+  // node swaps the tip block at the SAME height 3 (Pc → Pq): forward scan would miss this
   const swapped = buildChain(["g", "Pa", "Pb", "Pq"]);
   CHAIN = swapped;
   await syncOnce();
@@ -100,7 +100,7 @@ test("HIGH-1 SHORTER-higher-work reorg: node tip BELOW ours → unwind to node t
   assert.equal(await propCount("dom-Pd"), 0, "orphaned height-4 proposal gone");
   // balances: NO outputs from the orphaned heights 3,4 may linger (no double-counted balance)
   const orphanOuts = Number(((await store().get("SELECT COUNT(*) n FROM outputs WHERE txid IN (?,?)", h32("cb-Pc"), h32("cb-Pd"))) as any).n);
-  assert.equal(orphanOuts, 0, "orphaned coinbase outputs (heights 3,4) deleted — no ghost UTXOs");
+  assert.equal(orphanOuts, 0, "orphaned coinbase outputs (heights 3,4) deleted: no ghost UTXOs");
   // every remaining unspent output belongs to a canonical (non-orphaned) block
   const danglingUtxos = Number(((await store().get("SELECT COUNT(*) n FROM outputs o WHERE o.spent_txid IS NULL AND o.height > 2")) as any).n);
   assert.equal(danglingUtxos, 0, "no unspent outputs above the new tip height");
@@ -114,7 +114,7 @@ test("D-I1 DEEP TALLER reorg (> finalDepth) at the tip: converges, does not wedg
   await syncOnce();
   assert.equal(await indexedHeight(), 11);
   // node reorgs from height 3 upward to a TALLER branch (now 0..12). node tip (12) ≥ ours (11),
-  // and the fork point (h3) is deeper than finalDepth — the exact case the old code wedged on.
+  // and the fork point (h3) is deeper than finalDepth: the exact case the old code wedged on.
   CHAIN = buildChain(["g", "Pa", "Pb", "Pr", "Ps", "Pt", "Pu", "Pv", "Pw", "Px", "Py", "Pz", "P1"]);
   await syncOnce();
   assert.equal(await indexedHeight(), 12, "adopted the deeper taller branch (no wedge, no throw)");
@@ -128,13 +128,13 @@ test("D-I1 DEEP EQUAL-height reorg (> finalDepth, node tip == ours): converges, 
   CHAIN = buildChain(["g", "Pa", "Pb", "Pc", "Pd", "Pe", "Pf", "Pg", "Ph", "Pi", "Pj", "Pk"]); // 0..11
   await syncOnce();
   assert.equal(await indexedHeight(), 11);
-  // same-length branch diverging at height 3 (tip stays 11) — forward scan can't see it AND the old
+  // same-length branch diverging at height 3 (tip stays 11): forward scan can't see it AND the old
   // reconcile returned 0 for node-tip≥ours, so the loop never made progress (stuck on the orphan).
   CHAIN = buildChain(["g", "Pa", "Pb", "Pm", "Pn", "Po", "Pp", "Pq", "Pr2", "Ps2", "Pt2", "Pu2"]); // 0..11
   await syncOnce();
   assert.equal(await liveTip(), 11, "tip height unchanged");
   assert.equal(await storedHash(11), h32("blk-Pu2"), "tip block swapped to the canonical deep branch");
-  assert.equal(await propCount("dom-Pf"), 0, "orphaned deep proposal (old height 5) gone — no ghost");
+  assert.equal(await propCount("dom-Pf"), 0, "orphaned deep proposal (old height 5) gone: no ghost");
   assert.equal(await propCount("dom-Po"), 1, "new branch proposal (height 5) indexed");
 });
 
@@ -154,7 +154,7 @@ test("L10 all-null window: /tip up but every /block/height failing does NOT wipe
   assert.equal(r.reorgs, 0, "no reorg signalled on an all-null window");
   assert.equal(await indexedHeight(), 3, "indexed height untouched (reconcile aborted, no unwind)");
   const rowsAfter = Number(((await store().get("SELECT COUNT(*) n FROM blocks WHERE orphaned=0")) as any).n);
-  assert.equal(rowsAfter, rowsBefore, "no rows deleted — index intact through the blip");
+  assert.equal(rowsAfter, rowsBefore, "no rows deleted: index intact through the blip");
   // node recovers → next poll proceeds normally with the index still in place
   BLOCKS_DOWN = false;
   await syncOnce();
@@ -179,8 +179,8 @@ test("IDXREORG-1 tip-mismatch + deeper-withhold does NOT over-unwind the index",
   // … AND the node withholds every block below the tip (serves /tip + height 10, 500s heights 0..9).
   WITHHOLD_BELOW = 10;
   const r = await syncOnce();
-  assert.equal(r.reorgs, 0, "no reorg signalled — deeper-block withholding is absence of evidence, not divergence");
-  assert.equal(await indexedHeight(), 10, "indexed height untouched — did NOT unwind to genesis");
+  assert.equal(r.reorgs, 0, "no reorg signalled: deeper-block withholding is absence of evidence, not divergence");
+  assert.equal(await indexedHeight(), 10, "indexed height untouched: did NOT unwind to genesis");
   const rowsAfter = Number(((await store().get("SELECT COUNT(*) n FROM blocks WHERE orphaned=0")) as any).n);
   assert.equal(rowsAfter, rowsBefore, "no rows deleted despite the latched tip mismatch + withhold");
   // node recovers → the genuine depth-1 reorg now reconciles cleanly (ancestor 9, height 10 replaced)
@@ -193,7 +193,7 @@ test("IDXREORG-1 tip-mismatch + deeper-withhold does NOT over-unwind the index",
 
 // ── 2026-07-05 incident: a node that LOST ITS DB and is resyncing presents a tip FAR BELOW ours with
 // LESS cumulative chainwork. That is NOT a reorg (a real reorg presents >= our work); the old code saw
-// the low tip "converge" at a buried height (the low blocks genuinely match — same chain) and
+// the low tip "converge" at a buried height (the low blocks genuinely match: same chain) and
 // hard-DELETEd every row above it (~41k rows, /names emptied). The chainwork REGRESSION GUARD must HOLD
 // the index (serve last-good) and re-derive forward once the node catches back up.
 test("regression guard: node behind on chainwork (db-loss resync) HOLDS, does not wipe the index", async () => {
@@ -207,7 +207,7 @@ test("regression guard: node behind on chainwork (db-loss resync) HOLDS, does no
   resync[resync.length - 1]!.chainwork = "1"; // << our indexed tip's chainwork
   CHAIN = resync;
   const r = await syncOnce();
-  assert.equal(r.reorgs, 0, "no reorg signalled — a behind node is not a reorg");
+  assert.equal(r.reorgs, 0, "no reorg signalled: a behind node is not a reorg");
   assert.equal(await indexedHeight(), 5, "index HELD at last-good height (not unwound to the resync tip)");
   const rowsAfter = Number(((await store().get("SELECT COUNT(*) n FROM blocks WHERE orphaned=0")) as any).n);
   assert.equal(rowsAfter, rowsBefore, "no rows deleted while the node was behind (the ~41k-row nuke prevented)");
