@@ -17,6 +17,9 @@ jobs:
       - run: npm ci
       - name: typecheck
         run: npm run typecheck
+      # biome.json: unused imports, focused tests and ts-ignore directives fail the step; empty blocks are warnings for now.
+      - name: lint (Biome, four rules)
+        run: npm run lint
       # CAIRN-IDX CI-1: use `npm test` (globs test/*.test.ts) so a new test file is NEVER silently dropped.
       # The old hand-listed set omitted analytics.test.ts: exactly the emission/supply money-math that the
       # DUP-ANALYTICS lockstep guard now lives in.

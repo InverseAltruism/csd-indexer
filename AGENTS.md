@@ -18,7 +18,7 @@ This repo follows the maintainers' cross-repo engineering standard (a private do
 - Comments state constraints and non-obvious invariants, not history or audit IDs. Removing code needs the same evidence as adding it.
 - Docs: this file holds what stays true (no version tables, no status snapshots; versions live in `package.json` and tags, live state comes from a live query). Dates are absolute, no em dashes.
 
-Known deviations (checked 2026-10-11, not exhaustive): there is no `lint` script; `src/config.ts` reads the shared SPV checkpoint file from a sibling checkout when present and falls back to the built-in floor; the dependency lockfile is `package-lock.json` (npm).
+Known deviations (checked 2026-10-11, not exhaustive; lint 2026-10-19): `npm run lint` (Biome) fails on unused imports, focused tests and `@ts-ignore`, but only warns on empty blocks, since `src/`, `public/explorer.html` and the tests still hold some (`npm run lint` lists them); `src/config.ts` reads the shared SPV checkpoint file from a sibling checkout when present and falls back to the built-in floor; the dependency lockfile is `package-lock.json` (npm).
 
 ## The stack around it
 
@@ -95,6 +95,7 @@ CSD_RPC=http://127.0.0.1:8789 npm run run-all  # index + serve on :8793
 npm run index                                  # one sync pass, exits
 npm run serve                                  # API only
 npm run typecheck                              # tsc --noEmit
+npm run lint                                   # Biome: unused imports, empty blocks (warn), focused tests, @ts-ignore
 npm test                                       # tsx --test test/*.test.ts (offline, deterministic)
 # Postgres mode:
 CSD_INDEX_PG=postgres://... npx tsx src/cli.ts index
