@@ -32,7 +32,7 @@ export function offences(root) {
     const isCode = CODE.test(f) && !(f in PATH_EXCEPTIONS);
     if (!isDoc && !isCode) continue;
     const text = readFileSync(join(root, f), "utf8");
-    if (isDoc && text.includes("—")) out.push(`${f}: em dash (U+2014)`);
+    if (isDoc && text.includes("\u2014")) out.push(`${f}: em dash (U+2014)`);
     const sibling = isCode ? text.match(SIBLING) : null;
     if (sibling) out.push(`${f}: reads a sibling checkout (${sibling[0]})`);
   }
