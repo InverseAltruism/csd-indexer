@@ -190,14 +190,15 @@ const API = (() => {
 })();
 // Sibling routes exist only when this page is served through the cairn front door
 // (cairn-substrate.com/explorer): the NODE proxy enables attest→proposal decoding, the CairnX
-// proxy token/name enrichment, the market routes the CSD/USD figures (display only) and cairn's
-// chart module the charts. Standalone (:8793) degrades: hex addresses, no token or USD figures,
-// the numbers without charts.
+// proxy token/name enrichment, the market routes the CSD/USD figures (display only), cairn's
+// chart module the charts and cairn's /content the proposal content check. Standalone (:8793)
+// degrades: hex addresses, no token or USD figures, the numbers without charts, no content check.
 const SIB = (() => {
   const m = location.pathname.match(/(.*)\/explorer\/?$/);
-  if (!m) return { node:null, cairnx:null, market:null, charts:null };
+  if (!m) return { node:null, cairnx:null, market:null, charts:null, content:null };
   return { node: location.origin + m[1] + "/api/rpc", cairnx: location.origin + m[1] + "/trade/api/cairnx",
-    market: location.origin + m[1] + "/api/market", charts: location.origin + m[1] + "/charts/chart.js" };
+    market: location.origin + m[1] + "/api/market", charts: location.origin + m[1] + "/charts/chart.js",
+    content: location.origin + m[1] + "/content/" };
 })();
 const jx = async(base,p)=>{ if(!base) return null; try{ const r=await fetch(base+p); if(!r.ok) return null; return await r.json(); }catch{ return null; } };
 
@@ -226,7 +227,6 @@ const fmtCSD = (v)=>{ const s=String(v); const sats=/^\d+$/.test(s)?BigInt(s):Bi
 let TIP_TIME = 0;   // newest block time seen (updated in blockRow)
 const ago = (t)=>{if(!t)return '';const ref=Math.max(Math.floor(Date.now()/1000),TIP_TIME);const s=Math.max(0,ref-t);if(s<60)return s+'s ago';if(s<3600)return (s/60|0)+'m ago';if(s<86400)return (s/3600|0)+'h ago';return (s/86400|0)+'d ago';};
 const j = async(p)=>{const r=await fetch(API+p);if(!r.ok)throw new Error(p+' → '+r.status);return r.json();};
-const txt = async(p)=>{const r=await fetch(API+p);if(!r.ok)throw new Error(p+' → '+r.status);return r.text();};
 
 // ── client-side merkle fold (SubtleCrypto, no deps). A consistency check against the
 //    indexer's own header — NOT a trustless proof (no PoW/checkpoint verification here). ──
@@ -1022,13 +1022,23 @@ async function proposalPage(v,id){
   v.appendChild(el(`<div class="panel"><h2>attestations (${(p.attestations||[]).length}) <span class="pill">per-attester - not on-chain aggregate</span></h2>
     <table><thead><tr><th>attester</th><th>score</th><th>confidence</th><th>fee</th><th>tx</th></tr></thead>
     <tbody>${(p.attestations||[]).map(a=>`<tr><td>${addrLink(a.attester)}</td><td class="amber">${a.score}</td><td>${a.confidence}</td><td>${fmtCSD(a.fee)}</td><td>${txidLink(a.txid)}</td></tr>`).join('')||'<tr><td colspan=5 class="dim">none yet</td></tr>'}</tbody></table></div>`));
-  // dogfood self-certification: fetch content, hash it in-browser, compare to the on-chain payload_hash
+  await contentBadge($('#cibadge'),p.payload_hash);
+}
+// The proposal's content, from cairn's /content (same origin, front door only): served bytes are hashed here, as
+// received, and only bytes whose sha256 equals the on-chain payload_hash read as verified.
+async function contentBadge(badge,hash){
+  const set=(text,cls)=>{ badge.textContent=text; badge.className='badge '+cls; };
+  if(!SIB.content){ set('content check needs the cairn front door','pend'); return; }
+  if(!/^0x[0-9a-f]{64}$/i.test(String(hash))){ set('no content hash','pend'); return; }
+  let bytes;
   try{
-    const bytes=new TextEncoder().encode(await txt('/content/'+p.payload_hash));
-    const got=bytesToHex(await sha256(bytes));
-    const ok=got.toLowerCase()===p.payload_hash.toLowerCase();
-    const b=$('#cibadge');b.textContent=ok?'✓ content integrity verified':'✗ content MISMATCH';b.className='badge '+(ok?'ok':'bad');
-  }catch(e){const b=$('#cibadge');b.textContent='content unavailable';b.className='badge pend';}
+    const r=await fetch(SIB.content+hash.toLowerCase());
+    if(r.status===404){ set('content not held by this front door','pend'); return; }
+    if(!r.ok){ set('content unavailable','pend'); return; }
+    bytes=new Uint8Array(await r.arrayBuffer());
+  }catch{ set('content unavailable','pend'); return; }   // network error or an aborted body: nothing was checked
+  const ok=bytesToHex(await sha256(bytes))===hash.toLowerCase();
+  set(ok?'✓ content integrity verified':'✗ content MISMATCH',ok?'ok':'bad');
 }
 
 // ── header stats + live ──

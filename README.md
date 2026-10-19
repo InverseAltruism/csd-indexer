@@ -86,8 +86,9 @@ each, and a from-genesis reindex of mainnet matches row-for-row across backends.
 A single-file page (no build step) with a live block feed, and pages for blocks,
 transactions, addresses, proposals, and categories. The key feature: on a transaction page it
 **re-verifies the merkle proof in your browser** against the proof-of-work header, and on a proposal
-page it **re-hashes the content** to confirm it matches the chain - so the page trusts the indexer
-for nothing it can check itself.
+page served through the front door it fetches the content from the front door's `/content` and
+**hashes it in your browser**, calling it verified only when that hash matches the chain - so the page
+trusts the indexer for nothing it can check itself.
 
 Served through the cairn front door (https://cairn-substrate.com/explorer) it also shows the CSD price in USD
 with the venue and time beside every figure, and charts of the emission schedule, the CSD/USD price, the network

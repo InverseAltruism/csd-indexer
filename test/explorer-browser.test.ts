@@ -18,7 +18,7 @@ import { createServer, type ServerResponse } from "node:http";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AddressInfo } from "node:net";
@@ -105,9 +105,18 @@ function ADDRESS(k: string, _q: URLSearchParams): unknown {
   if (k === `/address/${WALLET}/utxo`) return [];
   if (k === `/address/${WALLET}/txs`) return PAGE1.map(txRow);
   if (k === `/address/${WALLET}/txs/chain/${PAGE1[PAGE1.length - 1]!.txid}`) return PAGE2.map(txRow);
-  const prop = k.startsWith("/proposal/") ? PROPS.find((p) => p.txid === k.slice(10)) : undefined;
+  const prop = k.startsWith("/proposal/") ? [...PROPS, ...Object.values(CONTENT_PROPS)].find((p) => p.txid === k.slice(10)) : undefined;
   return prop ?? undefined;
 }
+// Proposals whose content cairn's /content serves: honest JSON, honest bytes that are not UTF-8, bytes that do not
+// hash to the payload hash, and a hash cairn does not hold (404).
+const sha = (b: Buffer) => "0x" + createHash("sha256").update(b).digest("hex");
+const GOOD = Buffer.from('{"v":1,"t":"peer"}'), BINARY = Buffer.from([0xff, 0xfe, 0x00, 0x41, 0xc3]);
+const CONTENT = new Map<string, Buffer>([[sha(GOOD), GOOD], [sha(BINARY), BINARY], [sha(Buffer.from("claimed")), Buffer.from("served instead")]]);
+const contentProp = (n: number, payload_hash: string) => ({ txid: "0x" + (0xc0 + n).toString(16).padStart(64, "0"), domain: "csd:test", payload_hash, uri: "",
+  proposer: MINER, fee: 25000000, expires_epoch: 5000, height: TIP - n, attestation_count: 0, attestation_count_truncated: false, attestations: [] });
+const CONTENT_PROPS = { good: contentProp(1, sha(GOOD)), binary: contentProp(2, sha(BINARY)), tampered: contentProp(3, sha(Buffer.from("claimed"))),
+  absent: contentProp(4, sha(Buffer.from("not held"))) };
 const REQS: string[] = [];
 const json = (res: ServerResponse, status: number, body: unknown, extra: Record<string, string> = {}) => {
   res.writeHead(status, { "content-type": "application/json", ...extra }); res.end(JSON.stringify(body));
@@ -128,7 +137,7 @@ const server = createServer(async (req, res) => {
     return void req.on("close", () => res.end());
   }
   const api = p.startsWith("/explorer/api/") ? p.slice(13) : null;
-  if (api !== null || ["/health", "/domains", "/blocks/recent"].includes(p) || p.startsWith("/analytics/") || p.startsWith("/domain/")) {
+  if (api !== null || ["/health", "/domains", "/blocks/recent"].includes(p) || p.startsWith("/analytics/") || p.startsWith("/domain/") || p.startsWith("/proposal/")) {
     const k = api ?? p;
     if (k === "/blocks/recent") return json(res, 200, recent(Number(url.searchParams.get("limit") || 12)));
     if (k === "/analytics/series" && !S.series) return json(res, 404, { error: "not found" });
@@ -154,6 +163,11 @@ const server = createServer(async (req, res) => {
     return json(res, 200, k === "/primaries" ? { ok: true, primaries: {} } : []);
   }
   if (p === "/api/health") return json(res, 200, { ok: true, tipHeight: TIP });
+  if (p.startsWith("/content/")) {
+    const body = CONTENT.get(p.slice(9));
+    if (!body) return json(res, 404, { ok: false, error: "unknown payload_hash (not registered here)" });
+    res.writeHead(200, { "content-type": "application/json; charset=utf-8" }); return res.end(body);
+  }
   try {
     if (!CAIRN) throw new Error("no cairn public dir");
     const file = join(CAIRN, normalize(p).replace(/^(\.\.[/\\])+/, ""));
@@ -429,3 +443,26 @@ test("address page: each page of txs asks /cairnx/records for its own Propose tx
     assert.deepEqual(v.errors, []);
   } finally { await v.close(); }
 });
+
+// The proposal page's content check reads cairn's /content (same origin), hashes the bytes as received and calls
+// them verified only when they hash to the on-chain payload hash.
+const CONTENT_CASES = [
+  ["good", "/explorer", "\u2713 content integrity verified", "ok"],
+  ["binary", "/explorer", "\u2713 content integrity verified", "ok"],
+  ["tampered", "/explorer", "\u2717 content MISMATCH", "bad"],
+  ["absent", "/explorer", "content not held by this front door", "pend"],
+  ["good", "/", "content check needs the cairn front door", "pend"],
+] as const;
+for (const [which, at, text, cls] of CONTENT_CASES) {
+  test(`proposal page, ${which} content${at === "/" ? ", standalone" : ""}: "${text}"`, { skip: why || false }, async () => {
+    Object.assign(S, { market: "off", series: true });
+    const prop = CONTENT_PROPS[which];
+    const v = await open(`${at}#/proposal/${prop.txid}`, 1280, () => !!document.querySelector("#cibadge") && document.querySelector("#cibadge").textContent !== "checking content\u2026");
+    try {
+      assert.deepEqual(v.errors, []);
+      assert.equal(await v.page.textContent("#cibadge"), text);
+      assert.equal(await v.page.getAttribute("#cibadge", "class"), `badge ${cls}`);
+      assert.deepEqual(v.asked.filter((x) => /\/content\//.test(x)), at === "/" ? [] : [`/content/${prop.payload_hash}`], "cairn's /content, never the indexer's");
+    } finally { await v.close(); }
+  });
+}
