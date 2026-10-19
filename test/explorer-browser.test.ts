@@ -81,7 +81,28 @@ const day0 = NOW - (NOW % 86_400);
 const csdSeries = (q: URLSearchParams) => ({ ok: true, pair: "csd-usd", period: q.get("period"), range: q.get("range"), source: "coinpaprika",
   points: Array.from({ length: 30 }, (_, i) => { const c = 0.045 + 0.01 * Math.sin(i / 4); return [day0 - (29 - i) * 86_400, c, c * 1.04, c * 0.96, c, 9000]; }) });
 
-const S = { market: "fresh" as "fresh" | "stale" | "off", thin: false, partial: false, series: true };
+const S = { market: "fresh" as "fresh" | "stale" | "off", thin: false, partial: false, series: true, records: "on" as "on" | "404" };
+// CairnX proposals in the shapes of /domain/:d/proposals, and the resolver's verdicts for them: one refused mint
+const cxProp = (n: number, uri: object) => ({ txid: "0x" + n.toString(16).padStart(64, "0"), height: TIP - n, proposer: MINER, fee: 25000000, domain: "cairnx:v1", uri: JSON.stringify(uri) });
+const PROPS = Array.from({ length: 130 }, (_, i) => cxProp(i + 1, { v: 1, t: "mint", ticker: "CAIRN", amount: "100" }));
+const REFUSED = PROPS[0]!.txid;
+const VERDICTS: Record<string, { kind: string; applied: boolean; note: string; height: number }> = Object.fromEntries(PROPS.map((p, i) =>
+  [p.txid, { kind: "mint", applied: i !== 0, note: i === 0 ? "mint past supply" : "", height: p.height }]));
+const RECORD_READS: number[] = [];
+// An address whose Propose txs are cairnx records: 25 on the first page, 25 more behind "load more", the refused
+// mint on the second page.
+const WALLET = "0x" + "77".repeat(20);
+const txRow = (p: { txid: string; height: number }) => ({ txid: p.txid, height: p.height, pos: 1, app_type: "Propose", signer: WALLET, fee: 25000000,
+  time: bt(p.height), n_in: 1, n_out: 1, coinbase: false, outputs: [] });
+const PAGE1 = PROPS.slice(1, 26), PAGE2 = [PROPS[0]!, ...PROPS.slice(26, 50)];
+function ADDRESS(k: string, _q: URLSearchParams): unknown {
+  if (k === `/address/${WALLET}`) return { address: WALLET, chain_stats: { balance: 0, funded: 0, spent: 0, tx_count: 50 } };
+  if (k === `/address/${WALLET}/utxo`) return [];
+  if (k === `/address/${WALLET}/txs`) return PAGE1.map(txRow);
+  if (k === `/address/${WALLET}/txs/chain/${PAGE1[PAGE1.length - 1]!.txid}`) return PAGE2.map(txRow);
+  const prop = k.startsWith("/proposal/") ? PROPS.find((p) => p.txid === k.slice(10)) : undefined;
+  return prop ?? undefined;
+}
 const REQS: string[] = [];
 const json = (res: ServerResponse, status: number, body: unknown, extra: Record<string, string> = {}) => {
   res.writeHead(status, { "content-type": "application/json", ...extra }); res.end(JSON.stringify(body));
@@ -106,6 +127,8 @@ const server = createServer(async (req, res) => {
     const k = api ?? p;
     if (k === "/blocks/recent") return json(res, 200, recent(Number(url.searchParams.get("limit") || 12)));
     if (k === "/analytics/series" && !S.series) return json(res, 404, { error: "not found" });
+    const addr = ADDRESS(k, url.searchParams);
+    if (addr !== undefined) return json(res, 200, addr);
     return k in INDEXER ? json(res, 200, INDEXER[k]) : json(res, 404, { error: "not found" });
   }
   if (p.startsWith("/api/market/")) {
@@ -116,6 +139,13 @@ const server = createServer(async (req, res) => {
   }
   if (p.startsWith("/trade/api/cairnx/")) {
     const k = p.slice(17);
+    if (k === "/records") {
+      if (S.records === "404") return json(res, 404, { ok: false, error: "not a cairnx read endpoint" });
+      const ids = (url.searchParams.get("ids") ?? "").split(",");
+      RECORD_READS.push(ids.length);
+      return json(res, 200, { ok: true, tipHeight: TIP, records: Object.fromEntries(ids.filter((id) => id in VERDICTS).map((id) => [id, VERDICTS[id]])) });
+    }
+    if (k === "/log") return json(res, 200, Object.entries(VERDICTS).map(([id, v]) => ({ id, ok: v.applied, note: v.note, height: v.height })));
     return json(res, 200, k === "/primaries" ? { ok: true, primaries: {} } : []);
   }
   if (p === "/api/health") return json(res, 200, { ok: true, tipHeight: TIP });
@@ -254,6 +284,9 @@ test("standalone (the page at /): no market read, no chart module, the figures w
     assert.equal(await v.page.isVisible("#csd-mkt"), false);
     assert.equal(await v.page.locator("#hrchart").count(), 0, "no chart panels standalone");
     assert.equal(await v.page.textContent("#pu-hr .n"), "3.15 TH/s");
+    // the window text is the chart module's, which a standalone page has not: the label is bare, the title names the blocks
+    assert.equal(await v.page.textContent("#pu-hr .l"), "hashrate");
+    assert.match(await v.page.getAttribute("#pu-hr", "title"), /over blocks 121,080 to 121,800, from the indexer/);
   } finally { await v.close(); }
 });
 
@@ -329,4 +362,64 @@ test("the market going from fresh to 503 while the page is open hides the CSD/US
     assert.doesNotMatch(await v.page.evaluate(() => document.body.innerText), /USD/, "no USD text left");
     assert.equal(await strayCanvases(v.page), before, "the CSD/USD chart destroyed, not left alive detached");
   } finally { await v.close(); S.market = "fresh"; }
+});
+
+// Verdicts (Plan 85 12.2d): the records a view shows are asked of /cairnx/records, 100 txids a read; a front door or
+// resolver without that route (404) falls back to the applied-event log. The log is not read when the route answers.
+for (const records of ["on", "404"] as const) {
+  test(`domain page, /cairnx/records ${records === "on" ? "answering: two reads for 130 records, no log read" : "404: one log read"}; the refused mint shows no effect`, { skip: why || false }, async () => {
+    Object.assign(S, { market: "off", series: true, records });
+    INDEXER["/domain/cairnx:v1/proposals"] = PROPS;
+    RECORD_READS.length = 0;
+    try {
+      const v = await open("/explorer#/domain/cairnx%3Av1", 1280, () => !!document.querySelector(".cx-noeffect") || /proposal\(s\)/.test(document.body.innerText));
+      try {
+        assert.deepEqual(v.errors, []);
+        const row: string = await v.page.evaluate((id: string) => [...document.querySelectorAll("tr")].find((r: any) => r.innerHTML.includes(id))?.textContent ?? "", REFUSED);
+        assert.match(row, /no effect/);
+        assert.match(row, /mint past supply/);
+        const logReads = v.asked.filter((x) => x === "/trade/api/cairnx/log").length;
+        if (records === "on") {
+          assert.deepEqual(RECORD_READS.sort((a, b) => b - a), [100, 30]);
+          assert.equal(logReads, 0);
+        } else {
+          assert.equal(logReads, 1);
+        }
+        assert.equal(await v.page.locator(".cx-noeffect").count(), 1, "only the refused record");
+      } finally { await v.close(); }
+    } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; S.records = "on"; }
+  });
+}
+
+test("home page: the activity feed's records are asked of /cairnx/records (130 txids, two reads), no log read; the refused mint shows no effect", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, records: "on" });
+  INDEXER["/domain/cairnx:v1/proposals"] = PROPS;
+  RECORD_READS.length = 0;
+  try {
+    const v = await open("/explorer", 1280, () => !!document.querySelector("#actfeed .cx-noeffect"));
+    try {
+      assert.deepEqual(v.errors, []);
+      assert.deepEqual(RECORD_READS.sort((a, b) => b - a), [100, 30]);
+      assert.equal(v.asked.filter((x) => x === "/trade/api/cairnx/log").length, 0);
+      assert.match(await v.page.textContent("#actfeed .cx-noeffect"), /mint past supply/);
+      assert.equal(await v.page.locator("#actfeed .cx-noeffect").count(), 1, "only the refused record");
+    } finally { await v.close(); }
+  } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; }
+});
+
+test("address page: each page of txs asks /cairnx/records for its own Propose txids; the refused mint on the second page shows no effect", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, records: "on" });
+  RECORD_READS.length = 0;
+  const v = await open(`/explorer#/address/${WALLET}`, 1280, () => !!document.querySelector("#txloadmore") && !!document.querySelector("#act-24 .what"));
+  try {
+    assert.deepEqual(RECORD_READS, [25], "the first page's 25");
+    assert.equal(await v.page.locator(".cx-noeffect").count(), 0);
+    await v.page.click("#txloadmore");
+    await until(v.page, () => !!document.querySelector("#act-25 .what") && !!document.querySelector("#act-49 .what"));
+    assert.deepEqual(RECORD_READS, [25, 25], "the second page's 25, not the first again");
+    assert.equal(v.asked.filter((x) => x === "/trade/api/cairnx/log").length, 0);
+    assert.match(await v.page.textContent("#act-25"), /no effect.*mint past supply/s);
+    assert.equal(await v.page.locator(".cx-noeffect").count(), 1);
+    assert.deepEqual(v.errors, []);
+  } finally { await v.close(); }
 });
