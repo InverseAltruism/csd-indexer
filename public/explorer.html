@@ -9,7 +9,7 @@
   :root{--bg:#050505;--panel:#0a0c0b;--panel2:#0d0f0e;--line:#1b1f1d;--green:#57d977;--amber:#ffd24a;--fg:#f2f2f2;--dim:#6f6f6f;--dim2:#a6a6a6;--red:#ff6b6b}
   *{box-sizing:border-box}
   /* overflow-x:clip (NOT hidden: clip doesn't create a scroll container, so position:sticky keeps
-     working) - belt-and-braces against any stray wide element panning the whole page sideways on phones */
+     working): belt-and-braces against any stray wide element panning the whole page sideways on phones */
   html,body{overflow-x:clip}
   body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
   body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
@@ -22,7 +22,7 @@
      that file 404s, so hide the empty bar instead of showing a styled-but-blank strip.
      header#site-header (higher specificity than header.js's injected #site-header rule) is made
      NON-sticky here: both bars sticking at top:0 made the unified nav (z-index 900) cover the
-     explorer's own search header (z-index 5) the moment the page scrolled - search looked dead. On
+     explorer's own search header (z-index 5) the moment the page scrolled; search looked dead. On
      the explorer the nav scrolls away and the search bar keeps the sticky slot. */
   #site-header:empty{display:none}#site-header::after{content:none}
   header#site-header{position:static}
@@ -139,7 +139,7 @@
     main{padding:10px}
     header{padding:10px 12px;gap:8px 10px}
     /* the search form gets its own full-width row: inline it overflowed the viewport and pushed
-       the submit button (and part of the input) off-screen - search was unusable on phones */
+       the submit button (and part of the input) off-screen, so search was unusable on phones */
     form.search{order:3;flex-basis:100%;min-width:0}
     .stats{font-size:11px;gap:10px;margin-left:auto}
     .cx-noeffect{white-space:normal}
@@ -176,8 +176,8 @@
 <!-- unified cairn footer (filled by /footer.js through the front-door proxy, same pattern as the
      header). The static children below are the STANDALONE fallback: on a direct :8793 hit
      /footer.js 404s and this original disclaimer keeps rendering as-is. -->
-<footer id="site-footer" data-note="CSD Explorer is a derived, untrusted view - inclusion is folded in your browser against the indexer's own block header (a consistency check, NOT a PoW/consensus proof; for that, run the L0 light client). Run your own: github.com/InverseAltruism/csd-indexer">
-  CSD Explorer · a <b>derived, untrusted view</b> - inclusion is folded in your browser against the indexer's own block header (a consistency check, NOT a PoW/consensus proof; for that, run the L0 light client).
+<footer id="site-footer" data-note="CSD Explorer is a derived, untrusted view: inclusion is folded in your browser against the indexer's own block header (a consistency check, NOT a PoW/consensus proof; for that, run the L0 light client). Run your own: github.com/InverseAltruism/csd-indexer">
+  CSD Explorer · a <b>derived, untrusted view</b>: inclusion is folded in your browser against the indexer's own block header (a consistency check, NOT a PoW/consensus proof; for that, run the L0 light client).
   <a href="https://github.com/InverseAltruism/csd-indexer" target="_blank">source</a>
 </footer>
 <script>
@@ -202,7 +202,7 @@ const SIB = (() => {
 })();
 const jx = async(base,p)=>{ if(!base) return null; try{ const r=await fetch(base+p); if(!r.ok) return null; return await r.json(); }catch{ return null; } };
 
-// Known-address labels - operational identities that make flows legible. PUBLIC info only.
+// Known-address labels: operational identities that make flows legible. PUBLIC info only.
 const LABELS = {
   "0x6b09ce74e6070ebc982ab0fb793a211c4d24f016": "CairnX treasury",
   "0x9d9305de03a77efd7f69720baff8e3e461cfe010": "Cairn treasury",
@@ -214,7 +214,7 @@ const labelOf = (a)=> LABELS[(a||'').toLowerCase()] || null;
 const $ = (s,r=document)=>r.querySelector(s);
 const el = (h)=>{const t=document.createElement('template');t.innerHTML=h.trim();return t.content.firstChild;};
 // HTML-escape ALL chain-derived text before it touches innerHTML. domain/uri (and any free-form
-// field) are attacker-controlled on-chain - without this they are a stored-XSS sink.
+// field) are attacker-controlled on-chain; without this they are a stored-XSS sink.
 const esc = (s)=> String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const short = (s,n=10)=> { s=esc(s); return s? (s.length>2*n? s.slice(0,n)+'…'+s.slice(-6): s):''; };
 // short() is only ever called on hex (txid/hash/addr) so escaping is a no-op there, but it keeps
@@ -258,7 +258,7 @@ async function route(){
     if(h==='/'||h==='')          await home(v);
     else if(h.startsWith('/block/'))    await blockPage(v,h.slice(7));
     else if(h.startsWith('/tx/')){
-      // a pasted 64-hex is usually a txid but can be a BLOCK hash - fall through instead of erroring
+      // a pasted 64-hex is usually a txid but can be a BLOCK hash, so fall through instead of erroring
       try{ await txPage(v,h.slice(4)); }
       catch(err){ const id=h.slice(4);
         if(/^0x[0-9a-f]{64}$/i.test(id)&&await j('/block/'+id).catch(()=>null)){ location.hash='/block/'+id; return; }
@@ -269,7 +269,7 @@ async function route(){
     else if(h.startsWith('/proposal/')) await proposalPage(v,h.slice(10));
     else if(h.startsWith('/token/'))     await tokenPage(v,decodeURIComponent(h.slice(7)));
     else if(h.startsWith('/name/'))      await namePage(v,decodeURIComponent(h.slice(6)));
-    else v.innerHTML='<div class="panel"><h2>not found</h2><div class="muted">Nothing lives at this route. Search above for a .csd name, block height, txid or address - or go <a href="#/">home</a>.</div></div>';
+    else v.innerHTML='<div class="panel"><h2>not found</h2><div class="muted">Nothing lives at this route. Search above for a .csd name, block height, txid or address, or go <a href="#/">home</a>.</div></div>';
   }catch(e){v.innerHTML='<div class="panel"><h2 class="red">nothing found</h2><div class="muted">'+esc(e.message)+'</div><div class="muted" style="margin-top:6px">Check the value, or search above for a .csd name, block height, txid or 0x address. <a href="#/">← back to the explorer</a></div></div>';}
   paintNames(v);
 }
@@ -382,7 +382,7 @@ const tag=(name,cls,text)=>{const e=document.createElement(name);if(cls)e.classN
 // SECURITY: dec comes from RAW on-chain records (attacker-controlled) on the home activity feed:
 // clamp it so a crafted decimals (e.g. 7_000_000) can't blow up 10**dec / padStart into a DoS.
 const fmtAmt=(v,dec)=>{try{dec=Number(dec)||0;if(dec<0||dec>30)return esc(v);const n=BigInt(v);const d=BigInt(10)**BigInt(dec);const i=n/d,f=n%d;return f?`${i}.${String(f).padStart(dec,'0').replace(/0+$/,'')}`:i.toLocaleString();}catch{return esc(v);}};
-// token decimals, warmed once per session from the resolver (cairn front door only) - action
+// token decimals, warmed once per session from the resolver (cairn front door only); action
 // lines show HUMAN amounts when known, labeled base units otherwise (never a silent 10^n shift)
 let DEC=null;
 async function warmDecimals(){ if(DEC) return DEC; DEC={}; const t=await jx(SIB.cairnx,'/tokens'); for(const x of (t||[])) DEC[x.ticker]=x.decimals; return DEC; }
@@ -418,25 +418,25 @@ function describeCairnx(rec){
   try{
     const giveTok = rec.give&&rec.give.ticker, giveName = rec.give&&rec.give.name;
     switch(rec.t){
-      case 'deploy': return `🪙 <span class="what">Deployed token <b class="amber">${esc(rec.ticker)}</b></span> - supply ${fmtAmt(rec.supply,rec.decimals)}, ${rec.mint==='issuer'?'issuer-mint (fixed)':'open mint'}${rec.name?` · “${esc(rec.name)}”`:''}`;
-      case 'mint': return `⛏ <span class="what">Minted <b class="amber">${esc(rec.ticker)}</b></span>${rec.amount?` - ${amt(rec.amount,rec.ticker)}`:''}`;
+      case 'deploy': return `🪙 <span class="what">Deployed token <b class="amber">${esc(rec.ticker)}</b></span>: supply ${fmtAmt(rec.supply,rec.decimals)}, ${rec.mint==='issuer'?'issuer-mint (fixed)':'open mint'}${rec.name?` · “${esc(rec.name)}”`:''}`;
+      case 'mint': return `⛏ <span class="what">Minted <b class="amber">${esc(rec.ticker)}</b></span>${rec.amount?`: ${amt(rec.amount,rec.ticker)}`:''}`;
       case 'transfer': return `→ <span class="what">Transferred <b>${amt(rec.amount,rec.ticker)}</b> <b class="amber">${esc(rec.ticker)}</b></span> to ${addrLink(rec.to)}`;
       case 'offer': {
         const what = giveName?`name <b class="green">${esc(giveName)}.csd</b>`:`<b>${amt(rec.give.amount,giveTok)}</b> <b class="amber">${esc(giveTok)}</b>`;
         const price = rec.want.value!=null?`${fmtCSD(rec.want.value)}`:`${esc(rec.want.amount)} ${esc(rec.want.ticker)}`;
-        return `🏷 <span class="what">Listed ${what} for <b>${price}</b></span>${rec.taker?` - reserved for ${addrLink(rec.taker)} (RFQ)`:' - open offer'}${rec.min?` · partial fills ≥ ${fmtCSD(rec.min)}`:''}${rec.bid?' · answers a bid':''}`;
+        return `🏷 <span class="what">Listed ${what} for <b>${price}</b></span>${rec.taker?`, reserved for ${addrLink(rec.taker)} (RFQ)`:', open offer'}${rec.min?` · partial fills ≥ ${fmtCSD(rec.min)}`:''}${rec.bid?' · answers a bid':''}`;
       }
       case 'bid': {
         const want = rec.want.name?`name <b class="green">${esc(rec.want.name)}.csd</b>`:`<b>${amt(rec.want.amount,rec.want.ticker)}</b> <b class="amber">${esc(rec.want.ticker)}</b>`;
-        return `🙋 <span class="what">Bid <b>${fmtCSD(rec.give.value)}</b> for ${want}</span> - non-binding; a seller answers with a reserved offer`;
+        return `🙋 <span class="what">Bid <b>${fmtCSD(rec.give.value)}</b> for ${want}</span>: non-binding; a seller answers with a reserved offer`;
       }
       case 'ocancel': return `✕ <span class="what">Cancelled all open offers</span>${rec.ticker?` in <b class="amber">${esc(rec.ticker)}</b>`:rec.name?` on <b class="green">${esc(rec.name)}.csd</b>`:''}`;
-      case 'ncommit': return `🔒 <span class="what">Sealed a name commitment</span> - the name is revealed later (front-run defense)`;
+      case 'ncommit': return `🔒 <span class="what">Sealed a name commitment</span>: the name is revealed later (front-run defense)`;
       case 'name': return `📛 <span class="what">${rec.salt?'Reserved':'Claimed'} name <b class="green">${esc(rec.name)}.csd</b></span>`;
       case 'nfinalize': return `📛 <span class="what">Finalized name <b class="green">${esc(rec.name)}.csd</b></span>: registration paid, the lease starts`;
       case 'nxfer': return `🎁 <span class="what">Transferred name <b class="green">${esc(rec.name)}.csd</b></span> to ${addrLink(rec.to)}`;
       case 'nset': return `📍 <span class="what">Pointed <b class="green">${esc(rec.name)}.csd</b></span> at ${addrLink(rec.addr)}`;
-      case 'nrenew': return `♻️ <span class="what">Renewed the lease on <b class="green">${esc(rec.name)}.csd</b></span> - +1 year`;
+      case 'nrenew': return `♻️ <span class="what">Renewed the lease on <b class="green">${esc(rec.name)}.csd</b></span> for one more year`;
       case 'tmeta': return `🖼 <span class="what">Updated <b class="amber">${esc(rec.ticker)}</b> metadata</span> (content-addressed)`;
       default: return null;
     }
@@ -445,7 +445,7 @@ function describeCairnx(rec){
 function describeDomainRecord(domain,uri,verdict){
   if(domain==='cairnx:v1'){ try{ return cxVerdict(describeCairnx(JSON.parse(uri)),verdict); }catch{ return null; } }
   if(domain==='csd:anchor:base'){ try{ const a=JSON.parse(uri); return `⚓ <span class="what">Anchored Base block <b>${Number(a.height??a.number??0).toLocaleString()}</b></span> into CSD (cross-chain checkpoint)`; }catch{ return null; } }
-  if(domain==='csd:bridge:deploy'){ return `📜 <span class="what">Bridge deployment registry record</span> - the canonical contract addresses, verifiable against any node`; }
+  if(domain==='csd:bridge:deploy'){ return `📜 <span class="what">Bridge deployment registry record</span>: the canonical contract addresses, verifiable against any node`; }
   return null;
 }
 // payment flow of a tx, from the signer's perspective (single-signer chain: signer pays all inputs)
@@ -589,7 +589,7 @@ async function home(v){
     const names=await jx(SIB.cairnx,'/names');
     $('#tok-count',tokPanel).textContent=`${toks.length} listed`;
     const tokCard=(t)=>{const pct=Number(t.supply)>0?Number(BigInt(t.minted)*100n/BigInt(t.supply)):0;
-      return `<a class="coin" href="#/token/${esc(t.ticker)}"><span class="tk">${esc(t.ticker)}</span><span class="nm">${esc(t.name||'CairnX token')} - ${t.mint==='issuer'?'fixed supply':'open mint'}</span>
+      return `<a class="coin" href="#/token/${esc(t.ticker)}"><span class="tk">${esc(t.ticker)}</span><span class="nm">${esc(t.name||'CairnX token')}, ${t.mint==='issuer'?'fixed supply':'open mint'}</span>
         <div class="meta"><span>minted <b>${fmtAmt(t.minted,t.decimals)}</b></span><span>max <b>${fmtAmt(t.supply,t.decimals)}</b></span></div>
         <div class="bar"><i style="width:${Math.max(2,pct)}%"></i></div></a>`;};
     $('#tok-top',tokPanel).innerHTML=toks.slice(0,3).map(tokCard).join('');
@@ -602,7 +602,7 @@ async function home(v){
         $('#tok-rest',tokPanel).innerHTML=`<table><thead><tr><th>token</th><th>name</th><th class="opt">minted</th></tr></thead><tbody>${f.slice(0,300).map(t=>`<tr><td>${link('/token/'+encodeURIComponent(t.ticker),t.ticker,'amber')}</td><td class="dim">${esc(t.name||'')}</td><td class="opt">${fmtAmt(t.minted,t.decimals)}</td></tr>`).join('')||'<tr><td colspan="3" class="dim">no matches</td></tr>'}</tbody></table>`;};
       renderRest(''); $('#tok-search',tokPanel).addEventListener('input',(e)=>renderRest(e.target.value.trim().toLowerCase()));
     }
-    $('#tok-note',tokPanel).innerHTML=`Every token is <b>CairnX</b> - records carried inside ordinary chain transactions (the Ordinals/Runes class, with atomic delivery-versus-payment built into consensus). ${names?`<b>${names.length}</b> <span class="green">.csd</span> names registered. `:''}Trade at <a href="https://cairn-substrate.com/trade" target="_blank">/trade</a> · <a href="https://cairn-substrate.com/docs" target="_blank">docs</a>.`;
+    $('#tok-note',tokPanel).innerHTML=`Every token is <b>CairnX</b>: records carried inside ordinary chain transactions (the Ordinals/Runes class, with atomic delivery-versus-payment built into consensus). ${names?`<b>${names.length}</b> <span class="green">.csd</span> names registered. `:''}Trade at <a href="https://cairn-substrate.com/trade" target="_blank">/trade</a> · <a href="https://cairn-substrate.com/docs" target="_blank">docs</a>.`;
   })();
 
   v.appendChild(el(`<div class="row">
@@ -697,7 +697,7 @@ async function tokenPage(v,ticker){
     <div class="action"><span class="tk" style="font-size:24px;color:var(--amber);font-weight:700">${esc(t.ticker)}</span>
       <span class="nm dim" style="margin-left:8px">${esc(t.name||'CairnX token')}</span></div>
     <div class="kv">
-      <div>kind</div><div class="v">${t.mint==='issuer'?'fixed supply - only the issuer could mint (no dilution)':'open mint (up to '+fmtAmt(t.mintLimit||'0',t.decimals)+' per mint)'}</div>
+      <div>kind</div><div class="v">${t.mint==='issuer'?'fixed supply: only the issuer could mint (no dilution)':'open mint (up to '+fmtAmt(t.mintLimit||'0',t.decimals)+' per mint)'}</div>
       <div>minted / max</div><div class="v"><b>${fmtAmt(t.minted,t.decimals)}</b> / ${fmtAmt(t.supply,t.decimals)} <span class="dim">(${pct.toFixed(1)}%)</span></div>
       <div>decimals</div><div class="v">${t.decimals}</div>
       <div>deployed</div><div class="v">${link('/block/'+t.height,t.height)} by ${addrLink(t.deployer)} <span class="dim">· tx ${txidLink(t.deployId)}</span></div>
@@ -798,7 +798,7 @@ async function txPage(v,id){
       if(prop) line=describeDomainRecord(prop.domain,prop.uri,verdict)
         || `📌 <span class="what">Anchored a proposal</span> in ${link('/domain/'+encodeURIComponent(prop.domain),prop.domain)}`;
     } else if(tx.app_type==='Attest'){
-      // the attested proposal id lives in the tx app payload - ask the node (cairn front door only)
+      // the attested proposal id lives in the tx app payload; ask the node (cairn front door only)
       const full=await jx(SIB.node,'/tx/'+tx.txid);
       const pid=full&&full.tx&&full.tx.app&&full.tx.app.proposal_id;
       if(pid){
@@ -810,18 +810,18 @@ async function txPage(v,id){
           const me=(tx.signer||'').toLowerCase();
           const paid=(tx.outputs||[]).filter(o=>(o.addr||'').toLowerCase()!==me).reduce((s,o)=>s+o.value,0);
           const what=(rec&&rec.t==='offer')?(rec.give.name?`name <b class="green">${esc(rec.give.name)}.csd</b>`:`<b class="amber">${esc(rec.give.ticker)}</b>`):'';
-          if(score===0) line=`✕ <span class="what">Cancelled</span> ${rec&&rec.t==='bid'?'a bid':'an offer'} - ${link('/proposal/'+pidHex,short(pidHex,10),'mono')}`;
-          else if(conf===1000000&&rec) line=`⇄ <span class="what">Token swap fill</span> - took the offer ${link('/proposal/'+pidHex,short(pidHex,10),'mono')} (${amt(rec.give&&rec.give.amount,rec.give&&rec.give.ticker)} ${esc(rec.give&&rec.give.ticker)} for ${amt(rec.want&&rec.want.amount,rec.want&&rec.want.ticker)} ${esc(rec.want&&rec.want.ticker)}, paid in tokens - no CSD moves)`;
+          if(score===0) line=`✕ <span class="what">Cancelled</span> ${rec&&rec.t==='bid'?'a bid':'an offer'}: ${link('/proposal/'+pidHex,short(pidHex,10),'mono')}`;
+          else if(conf===1000000&&rec) line=`⇄ <span class="what">Token swap fill</span>: took the offer ${link('/proposal/'+pidHex,short(pidHex,10),'mono')} (${amt(rec.give&&rec.give.amount,rec.give&&rec.give.ticker)} ${esc(rec.give&&rec.give.ticker)} for ${amt(rec.want&&rec.want.amount,rec.want&&rec.want.ticker)} ${esc(rec.want&&rec.want.ticker)}, paid in tokens; no CSD moves)`;
           /* v1.7 open-lane CLAIM (Attest score=SCORE_CLAIM=50, no payment): a free reservation, NOT a purchase.
              Must NOT read as "Bought … for 0 CSD": the fill (score=100) comes later. */
-          else if(rec&&rec.t==='offer'&&score===50) line=`📌 <span class="what">Reserved ${what}</span> <span class="muted">(open offer, claimed; the purchase completes after a short reorg-safe wait)</span> - offer ${link('/proposal/'+pidHex,short(pidHex,10),'mono')}`;
-          else if(rec&&rec.t==='offer'&&score===100) line=`🤝 <span class="what">Bought ${what}</span> for <b>${fmtCSD(paid)}</b> (payment + fill in ONE atomic tx) - offer ${link('/proposal/'+pidHex,short(pidHex,10),'mono')}`;
+          else if(rec&&rec.t==='offer'&&score===50) line=`📌 <span class="what">Reserved ${what}</span> <span class="muted">(open offer, claimed; the purchase completes after a short reorg-safe wait)</span>, offer ${link('/proposal/'+pidHex,short(pidHex,10),'mono')}`;
+          else if(rec&&rec.t==='offer'&&score===100) line=`🤝 <span class="what">Bought ${what}</span> for <b>${fmtCSD(paid)}</b> (payment + fill in ONE atomic tx), offer ${link('/proposal/'+pidHex,short(pidHex,10),'mono')}`;
           else line=`⭐ <span class="what">Attested</span> score ${score} on ${link('/proposal/'+pidHex,short(pidHex,10),'mono')}`;
         } else if(prop){
           line=`⭐ <span class="what">Attested</span> score ${score} on ${link('/proposal/'+pidHex,short(pidHex,10),'mono')} in ${link('/domain/'+encodeURIComponent(prop.domain),prop.domain)}`;
         }
       } else if(!SIB.node) line='⭐ <span class="what">Attestation</span> <span class="dim">(open via the cairn front door for full decoding)</span>';
-    } else if(tx.coinbase){ line='⛏ <span class="what">Block reward</span> - new CSD minted to the miner'; }
+    } else if(tx.coinbase){ line='⛏ <span class="what">Block reward</span>: new CSD minted to the miner'; }
     else {
       const me=(tx.signer||'').toLowerCase();
       const outs=(tx.outputs||[]).filter(o=>(o.addr||'').toLowerCase()!==me);
@@ -850,7 +850,7 @@ async function txPage(v,id){
       <td class="opt">${o.spent_txid?`<span class="dim">spent by ${txidLink(o.spent_txid)}</span>`:'<span class="badge ok">unspent</span>'}</td></tr>`).join('')}</tbody></table></div></div>`));
   if(proof){
     v.appendChild(el(`<div class="panel"><h2>merkle inclusion proof</h2>
-      <div class="muted">This proof is served by an <i>untrusted</i> indexer, and so is the block header below. Your browser folds the branch and checks it equals the indexer's stated merkle root - a <b>consistency check</b> that the proof matches the header this same indexer reports. It is <b>NOT</b> a PoW/consensus proof: nothing here verifies the header's proof-of-work or that it is on the canonical chain. For a trustless inclusion proof, fold against a header obtained from the L0 light client (which checks PoW + checkpoints).</div>
+      <div class="muted">This proof is served by an <i>untrusted</i> indexer, and so is the block header below. Your browser folds the branch and checks it equals the indexer's stated merkle root: a <b>consistency check</b> that the proof matches the header this same indexer reports. It is <b>NOT</b> a PoW/consensus proof: nothing here verifies the header's proof-of-work or that it is on the canonical chain. For a trustless inclusion proof, fold against a header obtained from the L0 light client (which checks PoW + checkpoints).</div>
       <div class="kv" style="margin-top:10px">
         <div>block height</div><div class="v">${proof.block_height}</div>
         <div>position</div><div class="v">${proof.pos}</div>
@@ -883,7 +883,7 @@ async function addrPage(v,a){
     <div>UTXOs</div><div class="v">${utxos.length}</div>
   </div><div id="cxpanel"></div></div>`));
 
-  // ── CairnX holdings (token balances + .csd names) - cairn front door only ──
+  // ── CairnX holdings (token balances + .csd names), cairn front door only ──
   (async()=>{
     const [cx,toklist]=await Promise.all([jx(SIB.cairnx,'/address/'+a),jx(SIB.cairnx,'/tokens')]);
     if(!cx) return;
@@ -942,7 +942,7 @@ async function addrPage(v,a){
         if(pid){const prop=await j('/proposal/'+pid).catch(()=>null);
           if(prop&&prop.domain==='cairnx:v1'){let rec=null;try{rec=JSON.parse(prop.uri);}catch{ /* not JSON: rec stays null, which the labels below handle */ }
             const slot=$('#act-'+i);
-            if(slot){ const sc=nf.tx.app.score, wn=rec&&rec.give?(rec.give.name?esc(rec.give.name)+'.csd':esc(rec.give.ticker)):''; slot.innerHTML = sc===0?'✕ cancelled an offer/bid':(rec&&rec.t==='offer'&&sc===50?`📌 reserved ${wn}`:(rec&&rec.t==='offer'&&sc===100?`🤝 bought ${wn}`:(rec&&rec.t==='offer'?`🤝 fill - ${wn}`:'⭐ attested'))); }
+            if(slot){ const sc=nf.tx.app.score, wn=rec&&rec.give?(rec.give.name?esc(rec.give.name)+'.csd':esc(rec.give.ticker)):''; slot.innerHTML = sc===0?'✕ cancelled an offer/bid':(rec&&rec.t==='offer'&&sc===50?`📌 reserved ${wn}`:(rec&&rec.t==='offer'&&sc===100?`🤝 bought ${wn}`:(rec&&rec.t==='offer'?`🤝 fill: ${wn}`:'⭐ attested'))); }
           }}
       } else if(full.coinbase){const slot=$('#act-'+i); if(slot) slot.innerHTML='⛏ block reward';}
       else if(full.app_type==='Transfer'||full.app_type==='None'){const slot=$('#act-'+i); if(slot) slot.innerHTML='💸 CSD transfer';}
@@ -998,7 +998,7 @@ async function domainPage(v,d){
   await Promise.all([warmDecimals(), warmVerdicts(props.map((p)=>p.txid))]);
   v.innerHTML='';
   v.appendChild(el(`<div class="panel"><h2>domain <span class="amber">${esc(d)}</span></h2>
-    <div class="muted">${props.length} proposal(s). Rankings are a derived, recomputable view - not consensus-signed.</div>
+    <div class="muted">${props.length} proposal(s). Rankings are a derived, recomputable view, not consensus-signed.</div>
     <div class="scroll-x"><table style="margin-top:10px"><thead><tr><th>proposal</th><th>action</th><th class="opt">proposer</th><th class="opt">fee</th><th>height</th></tr></thead>
     <tbody>${props.map(p=>`<tr><td>${link('/proposal/'+p.txid,short(p.txid,10),'mono')}</td><td class="act">${describeDomainRecord(d,p.uri,VER&&VER[p.txid.toLowerCase()])||'<span class="dim">-</span>'}</td><td class="opt">${addrLink(p.proposer)}</td><td class="opt">${fmtCSD(p.fee)}</td><td>${link('/block/'+p.height,p.height)}</td></tr>`).join('')}</tbody></table></div></div>`));
 }

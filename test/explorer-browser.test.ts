@@ -507,3 +507,31 @@ test("proposal page at 390 px: the attestations table scrolls inside its own box
     } finally { await v.close(); }
   } finally { prop.attestations = saved; }
 });
+
+test("domain page: record lines separate their parts with a colon or comma, never a spaced hyphen", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, records: "on" });
+  INDEXER["/domain/cairnx:v1/proposals"] = [
+    cxProp(911, { v: 1, t: "deploy", ticker: "ZED", supply: "1000", decimals: 0, mint: "issuer" }),
+    cxProp(912, { v: 1, t: "mint", ticker: "ZED", amount: "5" }),
+    cxProp(913, { v: 1, t: "offer", give: { name: "zed" }, want: { value: 100000000 } }),
+    cxProp(914, { v: 1, t: "bid", give: { value: 100000000 }, want: { name: "zed" } }),
+    cxProp(915, { v: 1, t: "ncommit", commit: "0x" + "11".repeat(32) }),
+    cxProp(916, { v: 1, t: "nrenew", name: "zed" }),
+  ];
+  try {
+    const v = await open("/explorer#/domain/cairnx%3Av1", 1280, () => /proposal\(s\)/.test(document.body.innerText));
+    try {
+      assert.deepEqual(v.errors, []);
+      const acts: string[] = await v.page.evaluate(() => [...document.querySelectorAll("td.act")].map((c: any) => c.textContent));
+      assert.deepEqual(acts, [
+        "\u{1FA99} Deployed token ZED: supply 1,000, issuer-mint (fixed)",
+        "\u26CF Minted ZED: 5 base units",
+        "\u{1F3F7} Listed name zed.csd for 1 CSD, open offer",
+        "\u{1F64B} Bid 1 CSD for name zed.csd: non-binding; a seller answers with a reserved offer",
+        "\u{1F512} Sealed a name commitment: the name is revealed later (front-run defense)",
+        "\u267B\uFE0F Renewed the lease on zed.csd for one more year",
+      ]);
+      assert.equal(acts.filter((a) => / - /.test(a)).length, 0);
+    } finally { await v.close(); }
+  } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; }
+});
