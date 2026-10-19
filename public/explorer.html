@@ -344,23 +344,21 @@ function difficultyOf(bits){const t=bitsToTarget(bits>>>0); if(t<=0n)return 0; c
 function compactNum(n){n=Number(n)||0;const u=['','K','M','G','T','P','E','Z','Y'];let i=0;while(Math.abs(n)>=1000&&i<u.length-1){n/=1000;i++;}return (Math.abs(n)<10?n.toFixed(2):Math.abs(n)<100?n.toFixed(1):Math.round(n))+u[i];}
 // adaptive H/s units (a fixed /1e9 once rendered "4903.5 GH/s" where the dashboard said "4.9 TH/s")
 function fmtHashrate(hps){hps=Number(hps)||0;const u=['H/s','KH/s','MH/s','GH/s','TH/s','PH/s'];let i=0;while(hps>=1000&&i<u.length-1){hps/=1000;i++;}return{val:hps>=100?Math.round(hps):hps>=10?hps.toFixed(1):hps.toFixed(2),unit:u[i]};}
-// /analytics/miners and /analytics/series share the window `1d`: the last 720 blocks by height, not by clock.
-// Its span is the series' last point time less its first bucket's start (that bucket's end less its blocks
-// times its mean interval); without the series the label names the blocks only.
-function hrWindowText(miners,series){
-  const p=series&&Array.isArray(series.points)?series.points:[], a=p[0], b=p[p.length-1];
-  const secs=a&&b&&a.intervalSecs>0&&Number.isFinite(series.from)?b.t-(a.t-a.intervalSecs*(a.height-series.from)):NaN;
-  if(secs>0) return `last ${(secs/3600).toFixed(1)}\u00a0h`;
-  const n=miners?miners.to_height-miners.from_height:NaN;
-  return Number.isFinite(n)&&n>0?`last ${n.toLocaleString()} blocks`:'';
-}
 const DOMAIN_LABEL={'cairnx:v1':'CairnX · tokens · names · DEX','csd:anchor:base':'Base anchors','csd:bridge:deploy':'Bridge registry'};
 const domainLabel=(d)=>DOMAIN_LABEL[d]||d;
 // ── charts: cairn's one chart module (/charts/chart.js, Plan 88), loaded on demand through the front door;
 // standalone there is none and the chart hosts stay hidden. This page does not load cairn's /shared.js, so
 // every mount passes `format` and no point carries a volume: the only two places chart.js reads window.C.
-let CHARTS=null;
-const charts=()=> SIB.charts ? (CHARTS??=import(SIB.charts).catch(()=>null)) : Promise.resolve(null);
+let CHARTS=null, CHART_MOD=null;
+const charts=()=> SIB.charts ? (CHARTS??=import(SIB.charts).then((m)=>(CHART_MOD=m)).catch(()=>null)) : Promise.resolve(null);
+// The hashrate window ("last 24.2 h", from the 1d series' span) is the chart module's hashrateWindowText. The tile does
+// not wait for the module: it shows the window once the module is loaded, which home() starts with its reads.
+// Standalone there is no module and no window in the label; the tile's title still names the block range.
+function paintHrWin(root,miners,series){
+  const w=CHART_MOD?CHART_MOD.hashrateWindowText(miners,series):'';
+  for(const e of root.querySelectorAll('[data-hrwin]')){ e.textContent=w?(e.dataset.hrwin==='tile'?' · '+w:w):''; e.hidden=!w; }
+  return w;
+}
 // [t, value] pairs as the module's [t, open, high, low, close, volume] points, the times strictly rising
 const linePts=(ps)=>{const out=[];for(const [t,v] of ps) if(Number.isFinite(t)&&Number.isFinite(v)&&(!out.length||t>out[out.length-1][0])) out.push([t,v,v,v,v,null]);return out;};
 // mounted charts by host; each holds a devicePixelRatio media listener, so a replaced view destroys its charts
@@ -389,12 +387,24 @@ const fmtAmt=(v,dec)=>{try{dec=Number(dec)||0;if(dec<0||dec>30)return esc(v);con
 let DEC=null;
 async function warmDecimals(){ if(DEC) return DEC; DEC={}; const t=await jx(SIB.cairnx,'/tokens'); for(const x of (t||[])) DEC[x.ticker]=x.decimals; return DEC; }
 const amt=(v,ticker)=> DEC&&DEC[ticker]!=null ? fmtAmt(v,DEC[ticker]) : `${esc(v)} <span class="dim">base units</span>`;
-// CairnX VERDICT map (txid → {applied, note}) from the resolver's applied-event log, warmed
-// fresh per page (verdicts change as blocks land). Lets us show that a record the resolver
-// REFUSED (mint past supply, mint by a non-issuer, deploy with an unpaid fee, an underfunded
-// transfer…) had NO on-chain effect — instead of rendering it as if it succeeded.
-let VER=null;
-async function warmVerdicts(){ VER={}; try{ const log=await jx(SIB.cairnx,'/log?limit=5000'); for(const e of (log||[])) VER[String(e.id).toLowerCase()]={applied:e.ok,note:e.note}; }catch{} return VER; }
+// CairnX VERDICT map (txid → {applied, note}) for the records a view shows, read fresh per view (verdicts change as
+// blocks land) from /cairnx/records, 100 txids a read. Lets us show that a record the resolver REFUSED (mint past
+// supply, mint by a non-issuer, deploy with an unpaid fee, an underfunded transfer…) had NO on-chain effect, instead
+// of rendering it as if it succeeded. A front door or resolver without that route (404) or a failed read falls back to
+// the applied-event log. `more` adds a later page's txids to the same view.
+let VER={};
+const TXID_RE=/^0x[0-9a-f]{64}$/;
+async function warmVerdicts(ids,more=false){
+  if(!more) VER={};
+  const want=[...new Set((ids||[]).map((x)=>String(x).toLowerCase()))].filter((x)=>TXID_RE.test(x)&&!(x in VER));
+  if(!want.length||!SIB.cairnx) return VER;
+  const chunks=[]; for(let i=0;i<want.length;i+=100) chunks.push(want.slice(i,i+100));
+  const got=await Promise.all(chunks.map((c)=>jx(SIB.cairnx,'/records?ids='+c.join(','))));
+  if(got.some((r)=>!r||!r.records||typeof r.records!=='object')) return verdictsFromLog();
+  for(const r of got) for(const [id,v] of Object.entries(r.records)) VER[id.toLowerCase()]={applied:v.applied,note:v.note};
+  return VER;
+}
+async function verdictsFromLog(){ const log=await jx(SIB.cairnx,'/log?limit=5000'); for(const e of (Array.isArray(log)?log:[])) VER[String(e.id).toLowerCase()]={applied:e.ok,note:e.note}; return VER; }
 // Wrap a decoded record line with its resolver verdict. A refused record is struck through and
 // tagged "no effect" with the reason — the tx is real and paid its anchor fee, but the CairnX
 // action was a no-op that anyone re-running the open resolver reproduces.
@@ -513,6 +523,7 @@ async function marketPanel(box){
 
 // ── pages ──
 async function home(v){
+  void charts();   // the chart module loads alongside the reads, so the hashrate tile usually has its window when drawn
   const health=await j('/health').catch(()=>null);
   if(!health){ v.innerHTML='<div class="panel"><h2>indexer warming up</h2><div class="muted">The indexer is starting or catching up to the chain tip. This page populates as soon as it is ready.</div></div>'; return; }
   const [domains,supply,miners,rich,cxprops,series]=await Promise.all([
@@ -521,23 +532,24 @@ async function home(v){
     j('/analytics/richlist?limit=8').catch(()=>null),
     j('/domain/'+encodeURIComponent('cairnx:v1')+'/proposals').catch(()=>[]),
     j('/analytics/series?window=1d&points=56').catch(()=>null)]);
-  await warmDecimals(); await warmVerdicts();
+  await Promise.all([warmDecimals(), warmVerdicts((cxprops||[]).map((p)=>p.txid))]);
   const recent=await recentBlocks();
   v.innerHTML='';
 
   // ── the chain at a glance ──
   const halvDays=supply?Math.round(supply.halving.est_seconds_remaining/86400):null;
   // hashrate: the indexer's Δchainwork ÷ Δtime over the window /dashboard shows, labelled with its real span
-  const hr=miners&&miners.network_hashrate>0?fmtHashrate(miners.network_hashrate):null, hrWin=hrWindowText(miners,series);
+  const hr=miners&&miners.network_hashrate>0?fmtHashrate(miners.network_hashrate):null;
   const hrSpan=miners&&Number.isFinite(miners.from_height)?`Δchainwork ÷ Δtime over blocks ${Number(miners.from_height).toLocaleString()} to ${Number(miners.to_height).toLocaleString()}, from the indexer`:'';
   v.appendChild(el(`<div class="pulse">
     <div class="pu hot"><div class="n">${health.indexed_height.toLocaleString()}</div><div class="l">block height</div></div>
-    <div class="pu" id="pu-hr" title="${esc(hrSpan)}"><div class="n">${hr?`${hr.val} <span class="u">${hr.unit}</span>`:'-'}</div><div class="l">hashrate${hrWin?' · '+esc(hrWin):''}</div></div>
+    <div class="pu" id="pu-hr" title="${esc(hrSpan)}"><div class="n">${hr?`${hr.val} <span class="u">${hr.unit}</span>`:'-'}</div><div class="l">hashrate<span data-hrwin="tile"></span></div></div>
     <div class="pu"><div class="n">${miners?Math.round(miners.avg_interval_secs):'-'} <span class="u">s</span></div><div class="l">avg block time (24h)</div></div>
     <div class="pu"><div class="n">${miners?miners.miner_count:'-'}</div><div class="l">miners (24h)</div></div>
     <div class="pu gold"><div class="n">${supply?fmtCSD(supply.emitted_supply).replace(' CSD',''):'-'} <span class="u">CSD</span></div><div class="l">circulating (${supply?supply.pct_emitted.toFixed(2):'-'}% of max)</div></div>
     <div class="pu"><div class="n">${halvDays!=null?'~'+Math.round(halvDays/365*10)/10+' <span class="u">yr</span>':'-'}</div><div class="l">to first halving</div></div>
   </div>`));
+  if(!paintHrWin(v,miners,series)) charts().then(()=>{ if(v.isConnected) paintHrWin(v,miners,series); });
 
   // ── Section: CSD, the native coin (+ emission-schedule chart) ──
   const csdPanel=el(`<div class="panel"><h2>CSD <span class="pill">the native coin</span></h2>
@@ -657,13 +669,13 @@ async function home(v){
     const bt=[]; for(const x of iv) bt.push([bt.length&&x.t<=bt[bt.length-1][0]?bt[bt.length-1][0]+1:x.t,x.dt]);
     const avg=iv.length?Math.round(iv.reduce((a,b)=>a+b.dt,0)/iv.length):null;
     const row=el(`<div class="row">
-      <div class="panel"><h2>network hashrate${hrWin?` <span class="pill">${esc(hrWin)}</span>`:''}</h2><div id="hrchart" class="xchart" hidden></div>
+      <div class="panel"><h2>network hashrate <span class="pill" data-hrwin="pill" hidden></span></h2><div id="hrchart" class="xchart" hidden></div>
         <div class="muted">Δchainwork ÷ Δtime, ${hp.length} points · from this indexer</div></div>
       <div class="panel"><h2>block times <span class="pill">last ${iv.length} blocks</span></h2><div id="btchart" class="xchart" hidden></div>
         <div class="muted">seconds between consecutive blocks · target ~120s${avg!=null?` · avg <b>${avg}s</b>`:''} <span id="btpick"></span></div></div>
     </div>`);
     v.appendChild(row);
-    plot($('#hrchart',row),hp,{kind:'area',label:'network hashrate',range:hrWin,format:(x)=>{const f=fmtHashrate(x*1e9);return f.val+' '+f.unit;},emptyText:'no hashrate series from this indexer'});
+    charts().then(()=>plot($('#hrchart',row),hp,{kind:'area',label:'network hashrate',range:paintHrWin(row,miners,series),format:(x)=>{const f=fmtHashrate(x*1e9);return f.val+' '+f.unit;},emptyText:'no hashrate series from this indexer'}));
     plot($('#btchart',row),bt,{label:'block interval',range:`last ${iv.length} blocks`,format:(x)=>Math.round(x)+' s',
       domain:{lo:0,hi:Math.max(240,2*(avg||0))},lines:[{price:120,title:'target 120 s',tone:'gold'}],emptyText:'not enough blocks yet',
       onCrosshair:(t)=>{ const i=bt.findIndex(p=>p[0]===t), s=$('#btpick',row); if(s) s.textContent=i>=0?`· block ${iv[i].h.toLocaleString()}: ${iv[i].dt}s`:''; }});
@@ -856,7 +868,7 @@ async function txPage(v,id){
 }
 
 async function addrPage(v,a){
-  await warmDecimals(); await warmVerdicts();
+  await warmDecimals();
   const [info,utxos,txs]=await Promise.all([j('/address/'+a),j('/address/'+a+'/utxo'),j('/address/'+a+'/txs')]);
   const s=info.chain_stats;
   v.innerHTML='';
@@ -892,8 +904,9 @@ async function addrPage(v,a){
   v.appendChild(el(`<div class="panel"><h2>transactions (${s.tx_count})</h2><div class="scroll-x"><table><thead><tr><th>txid</th><th>action</th><th class="opt">block</th><th>Δ for this address</th></tr></thead>
     <tbody id="txrows"></tbody></table></div><div id="txmore" style="margin-top:8px"></div></div>`));
   let loaded=0, lastTxid=null;
-  const appendTxPage=(page)=>{
+  const appendTxPage=async(page,later=true)=>{
     if(!Array.isArray(page)||!page.length){const m=$('#txmore'); if(m) m.innerHTML=''; return;}
+    await warmVerdicts(page.filter((t)=>t.app_type==='Propose').map((t)=>t.txid),later);
     const start=loaded;
     $('#txrows').insertAdjacentHTML('beforeend',page.map((t,k)=>{const i=start+k;return `<tr><td>${txidLink(t.txid)}</td><td class="act" id="act-${i}"><span class="dim">${esc(t.app_type)}</span></td><td class="opt">${link('/block/'+t.height,t.height)}</td><td id="dir-${i}" class="dim">…</td></tr>`;}).join(''));
     loaded+=page.length; lastTxid=page[page.length-1].txid;
@@ -901,7 +914,7 @@ async function addrPage(v,a){
     const more=$('#txmore');
     if(more) more.innerHTML=(page.length===PAGE&&loaded<s.tx_count)?`<button class="tab" id="txloadmore">load more (${loaded}/${s.tx_count})</button>`:'';
     const btn=$('#txloadmore');
-    if(btn) btn.onclick=async()=>{btn.disabled=true;btn.textContent='loading…';appendTxPage(await j('/address/'+a+'/txs/chain/'+lastTxid).catch(()=>[]));};
+    if(btn) btn.onclick=async()=>{btn.disabled=true;btn.textContent='loading…';await appendTxPage(await j('/address/'+a+'/txs/chain/'+lastTxid).catch(()=>[]));};
   };
 
   // decode one row (each is a cheap local lookup)
@@ -936,7 +949,7 @@ async function addrPage(v,a){
     }catch{}
   }
 
-  appendTxPage(txs);
+  await appendTxPage(txs,false);
 }
 
 // ── .csd name profile page (the name-service centerpiece) — front-door only ──
@@ -980,8 +993,8 @@ async function namePage(v,label){
   paintNames(v);
 }
 async function domainPage(v,d){
-  await warmDecimals(); await warmVerdicts();
   const props=await j('/domain/'+encodeURIComponent(d)+'/proposals');
+  await Promise.all([warmDecimals(), warmVerdicts(props.map((p)=>p.txid))]);
   v.innerHTML='';
   v.appendChild(el(`<div class="panel"><h2>domain <span class="amber">${esc(d)}</span></h2>
     <div class="muted">${props.length} proposal(s). Rankings are a derived, recomputable view - not consensus-signed.</div>
