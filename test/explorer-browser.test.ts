@@ -1,16 +1,17 @@
-// The explorer's CSD/USD figures and charts (Plan 88 P5b) in a real browser. The page is served the way cairn's front
-// door serves it (at /explorer, a nonce on its inline script, the explorer CSP of cairn src/server.ts), every read is
-// stubbed (/api/market/* fresh, stale and off as 503; the indexer's reads; the resolver's lists), and the chart
-// module is cairn's own, read from CAIRN_PUBLIC_DIR (charts/, vendor/, trade/spark.js, header.js, footer.js), so no
-// test reads across the repos unless asked to. At 390 and 1280 px: no page error, the failed requests named, no
-// horizontal overflow, a canvas in every chart, a source line beside every USD figure, "stale" in the stale state,
-// no USD text with the market off, never NaN or a 0 USD; the hashrate window named from the series; the request
-// cadence; no chart of a replaced view left alive. Needs playwright-core (PLAYWRIGHT_CORE or installed), a Chromium (PLAYWRIGHT_CHROMIUM or playwright's
-// own) and CAIRN_PUBLIC_DIR; each missing one skips the file by name.
-// Run (cairn's playwright-core wants a Chromium build this host may not have, so name one):
-//   CAIRN_PUBLIC_DIR=<cairn>/public PLAYWRIGHT_CORE=<cairn>/node_modules/playwright-core \
-//   PLAYWRIGHT_CHROMIUM=~/.cache/ms-playwright/chromium_headless_shell-1243/chrome-headless-shell-linux64/chrome-headless-shell \
-//   npx tsx --test test/explorer-browser.test.ts
+// The explorer in a real browser, served the way cairn's front door serves it (at /explorer, a nonce on its inline
+// script, the explorer CSP of cairn src/server.ts), every read stubbed: the indexer's reads, the resolver's lists and
+// verdicts, cairn's /content, and /api/market/* fresh, stale and off as 503. At 390 and 1280 px: no page error, the
+// failed requests named, no horizontal overflow, a canvas in every chart, a source line beside every USD figure,
+// "stale" in the stale state, no USD text with the market off, never NaN or a 0 USD; the hashrate window named from
+// the series; the request cadence; no chart of a replaced view left alive; the verdict reads and their fallback; the
+// proposal page's content check.
+// Needs playwright-core (PLAYWRIGHT_CORE or the devDependency) and a Chromium (PLAYWRIGHT_CHROMIUM or the build that
+// playwright-core installs); without either the file skips by name, and with EXPLORER_BROWSER_REQUIRED=1 (CI) it
+// fails instead. The chart tests also need cairn's chart module, read from CAIRN_PUBLIC_DIR (charts/, vendor/,
+// trade/spark.js, header.js, footer.js); without it they skip by name and the rest run, since no test reads across
+// the repos unless asked to.
+// Run with the charts (the devDependency's Chromium is chromium_headless_shell-1243):
+//   CAIRN_PUBLIC_DIR=<cairn>/public npx tsx --test test/explorer-browser.test.ts
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type ServerResponse } from "node:http";
@@ -32,12 +33,16 @@ declare const document: any, location: any;
 let chromium: any = null, why = "";
 try { chromium = createRequire(import.meta.url)(process.env.PLAYWRIGHT_CORE || "playwright-core").chromium; }
 catch { why = "playwright-core not found (set PLAYWRIGHT_CORE to its path)"; }
-if (!why && !(CAIRN && existsSync(join(CAIRN, "charts/chart.js")))) why = "CAIRN_PUBLIC_DIR unset or without charts/chart.js (the chart module lives in cairn)";
 let browser: any = null;
 if (!why) {
   try { browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_CHROMIUM || undefined, args: ["--no-sandbox"] }); }
   catch (e) { why = `no Chromium for playwright-core (set PLAYWRIGHT_CHROMIUM): ${String((e as Error).message).split("\n")[0]}`; }
 }
+const noCharts = why || (CAIRN && existsSync(join(CAIRN, "charts/chart.js")) ? "" : "CAIRN_PUBLIC_DIR unset or without charts/chart.js (the chart module lives in cairn)");
+
+test("a browser is present when EXPLORER_BROWSER_REQUIRED=1", { skip: process.env.EXPLORER_BROWSER_REQUIRED !== "1" }, () => {
+  assert.equal(why, "", "the browser tests would skip");
+});
 
 // ── fixtures: a 121 s chain with a little jitter, the shapes of the live reads ──
 const NOW = Math.floor(Date.now() / 1000), TIP = 121_800, MINER = "0x40379fb123bec901080bb94deeda2f457062b7bd";
@@ -150,6 +155,7 @@ const server = createServer(async (req, res) => {
   }
   if (p === "/api/health") return json(res, 200, { ok: true, tipHeight: TIP });
   try {
+    if (!CAIRN) throw new Error("no cairn public dir");
     const file = join(CAIRN, normalize(p).replace(/^(\.\.[/\\])+/, ""));
     const body = await readFile(file);
     res.writeHead(200, { "content-type": MIME[extname(file)] ?? "application/octet-stream" }); res.end(body);
@@ -199,7 +205,7 @@ const figures = (page: any) => page.evaluate(() => [...document.querySelectorAll
   source: f.querySelector(".mkt-s")?.textContent ?? "" })));
 
 for (const market of ["fresh", "stale", "off"] as const) for (const width of [390, 1280]) {
-  test(`${market}, ${width} px: no error, no overflow, every chart drawn, the hashrate window named, the CSD/USD figures sourced or hidden`, { skip: why || false }, async () => {
+  test(`${market}, ${width} px: no error, no overflow, every chart drawn, the hashrate window named, the CSD/USD figures sourced or hidden`, { skip: noCharts || false }, async () => {
     Object.assign(S, { market, thin: false, series: true });
     const v = await open("/explorer", width, market === "off" ? charted : withMarket, { response: market === "off" ? OFF : "" });
     try {
@@ -241,7 +247,7 @@ for (const market of ["fresh", "stale", "off"] as const) for (const width of [39
   });
 }
 
-test("a body without a VWAP, supply or volume: dashes for those figures, never a 0 USD", { skip: why || false }, async () => {
+test("a body without a VWAP, supply or volume: dashes for those figures, never a 0 USD", { skip: noCharts || false }, async () => {
   Object.assign(S, { market: "fresh", thin: true, series: true });
   const v = await open("/explorer", 1280, withMarket);
   try {
@@ -251,7 +257,7 @@ test("a body without a VWAP, supply or volume: dashes for those figures, never a
   } finally { await v.close(); S.thin = false; }
 });
 
-test("a range without its low and a supply without its emitted figure: no range line, a dash, never a 0", { skip: why || false }, async () => {
+test("a range without its low and a supply without its emitted figure: no range line, a dash, never a 0", { skip: noCharts || false }, async () => {
   Object.assign(S, { market: "fresh", thin: false, partial: true, series: true });
   const v = await open("/explorer", 1280, withMarket);
   try {
@@ -263,7 +269,7 @@ test("a range without its low and a supply without its emitted figure: no range 
   } finally { await v.close(); S.partial = false; }
 });
 
-test("the indexer without /analytics/series (404): the tile names the blocks, the hashrate chart says it has no series", { skip: why || false }, async () => {
+test("the indexer without /analytics/series (404): the tile names the blocks, the hashrate chart says it has no series", { skip: noCharts || false }, async () => {
   Object.assign(S, { market: "off", series: false });
   const v = await open("/explorer", 1280, () => !!document.querySelector("#emchart canvas") && !!document.querySelector("#hrchart .cc-empty"));
   try {
@@ -321,7 +327,7 @@ test("market off: one price read, none in the next 4 min, one more after 5 min",
   } finally { await v.close(); }
 });
 
-test("market on: the price every 2 min and the daily series every 10 min while the page is open", { skip: why || false }, async () => {
+test("market on: the price every 2 min and the daily series every 10 min while the page is open", { skip: noCharts || false }, async () => {
   Object.assign(S, { market: "fresh", series: true });
   const v = await open("/explorer", 1280, () => !!document.querySelector("#csd-mkt .mkt-fig"), { clock: true });
   const count = (p: string) => v.asked.filter((x) => x === p).length;
@@ -333,7 +339,7 @@ test("market on: the price every 2 min and the daily series every 10 min while t
   } finally { await v.close(); }
 });
 
-test("leaving and re-opening the home view destroys the charts it replaces: live canvases do not grow", { skip: why || false }, async () => {
+test("leaving and re-opening the home view destroys the charts it replaces: live canvases do not grow", { skip: noCharts || false }, async () => {
   Object.assign(S, { market: "fresh", thin: false, series: true });
   const v = await open("/explorer", 1280, withMarket);
   try {
@@ -348,7 +354,7 @@ test("leaving and re-opening the home view destroys the charts it replaces: live
   } finally { await v.close(); }
 });
 
-test("the market going from fresh to 503 while the page is open hides the CSD/USD block and destroys its chart", { skip: why || false }, async () => {
+test("the market going from fresh to 503 while the page is open hides the CSD/USD block and destroys its chart", { skip: noCharts || false }, async () => {
   Object.assign(S, { market: "fresh", thin: false, partial: false, series: true });
   const v = await open("/explorer", 1280, withMarket, { clock: true });
   try {

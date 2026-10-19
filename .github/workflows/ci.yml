@@ -25,8 +25,13 @@ jobs:
       # CAIRN-IDX CI-1: use `npm test` (globs test/*.test.ts) so a new test file is NEVER silently dropped.
       # The old hand-listed set omitted analytics.test.ts: exactly the emission/supply money-math that the
       # DUP-ANALYTICS lockstep guard now lives in.
+      # The explorer's browser tests run here and fail rather than skip without a browser. The headless shell is the
+      # build the pinned playwright-core names; the chart tests skip by name, since the chart module lives in cairn.
+      - name: Chromium headless shell for the explorer's browser tests
+        run: npx playwright-core install --with-deps chromium-headless-shell
       - name: test (offline, deterministic; glob, no hand-listing)
         run: npm test
+        env: { EXPLORER_BROWSER_REQUIRED: "1" }
       # CAIRN-IDX-LOCKSTEP-1: the determinism-bearing codec/light MUST be exact-pinned to the ecosystem
       # lockstep version (no caret → no silent float on a fresh install; the stale 0.1.2/0.1.1 was the fork seam).
       - name: determinism deps exact-pinned (no caret)

@@ -41,3 +41,11 @@ test("the secret scan: pinned gitleaks, this repo's config, full history, merge 
   assert.match(ci, /gitleaks" detect [^\n]*-c \.gitleaks\.toml/);
   assert.match(ci, /--log-opts="[^"]*--full-history[^"]*--all[^"]*--diff-merges=first-parent[^"]*"/);
 });
+
+test("the sqlite job installs the pinned playwright-core's headless shell and requires the browser tests", () => {
+  const job = ci.slice(ci.indexOf("\n  test:\n"), ci.indexOf("\n  test-postgres:\n"));
+  assert.match(job, /run: npx playwright-core install --with-deps chromium-headless-shell\n/);
+  const run = job.slice(job.indexOf("run: npm test"));
+  assert.match(run, /^run: npm test\n\s+env: \{ EXPLORER_BROWSER_REQUIRED: "1" \}/);
+  assert.ok(job.indexOf("playwright-core install") < job.indexOf("run: npm test"), "the browser is installed before the tests");
+});
