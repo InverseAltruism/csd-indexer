@@ -18,7 +18,7 @@ type Check = {
 const { offences, loadExceptions, SIBLING }: Check = await import(new URL("../scripts/check-dashes-paths.mjs", import.meta.url).href);
 
 const root = fileURLToPath(new URL("..", import.meta.url));
-const EM = "—";
+const EM = "\u2014";
 const read = (f: string) => readFileSync(join(root, f), "utf8");
 
 test("this repo is clean", () => assert.deepEqual(offences(root), []));
