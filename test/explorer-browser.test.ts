@@ -1,31 +1,27 @@
 // The explorer in a real browser, served the way cairn's front door serves it (at /explorer, a nonce on its inline
 // script, the explorer CSP of cairn src/server.ts), every read stubbed: the indexer's reads, the resolver's lists and
-// verdicts, cairn's /content, and /api/market/* fresh, stale and off as 503. At 390 and 1280 px: no page error, the
-// failed requests named, no horizontal overflow, a canvas in every chart, a source line beside every USD figure,
-// "stale" in the stale state, no USD text with the market off, never NaN or a 0 USD; the hashrate window named from
-// the series; the request cadence; no chart of a replaced view left alive; the verdict reads and their fallback; the
-// proposal page's content check.
+// verdicts, cairn's /content, and /api/market/* fresh, stale and off as 503. Cairn's chart module is replaced by
+// test/fixtures/chart-stub.js, which implements only the exports the page calls, so these tests check the page's own
+// wiring (what it passes the module, where it puts the results, when it mounts and destroys charts); the module's
+// rendering is tested in cairn. No test reads cairn's tree. At 390 and 1280 px: no page error, the failed requests
+// named, no horizontal overflow, a chart in every host, each USD figure with its basis and source, the stale age
+// passed on, no USD text with the market off, never NaN or a 0 USD; the hashrate window from the module in the tile
+// and on the chart; the request cadence; no chart of a replaced view left alive; the verdict reads and their
+// fallback; the proposal page's content check.
 // Needs playwright-core (PLAYWRIGHT_CORE or the devDependency) and a Chromium (PLAYWRIGHT_CHROMIUM or the build that
-// playwright-core installs); without either the file skips by name, and with EXPLORER_BROWSER_REQUIRED=1 (CI) it
-// fails instead. The chart tests also need cairn's chart module, read from CAIRN_PUBLIC_DIR (charts/, vendor/,
-// trade/spark.js, header.js, footer.js); without it they skip by name and the rest run, since no test reads across
-// the repos unless asked to.
-// Run with the charts (the devDependency's Chromium is chromium_headless_shell-1243):
-//   CAIRN_PUBLIC_DIR=<cairn>/public npx tsx --test test/explorer-browser.test.ts
+// playwright-core installs, chromium_headless_shell-1243); without either the file skips by name, and with
+// EXPLORER_BROWSER_REQUIRED=1 (CI) it fails instead. Run: npx tsx --test test/explorer-browser.test.ts
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type ServerResponse } from "node:http";
-import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { createHash, randomBytes } from "node:crypto";
-import { extname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AddressInfo } from "node:net";
 
 const EXPLORER = fileURLToPath(new URL("../public/explorer.html", import.meta.url));
-const CAIRN = process.env.CAIRN_PUBLIC_DIR ?? "";
-const MIME: Record<string, string> = { ".js": "text/javascript", ".mjs": "text/javascript", ".css": "text/css", ".png": "image/png", ".json": "application/json" };
+const CHART_STUB = fileURLToPath(new URL("./fixtures/chart-stub.js", import.meta.url));
 
 // playwright-core is loaded untyped, and the page callbacks below run in the browser (this file has no DOM lib):
 // `any` at those two boundaries only.
@@ -38,7 +34,6 @@ if (!why) {
   try { browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_CHROMIUM || undefined, args: ["--no-sandbox"] }); }
   catch (e) { why = `no Chromium for playwright-core (set PLAYWRIGHT_CHROMIUM): ${String((e as Error).message).split("\n")[0]}`; }
 }
-const noCharts = why || (CAIRN && existsSync(join(CAIRN, "charts/chart.js")) ? "" : "CAIRN_PUBLIC_DIR unset or without charts/chart.js (the chart module lives in cairn)");
 
 test("a browser is present when EXPLORER_BROWSER_REQUIRED=1", { skip: process.env.EXPLORER_BROWSER_REQUIRED !== "1" }, () => {
   assert.equal(why, "", "the browser tests would skip");
@@ -170,12 +165,12 @@ const server = createServer(async (req, res) => {
     if (!body) return json(res, 404, { ok: false, error: "unknown payload_hash (not registered here)" });
     res.writeHead(200, { "content-type": "application/json; charset=utf-8" }); return res.end(body);
   }
-  try {
-    if (!CAIRN) throw new Error("no cairn public dir");
-    const file = join(CAIRN, normalize(p).replace(/^(\.\.[/\\])+/, ""));
-    const body = await readFile(file);
-    res.writeHead(200, { "content-type": MIME[extname(file)] ?? "application/octet-stream" }); res.end(body);
-  } catch { res.writeHead(404); res.end("not found"); }
+  if (p === "/charts/chart.js") {
+    res.writeHead(200, { "content-type": "text/javascript" }); return res.end(await readFile(CHART_STUB));
+  }
+  // cairn's nav and footer scripts: present and empty, so the page keeps its own placeholders
+  if (p === "/header.js" || p === "/footer.js") { res.writeHead(200, { "content-type": "text/javascript" }); return res.end(""); }
+  res.writeHead(404); res.end("not found");
 });
 if (!why) await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
 const ORIGIN = why ? "" : `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -221,7 +216,7 @@ const figures = (page: any) => page.evaluate(() => [...document.querySelectorAll
   source: f.querySelector(".mkt-s")?.textContent ?? "" })));
 
 for (const market of ["fresh", "stale", "off"] as const) for (const width of [390, 1280]) {
-  test(`${market}, ${width} px: no error, no overflow, every chart drawn, the hashrate window named, the CSD/USD figures sourced or hidden`, { skip: noCharts || false }, async () => {
+  test(`${market}, ${width} px: no error, no overflow, every chart drawn, the hashrate window named, the CSD/USD figures sourced or hidden`, { skip: why || false }, async () => {
     Object.assign(S, { market, thin: false, series: true });
     const v = await open("/explorer", width, market === "off" ? charted : withMarket, { response: market === "off" ? OFF : "" });
     try {
@@ -229,14 +224,10 @@ for (const market of ["fresh", "stale", "off"] as const) for (const width of [39
       assert.deepEqual(v.failed, market === "off" ? ["503 /api/market/csd"] : []);
       assert.equal(v.overflow, 0, "horizontal overflow");
       assert.equal(await v.page.textContent("#pu-hr .n"), "3.15 TH/s", "the indexer's figure over the window");
-      assert.equal(await v.page.textContent("#pu-hr .l"), "hashrate · last 24.2\u00a0h", "the window's real span, from the series");
-      assert.equal(await v.page.textContent(".panel:has(#hrchart) .pill"), "last 24.2\u00a0h", "the same window on the chart");
-      for (const id of ["#emchart", "#hrchart", "#btchart"]) assert.equal(await v.page.locator(`${id} .cc-attr`).count(), 1, `the attribution under ${id}`);
-      // the library lays its pane out in the first row of a table, whose cells this page's own td rules once capped
-      const narrow = await v.page.evaluate(() => ["#emchart", "#hrchart", "#btchart", "#csdusd-chart"].filter((s) => document.querySelector(`${s} canvas`)).map((s) => ({
-        s, plot: Math.round(document.querySelector(`${s} .cc-plot`).getBoundingClientRect().width),
-        pane: Math.round(Math.max(...[...document.querySelectorAll(`${s} .cc-plot tr:first-child > td`)].map((c: any) => c.getBoundingClientRect().width))) })).filter((x) => x.pane < 0.65 * x.plot));
-      assert.deepEqual(narrow, [], "each chart's pane fills its plot");
+      assert.equal(await v.page.textContent("#pu-hr .l"), "hashrate · series of 56 points", "the module's window text for the 1d series, in the tile");
+      assert.equal(await v.page.textContent(".panel:has(#hrchart) .pill"), "series of 56 points", "the same window on the chart");
+      assert.equal(await v.page.getAttribute("#hrchart canvas", "data-points"), "56", "the series' 56 points handed to the chart");
+      assert.equal(await v.page.evaluate(() => (globalThis as any).__chartStubLive), market === "off" ? 3 : 4, "one live mount per chart host");
       const text: string = await v.page.evaluate(() => document.body.innerText);
       assert.doesNotMatch(text, bad);
       if (market === "off") {
@@ -245,17 +236,16 @@ for (const market of ["fresh", "stale", "off"] as const) for (const width of [39
       } else {
         const figs = await figures(v.page);
         assert.deepEqual(figs.map((f: { label: string }) => f.label), ["price", "24h VWAP", "market cap", "fully diluted", "24h volume"]);
-        for (const f of figs) {
-          assert.match(f.value, / USD$/, `${f.label} in USD`);
-          assert.match(f.source, /SafeTrade · \d\d:\d\d UTC/, `the venue and time beside ${f.label}: ${f.source}`);
-          if (market === "stale") assert.match(f.source, /stale, 40 min ago$/, `stale beside ${f.label}`);
-        }
+        for (const f of figs) assert.match(f.value, / USD$/, `${f.label} in USD`);
+        const stale = market === "stale" ? " · stale 2400s" : "";
+        assert.deepEqual(figs.map((f: { source: string }) => f.source), ["last trade", "24h volume / 24h amount", "at the 24h VWAP · thin market",
+          "at the 24h VWAP", "the venue's 24h volume"].map((b) => `rate: ${b} · SafeTrade${stale}`), "each figure's basis, with the body's venue and age");
         assert.equal(figs[0].value, "0.0455 USD");
         assert.match(await v.page.textContent("#csd-mkt .mkt-sub"), /CSD prices from SafeTrade, an exchange we do not operate/);
         assert.equal(await v.page.getAttribute("#csd-mkt .mkt-sub a", "href"), "https://safetrade.com/exchange/CSD-USDT");
         assert.equal(await v.page.textContent("#csd-mkt > .muted"), "CSD/USD · last 30 days · daily closes · CoinPaprika");
         const note: string = await v.page.textContent("#csdusd-chart .cc-note");
-        if (market === "stale") assert.equal(note, "stale, 40 min ago");
+        if (market === "stale") assert.equal(note, "stale 2400s", "the body's age passed to the chart");
         else assert.doesNotMatch(await v.page.textContent("#csd-mkt"), /stale/);
       }
       console.log(`      ${market} ${width}: ${v.reqs} requests, ${Math.round(v.bytes() / 1024)} KB`);
@@ -263,7 +253,7 @@ for (const market of ["fresh", "stale", "off"] as const) for (const width of [39
   });
 }
 
-test("a body without a VWAP, supply or volume: dashes for those figures, never a 0 USD", { skip: noCharts || false }, async () => {
+test("a body without a VWAP, supply or volume: dashes for those figures, never a 0 USD", { skip: why || false }, async () => {
   Object.assign(S, { market: "fresh", thin: true, series: true });
   const v = await open("/explorer", 1280, withMarket);
   try {
@@ -273,7 +263,7 @@ test("a body without a VWAP, supply or volume: dashes for those figures, never a
   } finally { await v.close(); S.thin = false; }
 });
 
-test("a range without its low and a supply without its emitted figure: no range line, a dash, never a 0", { skip: noCharts || false }, async () => {
+test("a range without its low and a supply without its emitted figure: no range line, a dash, never a 0", { skip: why || false }, async () => {
   Object.assign(S, { market: "fresh", thin: false, partial: true, series: true });
   const v = await open("/explorer", 1280, withMarket);
   try {
@@ -285,13 +275,13 @@ test("a range without its low and a supply without its emitted figure: no range 
   } finally { await v.close(); S.partial = false; }
 });
 
-test("the indexer without /analytics/series (404): the tile names the blocks, the hashrate chart says it has no series", { skip: noCharts || false }, async () => {
+test("the indexer without /analytics/series (404): the tile names the blocks, the hashrate chart says it has no series", { skip: why || false }, async () => {
   Object.assign(S, { market: "off", series: false });
   const v = await open("/explorer", 1280, () => !!document.querySelector("#emchart canvas") && !!document.querySelector("#hrchart .cc-empty"));
   try {
     assert.deepEqual(v.errors, []);
     assert.deepEqual(v.failed.sort(), ["404 /explorer/api/analytics/series", "503 /api/market/csd"]);
-    assert.equal(await v.page.textContent("#pu-hr .l"), "hashrate · last 720 blocks");
+    assert.equal(await v.page.textContent("#pu-hr .l"), "hashrate · blocks 121080 to 121800", "the module's window text from the miners read");
     assert.equal(await v.page.textContent("#hrchart .cc-empty"), "no hashrate series from this indexer");
   } finally { await v.close(); S.series = true; }
 });
@@ -343,7 +333,7 @@ test("market off: one price read, none in the next 4 min, one more after 5 min",
   } finally { await v.close(); }
 });
 
-test("market on: the price every 2 min and the daily series every 10 min while the page is open", { skip: noCharts || false }, async () => {
+test("market on: the price every 2 min and the daily series every 10 min while the page is open", { skip: why || false }, async () => {
   Object.assign(S, { market: "fresh", series: true });
   const v = await open("/explorer", 1280, () => !!document.querySelector("#csd-mkt .mkt-fig"), { clock: true });
   const count = (p: string) => v.asked.filter((x) => x === p).length;
@@ -355,7 +345,7 @@ test("market on: the price every 2 min and the daily series every 10 min while t
   } finally { await v.close(); }
 });
 
-test("leaving and re-opening the home view destroys the charts it replaces: live canvases do not grow", { skip: noCharts || false }, async () => {
+test("leaving and re-opening the home view destroys the charts it replaces: live canvases do not grow", { skip: why || false }, async () => {
   Object.assign(S, { market: "fresh", thin: false, series: true });
   const v = await open("/explorer", 1280, withMarket);
   try {
@@ -370,7 +360,7 @@ test("leaving and re-opening the home view destroys the charts it replaces: live
   } finally { await v.close(); }
 });
 
-test("the market going from fresh to 503 while the page is open hides the CSD/USD block and destroys its chart", { skip: noCharts || false }, async () => {
+test("the market going from fresh to 503 while the page is open hides the CSD/USD block and destroys its chart", { skip: why || false }, async () => {
   Object.assign(S, { market: "fresh", thin: false, partial: false, series: true });
   const v = await open("/explorer", 1280, withMarket, { clock: true });
   try {

@@ -26,7 +26,7 @@ jobs:
       # The old hand-listed set omitted analytics.test.ts: exactly the emission/supply money-math that the
       # DUP-ANALYTICS lockstep guard now lives in.
       # The explorer's browser tests run here and fail rather than skip without a browser. The headless shell is the
-      # build the pinned playwright-core names; the chart tests skip by name, since the chart module lives in cairn.
+      # build the pinned playwright-core names; cairn's chart module is a stub in test/fixtures.
       - name: Chromium headless shell for the explorer's browser tests
         run: npx playwright-core install --with-deps chromium-headless-shell
       - name: test (offline, deterministic; glob, no hand-listing)
