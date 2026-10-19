@@ -78,9 +78,9 @@ export async function indexedHeight(): Promise<number> {
   // real blocks table (an unwind that committed before the OLD out-of-txn setMeta ran), clamp DOWN to the true
   // stored tip so the forward scan (from = indexedHeight()+1) cannot SKIP the un-re-indexed gap and serve an
   // output whose canonical spend at that height was never re-applied as a live UTXO (the 2026-07-06 ghost class).
-  // MAX over non-orphaned blocks is the real indexed tip; meta above it is stale-ahead, so MAX wins. A meta
+  // MAX over the blocks table is the real indexed tip; meta above it is stale-ahead, so MAX wins. A meta
   // BEHIND the tip is already self-healing (writeBlock is idempotent and re-writes the height next poll).
-  const r = await store().get<{ h: number | null }>("SELECT MAX(height) AS h FROM blocks WHERE orphaned=0");
+  const r = await store().get<{ h: number | null }>("SELECT MAX(height) AS h FROM blocks");
   const maxStored = r?.h == null ? null : Number(r.h);
   return maxStored != null && maxStored >= CFG.scanFrom && meta > maxStored ? maxStored : meta;
 }
@@ -104,7 +104,7 @@ export async function indexedChainwork(): Promise<bigint | null> {
   if (h < CFG.scanFrom) return 0n;                             // fresh: nothing indexed, legitimately zero work
   let r: { chainwork: string | null } | undefined;
   try {
-    r = await store().get<{ chainwork: string | null }>("SELECT chainwork FROM blocks WHERE height=? AND orphaned=0", h);
+    r = await store().get<{ chainwork: string | null }>("SELECT chainwork FROM blocks WHERE height=?", h);
   } catch { return null; }                                     // (a) store read threw -> unreadable
   if (!r) return null;                                         // (b) no row at our own tip -> inconsistent/unreadable
   const raw = r.chainwork;
@@ -280,7 +280,7 @@ export async function unwindAbove(ancestor: number, newTip: number = ancestor): 
 
 /** Stored canonical block hash at height, or null. */
 async function storedHash(height: number): Promise<string | null> {
-  const r = await store().get<{ hash: string }>("SELECT hash FROM blocks WHERE height=? AND orphaned=0", height);
+  const r = await store().get<{ hash: string }>("SELECT hash FROM blocks WHERE height=?", height);
   return r?.hash ?? null;
 }
 
@@ -453,7 +453,7 @@ export async function syncOnce(): Promise<IndexResult> {
         let fresh = 0n;
         try { fresh = nb?.chainwork != null ? BigInt(String(nb.chainwork).trim()) : 0n; } catch { fresh = 0n; }
         if (nb && fresh > 0n) {
-          await store().run("UPDATE blocks SET chainwork=? WHERE height=? AND hash=? AND orphaned=0",
+          await store().run("UPDATE blocks SET chainwork=? WHERE height=? AND hash=?",
             String(nb.chainwork).trim(), top, nb.hash);
           console.warn(`[indexer] HOLD(self-heal): rewrote unreadable stored chainwork at h=${top} from hash-matched node payload; next poll re-evaluates`);
         } else {

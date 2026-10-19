@@ -81,7 +81,7 @@ async function contenderPlausible(claimedHeight: number, header: unknown): Promi
   let localTip: { height: number | bigint | null; bits: number | bigint | null; time: number | bigint | null } | undefined;
   try {
     localTip = await store().get<{ height: number | bigint | null; bits: number | bigint | null; time: number | bigint | null }>(
-      "SELECT height, bits, time FROM blocks WHERE orphaned=0 ORDER BY height DESC LIMIT 1");
+      "SELECT height, bits, time FROM blocks ORDER BY height DESC LIMIT 1");
   } catch { return false; }
   // No local anchor yet (fresh index / mid-backfill): nothing to plausibility-check against, so the gate is
   // inactive rather than block a legitimate failover before the index exists.
@@ -136,7 +136,7 @@ async function expectedLocalTarget(localHeight: number): Promise<bigint | null> 
   try {
     const floor = Math.max(CFG.scanFrom, localHeight - LWMA_WINDOW);
     const rows = await store().all<{ time: number | bigint; bits: number | bigint }>(
-      "SELECT time, bits FROM blocks WHERE orphaned=0 AND height < ? AND height >= ? ORDER BY height ASC",
+      "SELECT time, bits FROM blocks WHERE height < ? AND height >= ? ORDER BY height ASC",
       localHeight, floor);
     if (rows.length < 2) return null;
     // window[last] must be the parent (localHeight-1); expectedBitsFromWindow computes the expected bits for

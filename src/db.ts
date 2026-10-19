@@ -55,6 +55,8 @@ export interface Store {
 // blocks.version is BIGINT (u32 in the codec; int4 overflowed on pg and wedged writeBlock). A Postgres
 // database created before 0.2.11 needs `ALTER TABLE blocks ALTER COLUMN version TYPE BIGINT` once:
 // CREATE TABLE IF NOT EXISTS does not alter an existing table. sqlite INTEGER is already 64-bit.
+// blocks.orphaned is unused: writeBlock writes 0, nothing writes 1 and no query reads it (a reorg deletes
+// the rows). It stays until a schema migration drops it, because the live databases carry it.
 const DDL = `
   CREATE TABLE IF NOT EXISTS blocks (
     height BIGINT PRIMARY KEY,

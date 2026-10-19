@@ -38,20 +38,20 @@ const heightOk = (h: number): boolean => Number.isSafeInteger(h) && h >= 0;
 // (tipHeight here, analytics' tipRow/tipKey). Selecting the full row costs the same index walk
 // as MAX(height) and every caller derives what it needs.
 export async function tipRow(): Promise<{ height: number; hash: string; time: number; chainwork: string } | null> {
-  return ((await store().get("SELECT height, hash, time, chainwork FROM blocks WHERE orphaned=0 ORDER BY height DESC LIMIT 1")) as never) ?? null;
+  return ((await store().get("SELECT height, hash, time, chainwork FROM blocks ORDER BY height DESC LIMIT 1")) as never) ?? null;
 }
 export async function tipHeight(): Promise<number> {
   return (await tipRow())?.height ?? -1;
 }
 export async function blockByHeight(h: number): Promise<BlockRow | null> {
   if (!heightOk(h)) return null;
-  return jsonSafe(((await store().get<BlockRow>("SELECT * FROM blocks WHERE height=? AND orphaned=0", h)) as BlockRow) ?? null);
+  return jsonSafe(((await store().get<BlockRow>("SELECT * FROM blocks WHERE height=?", h)) as BlockRow) ?? null);
 }
 export async function blockByHash(hash: string): Promise<BlockRow | null> {
-  return jsonSafe(((await store().get<BlockRow>("SELECT * FROM blocks WHERE hash=? AND orphaned=0", hash.toLowerCase())) as BlockRow) ?? null);
+  return jsonSafe(((await store().get<BlockRow>("SELECT * FROM blocks WHERE hash=?", hash.toLowerCase())) as BlockRow) ?? null);
 }
 export async function recentBlocks(limit = 25): Promise<BlockRow[]> {
-  return jsonSafeAll(await store().all<BlockRow>("SELECT * FROM blocks WHERE orphaned=0 ORDER BY height DESC LIMIT ?", limit));
+  return jsonSafeAll(await store().all<BlockRow>("SELECT * FROM blocks ORDER BY height DESC LIMIT ?", limit));
 }
 export async function blockTxids(height: number): Promise<string[]> {
   return (await store().all<{ txid: string }>("SELECT txid FROM txs WHERE height=? ORDER BY pos", height)).map(r => r.txid);
@@ -166,5 +166,5 @@ export async function domains(): Promise<{ domain: string; proposals: number }[]
 }
 export async function counts(): Promise<{ blocks: number; txs: number; proposals: number; attestations: number }> {
   const c = async (t: string, w = "") => Number((await store().get<{ n: number }>(`SELECT COUNT(*) n FROM ${t} ${w}`))?.n ?? 0);
-  return { blocks: await c("blocks", "WHERE orphaned=0"), txs: await c("txs"), proposals: await c("proposals"), attestations: await c("attestations") };
+  return { blocks: await c("blocks"), txs: await c("txs"), proposals: await c("proposals"), attestations: await c("attestations") };
 }

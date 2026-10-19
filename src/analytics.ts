@@ -90,8 +90,8 @@ function rateBetween(a: WorkPoint | undefined, b: WorkPoint | undefined): { hash
 
 /** Network hashrate over [from..to] derived from cumulative chainwork: exact, no bits math. */
 async function windowHashrate(fromHeight: number, toHeight: number): Promise<{ hashrate: number; seconds: number } | null> {
-  const a = await store().get<WorkPoint>("SELECT time, chainwork FROM blocks WHERE orphaned=0 AND height=?", fromHeight);
-  const b = await store().get<WorkPoint>("SELECT time, chainwork FROM blocks WHERE orphaned=0 AND height=?", toHeight);
+  const a = await store().get<WorkPoint>("SELECT time, chainwork FROM blocks WHERE height=?", fromHeight);
+  const b = await store().get<WorkPoint>("SELECT time, chainwork FROM blocks WHERE height=?", toHeight);
   return rateBetween(a ?? undefined, b ?? undefined);
 }
 
@@ -110,7 +110,7 @@ async function minersImpl(window: string): Promise<unknown> {
 
   const total = rows.reduce((s, r) => s + Number(r.blocks), 0);
   const minH = from === 0
-    ? Number((await store().get<{ h: number }>("SELECT MIN(height) h FROM blocks WHERE orphaned=0"))?.h ?? 0)
+    ? Number((await store().get<{ h: number }>("SELECT MIN(height) h FROM blocks"))?.h ?? 0)
     : from;
   const hr = await windowHashrate(minH, Number(tip.height));
 
@@ -132,7 +132,7 @@ async function minersImpl(window: string): Promise<unknown> {
 
   const agg = await store().get<{ blocks: number | bigint; txs: number | bigint | null; t0: number | bigint | null; t1: number | bigint | null }>(`
     SELECT COUNT(*) AS blocks, SUM(tx_count) AS txs, MIN(time) AS t0, MAX(time) AS t1
-    FROM blocks WHERE orphaned=0 AND height > ? AND height <= ?
+    FROM blocks WHERE height > ? AND height <= ?
   `, from, tip.height);
   const fees = await store().get<{ f: number | bigint | null }>("SELECT SUM(fee) AS f FROM txs WHERE coinbase=0 AND height > ? AND height <= ?", from, tip.height);
   const nBlocks = Number(agg?.blocks ?? 0);
@@ -215,7 +215,7 @@ async function seriesImpl(window: string, points: number): Promise<unknown> {
   const tip = await tipRow();
   if (!tip) return { window, from: null, to: null, points: [] as SeriesPoint[] };
   const to = Number(tip.height);
-  const minH = Number((await store().get<{ h: number | bigint | null }>("SELECT MIN(height) AS h FROM blocks WHERE orphaned=0"))?.h ?? to);
+  const minH = Number((await store().get<{ h: number | bigint | null }>("SELECT MIN(height) AS h FROM blocks"))?.h ?? to);
   const span = WINDOWS[window];
   const from = span ? Math.max(minH, to - span) : minH;
   const n = to - from + 1;
@@ -226,7 +226,7 @@ async function seriesImpl(window: string, points: number): Promise<unknown> {
   if (!buckets) endHeights.push(to);
   const wanted = [from, ...endHeights];
   const rows = await store().all<SeriesRow>(
-    `SELECT height, time, bits, chainwork FROM blocks WHERE orphaned=0 AND height IN (${wanted.map(() => "?").join(",")})`,
+    `SELECT height, time, bits, chainwork FROM blocks WHERE height IN (${wanted.map(() => "?").join(",")})`,
     ...wanted,
   );
   const byHeight = new Map(rows.map((r) => [Number(r.height), r]));
