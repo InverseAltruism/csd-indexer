@@ -18,7 +18,7 @@ This repo follows the maintainers' cross-repo engineering standard (a private do
 - Comments state constraints and non-obvious invariants, not history or audit IDs. Removing code needs the same evidence as adding it.
 - Docs: this file holds what stays true (no version tables, no status snapshots; versions live in `package.json` and tags, live state comes from a live query). Dates are absolute, no em dashes.
 
-Known deviations (checked 2026-10-11, not exhaustive): there is no `lint` script; `src/config.ts` reads the shared SPV checkpoint file from a sibling checkout when present and falls back to the built-in floor; the dependency lockfile is `package-lock.json` (npm).
+Known deviations (checked 2026-10-11, not exhaustive; lint 2026-10-19): `npm run lint` (Biome) fails on unused imports, focused tests and `@ts-ignore`, but only warns on empty blocks, since `src/`, `public/explorer.html` and the tests still hold some (`npm run lint` lists them); `src/config.ts` reads the shared SPV checkpoint file from a sibling checkout when present and falls back to the built-in floor, and `test/config-knob-positive.test.ts:18` reads the same file; the dependency lockfile is `package-lock.json` (npm).
 
 ## The stack around it
 
@@ -82,7 +82,7 @@ API: Esplora core (`/blocks/tip/height` 503s on empty index, `/block/:hash[/txid
 
 1. Maintainers deploy. Contributions and agent sessions must never assume deploy or restart access; this indexes a live financial system with real users and real CSD. Default to design-first: agree on the approach before editing shared behavior, keep diffs small and reviewed, and treat approval as scoped to the single change discussed.
 2. Security fixes must not regress UX. Never add latency or a decline path to a legitimate hot path. Prefer warn over hard-block, fail-soft with an availability valve over hard fail-closed, removing a false UI claim over adding machinery. Decline disproportionate hardening explicitly, with reasoning.
-3. No em dashes in READMEs or any user-facing doc; avoid AI-slop phrasing (excessive bolding, "not just X but Y", filler intensifiers). Search the doc for the em dash character before committing; the count must be zero.
+3. No em dashes in READMEs or any user-facing doc; avoid AI-slop phrasing (excessive bolding, "not just X but Y", filler intensifiers). Search the doc for the em dash character before committing; the count must be zero (`npm run check:dashes-paths` checks every tracked doc in CI).
 4. Commit/push/tag only when asked. Investigations default to read-only.
 5. Never weaken the replay discipline: hardening may reject MORE, it must never accept DIFFERENT, or historical replays fork.
 
@@ -95,6 +95,8 @@ CSD_RPC=http://127.0.0.1:8789 npm run run-all  # index + serve on :8793
 npm run index                                  # one sync pass, exits
 npm run serve                                  # API only
 npm run typecheck                              # tsc --noEmit
+npm run lint                                   # Biome: unused imports, empty blocks (warn), focused tests, @ts-ignore
+npm run check:dashes-paths                     # em dashes in tracked docs, sibling-checkout paths in code (exceptions in the script)
 npm test                                       # tsx --test test/*.test.ts (offline, deterministic)
 # Postgres mode:
 CSD_INDEX_PG=postgres://... npx tsx src/cli.ts index
@@ -106,7 +108,7 @@ Gotcha: stale dev servers squat :8793; find the squatter and kill it by PID (che
 
 - `npm test` globs `test/*.test.ts`; never hand-list files (a hand-listed set once silently dropped analytics.test.ts, the money math). Suites include indexer (reorg unwind/replay, incident regression), checkpoint-floor, rpc-failover, dbtx-isolation, analytics + analytics-lockstep (pins codec emission values, so a bad codec bump fails loudly here) + analytics-memo, decode, health, identity, registry, pagination, reorg-e2e, stream.
 - Test files run concurrently. On Postgres every file that touches the store sets its own `CSD_INDEX_PG_SCHEMA` before importing `src/`; files left on the default `public` schema read each other's `blocks` rows (that shared schema was the Postgres CI failure from July to October 2026).
-- CI runs the whole suite TWICE: sqlite job + postgres job against a postgres:16 service, plus the exact-pin check and a `secrets` job (gitleaks 8.18.4, sha256-checked, over the full history of every branch with `.gitleaks.toml`). Every `uses:` is pinned to a full commit SHA with its tag in a comment.
+- CI runs the whole suite TWICE: sqlite job + postgres job against a postgres:16 service, plus the exact-pin check and a `secrets` job (gitleaks 8.18.4, sha256-checked, over the full history of every branch with `.gitleaks.toml`). Every `uses:` is pinned to a full commit SHA with its tag in a comment; the workflow token is read-only and no checkout keeps credentials (`test/ci-workflow.test.ts` pins this shape).
 - `test/explorer-browser.test.ts` runs the explorer in Chromium as the front door serves it (nonce CSP, every read stubbed, `/api/market` fresh, stale and 503) with cairn's chart module read from `CAIRN_PUBLIC_DIR`; it skips by name without playwright-core (`PLAYWRIGHT_CORE` or installed), a Chromium (`PLAYWRIGHT_CHROMIUM`) and `CAIRN_PUBLIC_DIR`, so CI skips it. Run it locally before an explorer change merges, naming all three, since the Chromium build a given playwright-core expects may not be installed: `CAIRN_PUBLIC_DIR=<cairn>/public PLAYWRIGHT_CORE=<cairn>/node_modules/playwright-core PLAYWRIGHT_CHROMIUM=~/.cache/ms-playwright/chromium_headless_shell-1243/chrome-headless-shell-linux64/chrome-headless-shell npx tsx --test test/explorer-browser.test.ts`.
 - Live gate scripts (not CI, run via tsx against a live deployment): test/_live_check.mjs, _reconcile.mjs (per-attester rows sum to node aggregates), _browser_verify.mjs, _backend-diff.mjs (sqlite-vs-pg row diff at a finalized height; used to validate the production Postgres cutover), _backend-bench.mjs.
 
