@@ -39,7 +39,7 @@ The indexer binds 127.0.0.1 by default and is meant to sit behind a reverse prox
 
 ## Architecture
 
-TypeScript, run directly via `tsx` (no build step, no native deps; `node:sqlite` needs Node >= 22). ~2,100 lines in `src/`:
+TypeScript, run directly via `tsx` (no build step, no native deps; `node:sqlite` needs Node >= 22). About 2,200 lines in `src/` (`wc -l src/*.ts`, 2026-10-19):
 
 - `src/cli.ts` - entry. `index` = one sync pass + exit (cron/CI); `run` = continuous poll loop AND API server in one process.
 - `src/config.ts` - `CFG` from env. Key vars: `CSD_RPC` (default http://127.0.0.1:8789), `CSD_RPC_BACKENDS`, `CSD_INDEX_DB`, `CSD_INDEX_PG` (set => Postgres instead of sqlite), `CSD_INDEX_LISTEN` (127.0.0.1:8793), `CSD_CONFIRMATIONS_FINAL` (6), `CSD_INDEX_POLL` (15s), `CSD_STALE_SECS` (600), `CSD_INDEX_CHECKPOINT_FLOOR` (default read from the shared spv-checkpoint file whose path is baked into config.ts, hard fallback 38142), `CSD_INDEX_WORK_GUARD` (chainwork-guard kill switch, default on), and the knobs of rpc.ts and stream.ts listed below. It is the only `process.env` reader in `src/`; a numeric knob that is empty, zero, negative or not a number falls back to its default (`test/config-knob-positive.test.ts`).
