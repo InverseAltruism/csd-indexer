@@ -9,4 +9,12 @@ process.stdout.write(JSON.stringify({
   finalDepth: CFG.finalDepth,
   pollSecs: CFG.pollSecs,
   maxAheadBlocks: CFG.maxAheadBlocks,
+  routePlausibility: CFG.routePlausibility,
+  workEscapeCycles: CFG.workEscapeCycles,
+  powVerifyTimeoutMs: CFG.powVerifyTimeoutMs,
+  routeBlockSecs: CFG.routeBlockSecs,
+  maxSse: CFG.maxSse,
+  maxWs: CFG.maxWs,
+  maxSubKeys: CFG.maxSubKeys,
+  maxSseBuffer: CFG.maxSseBuffer,
 }));

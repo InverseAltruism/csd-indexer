@@ -6,16 +6,17 @@ import type { Request, Response } from "express";
 import type { Server } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 import { bus, type IndexEvent } from "./events.js";
+import { CFG } from "./config.js";
 
 // Bounds so an unauthenticated public endpoint can't be exhausted by many cheap connections or
-// one fat subscribe message. Tunable via env if a deployment needs more headroom.
-const MAX_SSE = Number(process.env.CSD_INDEX_MAX_SSE ?? 500);
-const MAX_WS = Number(process.env.CSD_INDEX_MAX_WS ?? 500);
-const MAX_SUB_KEYS = Number(process.env.CSD_INDEX_MAX_SUB ?? 1000); // per WS client, per category
+// one fat subscribe message (CFG.maxSse, maxWs, maxSubKeys per WS client and category).
+const MAX_SSE = CFG.maxSse;
+const MAX_WS = CFG.maxWs;
+const MAX_SUB_KEYS = CFG.maxSubKeys;
 // CAIRN-IDX-SSE-1: per-connection outbound buffer cap. A slow-loris client that stops reading lets
 // res.write() queue frames in the kernel/Node socket buffer unbounded; once the in-flight estimate
-// crosses this bound we drop the connection rather than grow memory. Tunable via env.
-const MAX_SSE_BUFFER = Number(process.env.CSD_INDEX_MAX_SSE_BUFFER ?? 4 * 1024 * 1024);
+// crosses this bound we drop the connection rather than grow memory.
+const MAX_SSE_BUFFER = CFG.maxSseBuffer;
 let sseOpen = 0, wsOpen = 0;
 
 // ── SSE: GET /stream/all and /stream/domain/:d ──

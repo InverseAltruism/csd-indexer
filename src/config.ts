@@ -85,6 +85,20 @@ export const CFG = {
   //     honest expected target is already at/near POW_LIMIT, the threshold saturates at POW_LIMIT so a
   //     min-diff contender passes the LWMA test (min-diff IS honest there) and only the delta cap applies.
   maxEaseFactor: num("CSD_RPC_MAX_EASE", 16),
+  // ROUTE-1 F6 kill switch: CSD_RPC_ROUTE_PLAUSIBILITY=0 turns the plausibility gate off. Default on.
+  routePlausibility: (process.env.CSD_RPC_ROUTE_PLAUSIBILITY ?? "1") !== "0",
+  // Cycles ACTIVE may stay below the best chainwork before rpc.ts forces a switch (work-escape).
+  workEscapeCycles: num("CSD_RPC_WORK_ESCAPE", 20),
+  // Timeout (ms) on the one tip-header fetch for a backend that claims to out-work the trust anchor.
+  powVerifyTimeoutMs: num("CSD_RPC_POW_TIMEOUT", 5000),
+  // Chain target block spacing (s) for the wall-clock-aware route delta cap; never used for consensus.
+  routeBlockSecs: Math.max(1, num("CSD_RPC_BLOCK_SECS", 120)),
+  // Streaming bounds (stream.ts): SSE and WS connection caps, subscription keys per WS client and
+  // category, and the per-SSE-connection outbound buffer in bytes.
+  maxSse: num("CSD_INDEX_MAX_SSE", 500),
+  maxWs: num("CSD_INDEX_MAX_WS", 500),
+  maxSubKeys: num("CSD_INDEX_MAX_SUB", 1000),
+  maxSseBuffer: num("CSD_INDEX_MAX_SSE_BUFFER", 4 * 1024 * 1024),
 };
 
 export function host(): string { return CFG.listen.split(":")[0] || "127.0.0.1"; }
