@@ -81,7 +81,7 @@ const day0 = NOW - (NOW % 86_400);
 const csdSeries = (q: URLSearchParams) => ({ ok: true, pair: "csd-usd", period: q.get("period"), range: q.get("range"), source: "coinpaprika",
   points: Array.from({ length: 30 }, (_, i) => { const c = 0.045 + 0.01 * Math.sin(i / 4); return [day0 - (29 - i) * 86_400, c, c * 1.04, c * 0.96, c, 9000]; }) });
 
-const S = { market: "fresh" as "fresh" | "stale" | "off", thin: false, partial: false, series: true, records: "on" as "on" | "404" | "400" };
+const S = { market: "fresh" as "fresh" | "stale" | "off", thin: false, partial: false, series: true, records: "on" as "on" | "404" | "400", gates: true };
 // CairnX proposals in the shapes of /domain/:d/proposals, and the resolver's verdicts for them: one refused mint
 const cxProp = (n: number, uri: object) => ({ txid: "0x" + n.toString(16).padStart(64, "0"), height: TIP - n, proposer: MINER, fee: 25000000, domain: "cairnx:v1", uri: JSON.stringify(uri) });
 const PROPS = Array.from({ length: 130 }, (_, i) => cxProp(i + 1, { v: 1, t: "mint", ticker: "CAIRN", amount: "100" }));
@@ -89,6 +89,8 @@ const REFUSED = PROPS[0]!.txid;
 const VERDICTS: Record<string, { kind: string; applied: boolean; note: string; height: number }> = Object.fromEntries(PROPS.map((p, i) =>
   [p.txid, { kind: "mint", applied: i !== 0, note: i === 0 ? "mint past supply" : "", height: p.height }]));
 const RECORD_READS: number[] = [];
+// The resolver's V25 gate height in /cairnx/health's `gates`, placed between the fixture records' heights.
+const V25_AT = TIP - 950;
 // An address whose Propose txs are cairnx records: 25 on the first page, 25 more behind "load more", the refused
 // mint on the second page.
 const WALLET = "0x" + "77".repeat(20);
@@ -164,6 +166,7 @@ const server = createServer(async (req, res) => {
       RECORD_READS.push(ids.length);
       return json(res, 200, { ok: true, tipHeight: TIP, records: Object.fromEntries(ids.filter((id) => id in VERDICTS).map((id) => [id, VERDICTS[id]])) });
     }
+    if (k === "/health") return S.gates ? json(res, 200, { ok: true, gates: { V25: V25_AT } }) : json(res, 404, { ok: false, error: "not found" });
     if (k === "/token/ZED") return json(res, 200, { ticker: "ZED", name: "Zed", decimals: 0, supply: "1000", minted: "10", mint: "issuer", height: TIP - 5,
       deployer: MINER, deployId: "0x" + "de".repeat(32), tmeta: "0x" + "4d".repeat(32), holders: {} });
     if (k === "/name/onsale") return json(res, 200, { ok: true, owner: MINER, height: TIP - 9, effectiveHeight: TIP - 9, lease: {}, offer: { give: { name: "onsale" }, want: null } });
@@ -484,22 +487,27 @@ for (const [which, at, text, cls] of CONTENT_CASES) {
   });
 }
 
-test("domain page: a name reveal reads as reserved, a direct claim as claimed, and nfinalize as finalized", { skip: why || false }, async () => {
-  Object.assign(S, { market: "off", series: true, records: "on" });
-  INDEXER["/domain/cairnx:v1/proposals"] = [
-    cxProp(901, { v: 1, t: "name", name: "alpha", salt: "0x" + "5a".repeat(16) }),
-    cxProp(902, { v: 1, t: "name", name: "beta" }),
-    cxProp(903, { v: 1, t: "nfinalize", name: "alpha", salt: "0x" + "5a".repeat(16) }),
-  ];
-  try {
-    const v = await open("/explorer#/domain/cairnx%3Av1", 1280, () => /proposal\(s\)/.test(document.body.innerText));
+for (const gates of [true, false]) {
+  test(`domain page: a reveal reads as ${gates ? "reserved from the resolver's V25 height on and claimed below it" : "revealed without the gate height"}; a direct claim as claimed; nfinalize as finalized`, { skip: why || false }, async () => {
+    Object.assign(S, { market: "off", series: true, records: "on", gates });
+    const salt = "0x" + "5a".repeat(16);
+    INDEXER["/domain/cairnx:v1/proposals"] = [
+      cxProp(901, { v: 1, t: "name", name: "alpha", salt }),     // height TIP - 901, at or above the gate
+      cxProp(902, { v: 1, t: "name", name: "beta" }),
+      cxProp(903, { v: 1, t: "nfinalize", name: "alpha", salt }),
+      cxProp(960, { v: 1, t: "name", name: "gamma", salt }),     // height TIP - 960, below the gate
+    ];
     try {
-      assert.deepEqual(v.errors, []);
-      const acts: string[] = await v.page.evaluate(() => [...document.querySelectorAll("td.act")].map((c: any) => c.textContent));
-      assert.deepEqual(acts, ["\u{1F4DB} Reserved name alpha.csd", "\u{1F4DB} Claimed name beta.csd", "\u{1F4DB} Finalized name alpha.csd: registration paid, the lease starts"]);
-    } finally { await v.close(); }
-  } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; }
-});
+      const v = await open("/explorer#/domain/cairnx%3Av1", 1280, () => /proposal\(s\)/.test(document.body.innerText));
+      try {
+        assert.deepEqual(v.errors, []);
+        const acts: string[] = await v.page.evaluate(() => [...document.querySelectorAll("td.act")].map((c: any) => c.textContent));
+        assert.deepEqual(acts, [`\u{1F4DB} ${gates ? "Reserved" : "Revealed"} name alpha.csd`, "\u{1F4DB} Claimed name beta.csd",
+          "\u{1F4DB} Finalized name alpha.csd: registration paid, the lease starts", `\u{1F4DB} ${gates ? "Claimed" : "Revealed"} name gamma.csd`]);
+      } finally { await v.close(); }
+    } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; S.gates = true; }
+  });
+}
 
 test("name page: an offer without a price reads \"Listed for sale\", no dash in place of the price", { skip: why || false }, async () => {
   Object.assign(S, { market: "off", series: true });
