@@ -27,13 +27,13 @@ jobs:
       # DUP-ANALYTICS lockstep guard now lives in.
       - name: test (offline, deterministic; glob, no hand-listing)
         run: npm test
-      # CAIRN-IDX-LOCKSTEP-1: the determinism-bearing codec/registry MUST be exact-pinned to the ecosystem
+      # CAIRN-IDX-LOCKSTEP-1: the determinism-bearing codec/light MUST be exact-pinned to the ecosystem
       # lockstep version (no caret → no silent float on a fresh install; the stale 0.1.2/0.1.1 was the fork seam).
       - name: determinism deps exact-pinned (no caret)
         run: |
           node -e '
             const p = require("./package.json");
-            for (const k of ["@inversealtruism/csd-codec", "@inversealtruism/csd-registry", "@inversealtruism/csd-light"]) {
+            for (const k of ["@inversealtruism/csd-codec", "@inversealtruism/csd-light"]) {
               const v = p.dependencies[k];
               if (!v || /^[\^~]/.test(v)) { console.error(`::error::${k} must be EXACT-pinned to the lockstep version, got ${v}`); process.exit(1); }
               console.log(`${k} exact-pinned at ${v}`);

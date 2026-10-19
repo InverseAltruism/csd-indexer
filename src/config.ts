@@ -25,10 +25,8 @@ export const CFG = {
   pgSchema: env("CSD_INDEX_PG_SCHEMA", "public"),
   // Postgres pool size (readers + the single writer).
   pgPoolSize: num("CSD_INDEX_PG_POOL", 10),
-  // HTTP bind for the REST + streaming API (8789 node, 8790 miner, 8791 swarm, 7777 cairn).
+  // HTTP bind for the REST + streaming API (8789 node, 8790 miner, 7777 cairn).
   listen: env("CSD_INDEX_LISTEN", "127.0.0.1:8793"),
-  // L1 swarm gateway used to resolve content bytes by payload_hash (optional join).
-  swarmGateway: env("CSD_SWARM_GATEWAY", "http://127.0.0.1:8791"),
   // First height to index. Genesis is 0; raise it to skip pre-CSD history if desired.
   scanFrom: num("CSD_INDEX_FROM", 0),
   // Blocks deeper than this are treated as final and never unwound (reorg bound).

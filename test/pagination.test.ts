@@ -1,7 +1,7 @@
 // CAIRN-IDX PAGINATION-DATALOSS-1 regression: the addressTxids keyset cursor must page the FULL
 // (height, txid) tuple. A height-only cursor (`height < beforeHeight`) silently drops the remaining
 // same-height txids when one block has more than `limit` txids touching an address (a busy
-// treasury/faucet/exchange address) — they appear on NO page. This drives the real query layer.
+// treasury/faucet/exchange address); they appear on NO page. This drives the real query layer.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { rmSync } from "node:fs";
@@ -12,7 +12,7 @@ process.env.CSD_INDEX_DB = DB;
 process.env.CSD_INDEX_PG_SCHEMA = "t_pag";
 process.env.CSD_INDEX_FROM = "0";
 
-const { addressTxids, addressTxidHeight } = await import("../src/queries.js");
+const { addressTxids, addressTxidHeight, attestationsFor } = await import("../src/queries.js");
 const { store, resetStoreForTests, closeDb } = await import("../src/db.js");
 await resetStoreForTests();
 
@@ -48,6 +48,31 @@ test("addressTxidHeight resolves a cursor txid's height; unknown → null", asyn
   assert.equal(await addressTxidHeight(ADDR, tx(0)), 100);
   assert.equal(await addressTxidHeight(ADDR, tx(100)), 50);
   assert.equal(await addressTxidHeight(ADDR, "0x" + "ff".repeat(32)), null);
+});
+
+// The CairnX resolver pages /proposal/:id/attestations to get the COMPLETE list (a truncated list
+// would diverge ledger state). Prove the keyset cursor reconstructs the full list with no dup/skip,
+// including across the (height,txid) tiebreak, independent of any per-request LIMIT.
+test("attestationsFor: keyset pagination returns the COMPLETE ordered list with no dup/skip", async () => {
+  const pid = tx(900);
+  const heights = [10, 10, 10, 11, 11, 12, 12, 12, 13, 13, 14, 14]; // dup heights exercise the txid tiebreak
+  for (const [i, h] of heights.entries()) {
+    await store().run("INSERT INTO attestations(txid,proposal_id,attester,score,confidence,fee,height,time) VALUES(?,?,?,?,?,?,?,0)",
+      tx(1000 + i), pid, "0x" + "cc".repeat(20), 100, 100, 5e6, h);
+  }
+  const all = await attestationsFor(pid, { limit: 1000 });
+  assert.equal(all.length, heights.length, "ground-truth single-page list has every attest");
+  const paged: { txid: string; height: number }[] = [];
+  let afterHeight: number | undefined, afterTxid: string | undefined;
+  for (let i = 0; i < 100; i++) {
+    const page = await attestationsFor(pid, { limit: 3, afterHeight, afterTxid }); // tiny page forces 4 or more pages
+    paged.push(...page);
+    if (page.length < 3) break;
+    const last = page[page.length - 1]!;
+    afterHeight = Number(last.height); afterTxid = last.txid;
+  }
+  assert.deepEqual(paged.map((a) => a.txid), all.map((a) => a.txid), "paged union equals the full list, same order");
+  assert.equal(new Set(paged.map((a) => a.txid)).size, paged.length, "no row appears twice across pages");
 });
 
 test.after(async () => { await closeDb(); });

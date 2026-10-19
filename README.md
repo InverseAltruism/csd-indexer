@@ -80,9 +80,6 @@ each, and a from-genesis reindex of mainnet matches row-for-row across backends.
 - `GET /proposal/:id/attestations` - the individual attestations behind a proposal (the node only
   gives totals).
 - `GET /domains`, `/domain/:d/proposals` - browse posts by category.
-- `GET /content/0x<hash>` - the off-chain content for a post, re-verified against its on-chain hash.
-- `GET /registry/peers`, `/registry/gateways`, `/identity/:handle` - name → address lookups and
-  network directories that anyone can recompute and get the same answer.
 
 ## The explorer
 

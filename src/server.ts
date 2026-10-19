@@ -1,6 +1,6 @@
 // REST API: the Esplora contract (so existing clients + the L0 light client work
 // against it unchanged) plus the CSD-specific extras the thin node omits; merkle
-// proofs, per-attester data, domain views, content joins. Every response is a
+// proofs, per-attester data, domain views. Every response is a
 // derived view; trust comes from the light client re-verifying the merkle proofs.
 import express, { type Request, type Response } from "express";
 import { createServer, type Server } from "node:http";
@@ -8,18 +8,15 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { readFileSync } from "node:fs";
 import { CFG, host, port } from "./config.js";
-import { verifyContentBytes } from "@inversealtruism/csd-codec";
 import { store } from "./db.js";
 import * as q from "./queries.js";
 import * as analytics from "./analytics.js";
 import { merkleProof } from "./merkle.js";
 import { indexedHeight } from "./indexer.js";
 import { sseHandler, attachWs } from "./stream.js";
-import * as registry from "./registry.js";
 
 const TXID = /^0x[0-9a-f]{64}$/;
 const ADDR = /^0x[0-9a-f]{40}$/;
-const HASH = /^0x[0-9a-f]{64}$/;
 
 // Package version, read once at boot. Exposed in /health as the cross-host skew tell (the same
 // fix class as cairnx's /cairnx/health version field): version drift between two indexer hosts
@@ -244,57 +241,6 @@ export function buildApp() {
   app.get("/analytics/richlist", h(async (req, res) => res.json(await analytics.richlist(Number(req.query.limit ?? 100)))));
   app.get("/analytics/supply", h(async (_req, res) => res.json(await analytics.supply())));
   app.get("/analytics/series", h(async (req, res) => res.json(await analytics.series(String(req.query.window ?? "1d"), Number(req.query.points ?? 56)))));
-
-  // ── L3 registry resolvers (deterministic; clients can recompute via csd-registry) ──
-  // CAIRN-IDX-ERR-1: routed through the same h() wrapper so a thrown error is logged server-side
-  // and surfaces as a generic 500 body (no pg DSN / SQL / schema / file-path leak).
-  app.get("/registry/peers", h(async (_req, res) => res.json(await registry.peers())));
-  app.get("/registry/gateways", h(async (_req, res) => res.json(await registry.gateways())));
-  app.get("/identity/:handle", h(async (req, res) => {
-    const r = await registry.identity(req.params.handle!);
-    return r ? res.json(r) : nf(res, "no verified binding for handle");
-  }));
-  app.get("/address/:a/identity", h(async (req, res) => {
-    if (!ADDR.test(req.params.a!.toLowerCase())) return bad(res, "want /address/0x<40-hex>/identity");
-    const r = await registry.reverse(req.params.a!);
-    return r ? res.json(r) : nf(res, "no primary name for address");
-  }));
-
-  // Content join: resolve canonical bytes by payload_hash via the L1 swarm gateway
-  // (self-certifying; the gateway re-checks sha256==hash; we just proxy).
-  app.get("/content/:hash", async (req, res) => {
-    const hash = String(req.params.hash! || "").toLowerCase();
-    if (!HASH.test(hash)) return bad(res, "want /content/0x<64-hex payload_hash>");
-    try {
-      const ctrl = new AbortController();
-      const to = setTimeout(() => ctrl.abort(), 5000);
-      let buf: Buffer;
-      try {
-        // explicit byte cap, enforced WHILE streaming (don't rely on the gateway's object limit
-        // for our own memory safety; abort the read the moment the body crosses the cap)
-        const r = await registry.fetchCapped(`${CFG.swarmGateway}/content/${hash}`, ctrl.signal, 4 * 1024 * 1024);
-        // CAIRN-IDX-ERR-5: the swarm gateway is an untrusted upstream; normalize its failure status
-        // to a fixed 502 (as the sibling oversize/verify/unreachable branches do) rather than
-        // forwarding an attacker-influenceable raw r.status to our clients.
-        if (!r.ok) return res.status(502).json({ error: "content unavailable via swarm gateway" });
-        if (r.oversize) return res.status(502).json({ error: "content exceeds size cap" });
-        buf = Buffer.from(r.body);
-      } finally { clearTimeout(to); }
-      // SELF-CERTIFY before serving: the swarm gateway is an untrusted transport, and a buggy/
-      // hostile one (or a cache in front) could hand back wrong bytes. We assert integrity
-      // headers (ETag/immutable/X-CSD-Payload-Hash), so we must prove sha256(bytes)==hash here
-      // rather than trust the gateway; else we'd pin wrong bytes under a content-address forever.
-      if (!verifyContentBytes(new Uint8Array(buf), hash)) {
-        return res.status(502).json({ error: "content failed self-verification (gateway returned bytes that do not hash to the payload_hash)" });
-      }
-      res.setHeader("Content-Type", "application/json; charset=utf-8");
-      res.setHeader("X-Content-Type-Options", "nosniff");
-      res.setHeader("ETag", `"${hash}"`);
-      res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
-      res.setHeader("X-CSD-Payload-Hash", hash);
-      res.send(buf);
-    } catch { res.status(502).json({ error: "swarm gateway unreachable" }); }
-  });
 
   return app;
 }
