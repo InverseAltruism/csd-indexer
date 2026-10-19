@@ -164,7 +164,7 @@
   <a class="brand" href="#/" title="explorer home"><span class="dot"></span>CSD&nbsp;<b>Explorer</b></a>
   <!-- submit is bound in the (nonced) script via addEventListener, NOT an inline onsubmit=: when this
        page is proxied at cairn's /explorer the CSP is `script-src 'self' 'nonce-…'`, and a nonce never
-       authorizes inline event-handler attributes — the old onsubmit was silently CSP-blocked, so search
+       authorizes inline event-handler attributes; the old onsubmit was silently CSP-blocked, so search
        did nothing via the public front door (it only worked hitting the indexer :8793 directly). -->
   <form class="search" id="search-form">
     <input id="q" aria-label="search the chain" placeholder="search: name.csd · block height · 0x txid · 0x address" autocomplete="off"/>
@@ -229,7 +229,7 @@ const ago = (t)=>{if(!t)return '';const ref=Math.max(Math.floor(Date.now()/1000)
 const j = async(p)=>{const r=await fetch(API+p);if(!r.ok)throw new Error(p+' → '+r.status);return r.json();};
 
 // ── client-side merkle fold (SubtleCrypto, no deps). A consistency check against the
-//    indexer's own header — NOT a trustless proof (no PoW/checkpoint verification here). ──
+//    indexer's own header, NOT a trustless proof (no PoW/checkpoint verification here). ──
 const hexToBytes = (h)=>{h=h.replace(/^0x/,'');const a=new Uint8Array(h.length/2);for(let i=0;i<a.length;i++)a[i]=parseInt(h.substr(i*2,2),16);return a;};
 const bytesToHex = (b)=>'0x'+[...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,'0')).join('');
 async function sha256(b){return new Uint8Array(await crypto.subtle.digest('SHA-256',b));}
@@ -247,7 +247,7 @@ async function verifyInclusion(txid,pos,branch,root){
 window.addEventListener('hashchange',route);
 // bind search here (NOT an inline onsubmit=) so it survives the nonce CSP on the proxied /explorer.
 document.getElementById('search-form').addEventListener('submit',doSearch);
-// (no eager warmDecimals() here — `let DEC` is declared below, so an eager call would hit its
+// (no eager warmDecimals() here: `let DEC` is declared below, so an eager call would hit its
 // temporal dead zone and reject before its first await, doing nothing. Every render path awaits
 // warmDecimals()/warmVerdicts() itself, which is where the actual warming happens.)
 async function route(){
@@ -300,9 +300,9 @@ const addrLink=(a)=>{
   const lbl=labelOf(a);
   return `<a class="mono addrl" data-name-addr="${esc(a)}" href="#/address/${esc(a)}">${short(a,8)}</a>`+(lbl?`<span class="chip">${esc(lbl)}</span>`:'');
 };
-// ── reverse name resolution (DISPLAY ONLY; front-door only — needs the CairnX sibling proxy) ──
+// ── reverse name resolution (DISPLAY ONLY; front-door only: needs the CairnX sibling proxy) ──
 // addr(lowercase) → primary .csd name | null, batched against /cairnx/primaries (cap 64/req) and
-// memoized for the session. Standalone (no SIB.cairnx) stays hex — graceful degradation. This is a
+// memoized for the session. Standalone (no SIB.cairnx) stays hex (graceful degradation). This is a
 // reverse view of nset round-trips; it is never used to route a payment, only to label addresses.
 const NAMECACHE=new Map();
 async function resolveNames(addrs){
@@ -330,7 +330,7 @@ async function paintNames(root){
 // ── .csd name page helpers ──
 // 1 epoch = 30 blocks ≈ 1 hour, so an epoch count reads as hours; roll up to days/months.
 const epochsToHuman=(e)=>{e=Math.max(0,Math.round(e));if(e<48)return e+'h';if(e<24*60)return Math.round(e/24)+'d';return Math.round(e/24/30.4)+'mo';};
-const KIND_LABEL={ncommit:'🔒 sealed a commitment',name:'📛 claimed',nset:'📍 set address',nxfer:'🎁 transferred',nrenew:'♻️ renewed lease',offer:'🏷 listed for sale',ocancel:'✕ cancelled listing',bid:'🙋 bid',claim:'📌 reserved (open offer)',fill:'🤝 bought / sold (fill)',cancel:'✕ cancelled'};
+const KIND_LABEL={ncommit:'🔒 sealed a commitment',name:'📛 claimed',nfinalize:'✅ finalized',nset:'📍 set address',nxfer:'🎁 transferred',nrenew:'♻️ renewed lease',offer:'🏷 listed for sale',ocancel:'✕ cancelled listing',bid:'🙋 bid',claim:'📌 reserved (open offer)',fill:'🤝 bought / sold (fill)',cancel:'✕ cancelled'};
 const kindLabel=(k)=>KIND_LABEL[k]||esc(k||'record');
 // deterministic name-hash colour + initial, so a name has a recognisable "face" (cheap, no deps)
 const nameHue=(s)=>{let h=0;for(let i=0;i<s.length;i++)h=(h*31+s.charCodeAt(i))>>>0;return h%360;};
@@ -379,7 +379,7 @@ function dropCharts(root){ for(const [h,m] of MOUNTS) if(root.contains(h)){ m.de
 const tag=(name,cls,text)=>{const e=document.createElement(name);if(cls)e.className=cls;if(text!=null)e.textContent=text;return e;};
 
 // ── CairnX record → plain English (mirrors cairnx CONVENTION §4/§9-18; display only) ──
-// SECURITY: dec comes from RAW on-chain records (attacker-controlled) on the home activity feed —
+// SECURITY: dec comes from RAW on-chain records (attacker-controlled) on the home activity feed:
 // clamp it so a crafted decimals (e.g. 7_000_000) can't blow up 10**dec / padStart into a DoS.
 const fmtAmt=(v,dec)=>{try{dec=Number(dec)||0;if(dec<0||dec>30)return esc(v);const n=BigInt(v);const d=BigInt(10)**BigInt(dec);const i=n/d,f=n%d;return f?`${i}.${String(f).padStart(dec,'0').replace(/0+$/,'')}`:i.toLocaleString();}catch{return esc(v);}};
 // token decimals, warmed once per session from the resolver (cairn front door only) - action
@@ -406,12 +406,12 @@ async function warmVerdicts(ids,more=false){
 }
 async function verdictsFromLog(){ const log=await jx(SIB.cairnx,'/log?limit=5000'); for(const e of (Array.isArray(log)?log:[])) VER[String(e.id).toLowerCase()]={applied:e.ok,note:e.note}; return VER; }
 // Wrap a decoded record line with its resolver verdict. A refused record is struck through and
-// tagged "no effect" with the reason — the tx is real and paid its anchor fee, but the CairnX
+// tagged "no effect" with the reason: the tx is real and paid its anchor fee, but the CairnX
 // action was a no-op that anyone re-running the open resolver reproduces.
 function cxVerdict(body,verdict){
   if(body==null) return body;
   if(verdict&&verdict.applied===false)
-    return `<span class="cx-void">${body}</span> <span class="cx-noeffect" title="The CairnX resolver REJECTED this record — it has no effect on token state, and anyone re-running the open resolver gets the same result. The transaction is real and paid its anchor fee; only the CairnX action was a no-op.">✕ no effect${verdict.note?` — ${esc(verdict.note)}`:''}</span>`;
+    return `<span class="cx-void">${body}</span> <span class="cx-noeffect" title="The CairnX resolver REJECTED this record. It has no effect on token state, and anyone re-running the open resolver gets the same result. The transaction is real and paid its anchor fee; only the CairnX action was a no-op.">✕ no effect${verdict.note?` - ${esc(verdict.note)}`:''}</span>`;
   return body;
 }
 function describeCairnx(rec){
@@ -432,7 +432,8 @@ function describeCairnx(rec){
       }
       case 'ocancel': return `✕ <span class="what">Cancelled all open offers</span>${rec.ticker?` in <b class="amber">${esc(rec.ticker)}</b>`:rec.name?` on <b class="green">${esc(rec.name)}.csd</b>`:''}`;
       case 'ncommit': return `🔒 <span class="what">Sealed a name commitment</span> - the name is revealed later (front-run defense)`;
-      case 'name': return `📛 <span class="what">${rec.salt?'Revealed & claimed':'Claimed'} name <b class="green">${esc(rec.name)}.csd</b></span>`;
+      case 'name': return `📛 <span class="what">${rec.salt?'Reserved':'Claimed'} name <b class="green">${esc(rec.name)}.csd</b></span>`;
+      case 'nfinalize': return `✅ <span class="what">Finalized name <b class="green">${esc(rec.name)}.csd</b></span> - registration paid, the lease starts`;
       case 'nxfer': return `🎁 <span class="what">Transferred name <b class="green">${esc(rec.name)}.csd</b></span> to ${addrLink(rec.to)}`;
       case 'nset': return `📍 <span class="what">Pointed <b class="green">${esc(rec.name)}.csd</b></span> at ${addrLink(rec.addr)}`;
       case 'nrenew': return `♻️ <span class="what">Renewed the lease on <b class="green">${esc(rec.name)}.csd</b></span> - +1 year`;
@@ -622,10 +623,10 @@ async function home(v){
   recent.slice(0,12).forEach(b=>tb.appendChild(blockRow(b)));
   subscribeBlocks(tb);
 
-  // ── recent CairnX activity (names + DEX), decoded — All / Names / DEX ──
+  // ── recent CairnX activity (names + DEX), decoded: All / Names / DEX ──
   const NAME_KINDS=new Set(['name','nset','nxfer','nrenew','ncommit']);
-  // /domain/:d/proposals is already newest-first (DESC by height) — do NOT reverse
-  const acts=(cxprops||[]).map(p=>{ let rec=null; try{rec=JSON.parse(p.uri);}catch{}
+  // /domain/:d/proposals is already newest-first (DESC by height); do NOT reverse
+  const acts=(cxprops||[]).map(p=>{ let rec=null; try{rec=JSON.parse(p.uri);}catch{ /* not JSON: no record kind, the row shows under all */ }
       const html=describeDomainRecord('cairnx:v1',p.uri,VER&&VER[p.txid.toLowerCase()]); return html?{p,html,name:!!(rec&&NAME_KINDS.has(rec.t))}:null; })
     .filter(Boolean);
   if(acts.length){
@@ -717,7 +718,7 @@ function blockRow(b,live){
 async function recentBlocks(){
   // one round-trip (newest-first); 31 blocks feed the block list (12 shown), the emission chart's
   // newest block AND the block-times chart from a single fetch
-  try{ const r=await j('/blocks/recent?limit=31'); if(Array.isArray(r)) return r; }catch{}
+  try{ const r=await j('/blocks/recent?limit=31'); if(Array.isArray(r)) return r; }catch{ /* no /blocks/recent on this indexer: the per-block reads below */ }
   // fallback for an indexer without /blocks/recent (older deploy / different host)
   const tip=await j('/blocks/tip/height');const out=[];
   for(let h=tip;h>tip-12&&h>=0;h--){const hash=await j('/block-height/'+h).catch(()=>null);if(!hash)continue;out.push(await j('/block/'+hash));}
@@ -725,13 +726,13 @@ async function recentBlocks(){
 }
 function subscribeBlocks(tb){
   // Auto-refresh by POLLING /blocks/recent (real timestamps, deduped by height). This works regardless of
-  // SSE / the front-door proxy, which does NOT forward the event-stream — the old EventSource-only feed
+  // SSE / the front-door proxy, which does NOT forward the event-stream: the old EventSource-only feed
   // therefore never updated through cairn-subst.com/explorer, and it stamped streamed rows with the CLIENT
   // clock (Date.now()) so every live block read "0s ago". SSE, when reachable (standalone), just nudges a poll.
   const seen=new Map(); tb.querySelectorAll('[data-h]').forEach(r=>seen.set(+r.getAttribute('data-h'), r.getAttribute('data-hash')||''));
   let es=null,last=0;
   async function poll(){
-    if(!tb.isConnected){ clearInterval(iv); try{es&&es.close();}catch{} return; }   // view navigated away → stop
+    if(!tb.isConnected){ clearInterval(iv); try{es&&es.close();}catch{ /* already closed */ } return; }   // view navigated away → stop
     const now=Date.now(); if(now-last<1500) return; last=now;                        // debounce SSE bursts
     let rows; try{ rows=await j('/blocks/recent?limit=12'); }catch{ return; }
     if(!Array.isArray(rows)) return;
@@ -747,8 +748,8 @@ function subscribeBlocks(tb){
   const iv=setInterval(poll,12000);
   try{ es=new EventSource(API+'/stream/blocks');
     es.addEventListener('block',()=>poll());
-    es.addEventListener('reorg',ev=>{try{const d=JSON.parse(ev.data);const p=$('#livepill');if(p){p.textContent='⟲ reorg @'+d.ancestor;p.classList.add('red');}}catch{}});
-  }catch{}
+    es.addEventListener('reorg',ev=>{try{const d=JSON.parse(ev.data);const p=$('#livepill');if(p){p.textContent='⟲ reorg @'+d.ancestor;p.classList.add('red');}}catch{ /* a malformed reorg event: the poll below still replaces the rows */ }});
+  }catch{ /* no EventSource here: the 12 s poll keeps the feed current */ }
 }
 
 async function blockPage(v,id){
@@ -805,15 +806,15 @@ async function txPage(v,id){
         const prop=await j('/proposal/'+pidHex).catch(()=>null);
         const score=full.tx.app.score, conf=full.tx.app.confidence;
         if(prop&&prop.domain==='cairnx:v1'){
-          let rec=null; try{rec=JSON.parse(prop.uri);}catch{}
+          let rec=null; try{rec=JSON.parse(prop.uri);}catch{ /* not JSON: rec stays null, which the lines below handle */ }
           const me=(tx.signer||'').toLowerCase();
           const paid=(tx.outputs||[]).filter(o=>(o.addr||'').toLowerCase()!==me).reduce((s,o)=>s+o.value,0);
           const what=(rec&&rec.t==='offer')?(rec.give.name?`name <b class="green">${esc(rec.give.name)}.csd</b>`:`<b class="amber">${esc(rec.give.ticker)}</b>`):'';
           if(score===0) line=`✕ <span class="what">Cancelled</span> ${rec&&rec.t==='bid'?'a bid':'an offer'} - ${link('/proposal/'+pidHex,short(pidHex,10),'mono')}`;
           else if(conf===1000000&&rec) line=`⇄ <span class="what">Token swap fill</span> - took the offer ${link('/proposal/'+pidHex,short(pidHex,10),'mono')} (${amt(rec.give&&rec.give.amount,rec.give&&rec.give.ticker)} ${esc(rec.give&&rec.give.ticker)} for ${amt(rec.want&&rec.want.amount,rec.want&&rec.want.ticker)} ${esc(rec.want&&rec.want.ticker)}, paid in tokens - no CSD moves)`;
           /* v1.7 open-lane CLAIM (Attest score=SCORE_CLAIM=50, no payment): a free reservation, NOT a purchase.
-             Must NOT read as "Bought … for 0 CSD" — the fill (score=100) comes later. */
-          else if(rec&&rec.t==='offer'&&score===50) line=`📌 <span class="what">Reserved ${what}</span> <span class="muted">(open offer — claimed; the purchase completes after a short reorg-safe wait)</span> - offer ${link('/proposal/'+pidHex,short(pidHex,10),'mono')}`;
+             Must NOT read as "Bought … for 0 CSD": the fill (score=100) comes later. */
+          else if(rec&&rec.t==='offer'&&score===50) line=`📌 <span class="what">Reserved ${what}</span> <span class="muted">(open offer, claimed; the purchase completes after a short reorg-safe wait)</span> - offer ${link('/proposal/'+pidHex,short(pidHex,10),'mono')}`;
           else if(rec&&rec.t==='offer'&&score===100) line=`🤝 <span class="what">Bought ${what}</span> for <b>${fmtCSD(paid)}</b> (payment + fill in ONE atomic tx) - offer ${link('/proposal/'+pidHex,short(pidHex,10),'mono')}`;
           else line=`⭐ <span class="what">Attested</span> score ${score} on ${link('/proposal/'+pidHex,short(pidHex,10),'mono')}`;
         } else if(prop){
@@ -858,7 +859,7 @@ async function txPage(v,id){
       </div></div>`));
     // Fold the branch against the block's merkle root. NOTE: that root comes from the SAME
     // untrusted indexer (no PoW/header verification here), so a matching fold proves only that
-    // the proof is CONSISTENT with the header this indexer reports — not consensus inclusion.
+    // the proof is CONSISTENT with the header this indexer reports, not consensus inclusion.
     try{
       const blk=await j('/block/'+await j('/block-height/'+proof.block_height));
       const ok=await verifyInclusion(tx.txid,proof.pos,proof.merkle,blk.merkle);
@@ -920,7 +921,7 @@ async function addrPage(v,a){
   // decode one row (each is a cheap local lookup)
   async function decodeTxRow(t,i){
     try{
-      // rows carry outputs inline (indexer >= 0.2.5) — no per-row /tx refetch; older responses fall back to one fetch
+      // rows carry outputs inline (indexer >= 0.2.5): no per-row /tx refetch; older responses fall back to one fetch
       const full=(t&&Array.isArray(t.outputs))?t:await j('/tx/'+t.txid);
       // direction: outputs to me − (if I signed: everything I paid)
       const recv=(full.outputs||[]).filter(o=>(o.addr||'').toLowerCase()===me).reduce((x,o)=>x+o.value,0);
@@ -939,20 +940,20 @@ async function addrPage(v,a){
         const nf=await jx(SIB.node,'/tx/'+t.txid);
         const pid=nf&&nf.tx&&nf.tx.app&&nf.tx.app.proposal_id;
         if(pid){const prop=await j('/proposal/'+pid).catch(()=>null);
-          if(prop&&prop.domain==='cairnx:v1'){let rec=null;try{rec=JSON.parse(prop.uri);}catch{}
+          if(prop&&prop.domain==='cairnx:v1'){let rec=null;try{rec=JSON.parse(prop.uri);}catch{ /* not JSON: rec stays null, which the labels below handle */ }
             const slot=$('#act-'+i);
             if(slot){ const sc=nf.tx.app.score, wn=rec&&rec.give?(rec.give.name?esc(rec.give.name)+'.csd':esc(rec.give.ticker)):''; slot.innerHTML = sc===0?'✕ cancelled an offer/bid':(rec&&rec.t==='offer'&&sc===50?`📌 reserved ${wn}`:(rec&&rec.t==='offer'&&sc===100?`🤝 bought ${wn}`:(rec&&rec.t==='offer'?`🤝 fill - ${wn}`:'⭐ attested'))); }
           }}
       } else if(full.coinbase){const slot=$('#act-'+i); if(slot) slot.innerHTML='⛏ block reward';}
       else if(full.app_type==='Transfer'||full.app_type==='None'){const slot=$('#act-'+i); if(slot) slot.innerHTML='💸 CSD transfer';}
       paintNames($('#act-'+i));
-    }catch{}
+    }catch{ /* a failed read leaves this row's placeholders; the other rows decode on their own */ }
   }
 
   await appendTxPage(txs,false);
 }
 
-// ── .csd name profile page (the name-service centerpiece) — front-door only ──
+// ── .csd name profile page (the name-service centerpiece), front-door only ──
 async function namePage(v,label){
   label=String(label||'').toLowerCase().replace(/\.csd$/,'');
   if(!SIB.cairnx){ v.innerHTML='<div class="panel"><h2>name</h2><div class="muted">.csd name pages need the cairn front door (cairn-substrate.com/explorer). This standalone view has no name resolver.</div></div>'; return; }
@@ -982,7 +983,7 @@ async function namePage(v,label){
   </div></div>`));
   const prof=n.profile||{}, pk=Object.keys(prof).filter(k=>prof[k]);
   if(pk.length) v.appendChild(el(`<div class="panel"><h2>profile</h2><div class="kv">${pk.map(k=>`<div>${esc(k)}</div><div class="v">${esc(String(prof[k]))}</div>`).join('')}</div></div>`));
-  if(n.offer){ const o=n.offer, price=o.want&&o.want.value!=null?fmtCSD(o.want.value):(o.want?`${esc(o.want.amount)} ${esc(o.want.ticker)}`:'—');
+  if(n.offer){ const o=n.offer, price=o.want&&o.want.value!=null?fmtCSD(o.want.value):(o.want?`${esc(o.want.amount)} ${esc(o.want.ticker)}`:'-');
     v.appendChild(el(`<div class="panel"><h2>for sale</h2><div class="action">🏷 <span class="what">Listed for <b>${price}</b></span>${o.taker?' · reserved (RFQ)':' · open offer'}</div>
       <div class="muted">Buy at <a href="https://cairn-substrate.com/names" target="_blank" rel="noopener">/names ↗</a></div></div>`));
   }

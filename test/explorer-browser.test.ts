@@ -86,7 +86,7 @@ const day0 = NOW - (NOW % 86_400);
 const csdSeries = (q: URLSearchParams) => ({ ok: true, pair: "csd-usd", period: q.get("period"), range: q.get("range"), source: "coinpaprika",
   points: Array.from({ length: 30 }, (_, i) => { const c = 0.045 + 0.01 * Math.sin(i / 4); return [day0 - (29 - i) * 86_400, c, c * 1.04, c * 0.96, c, 9000]; }) });
 
-const S = { market: "fresh" as "fresh" | "stale" | "off", thin: false, partial: false, series: true, records: "on" as "on" | "404" };
+const S = { market: "fresh" as "fresh" | "stale" | "off", thin: false, partial: false, series: true, records: "on" as "on" | "404" | "400" };
 // CairnX proposals in the shapes of /domain/:d/proposals, and the resolver's verdicts for them: one refused mint
 const cxProp = (n: number, uri: object) => ({ txid: "0x" + n.toString(16).padStart(64, "0"), height: TIP - n, proposer: MINER, fee: 25000000, domain: "cairnx:v1", uri: JSON.stringify(uri) });
 const PROPS = Array.from({ length: 130 }, (_, i) => cxProp(i + 1, { v: 1, t: "mint", ticker: "CAIRN", amount: "100" }));
@@ -155,6 +155,7 @@ const server = createServer(async (req, res) => {
     const k = p.slice(17);
     if (k === "/records") {
       if (S.records === "404") return json(res, 404, { ok: false, error: "not a cairnx read endpoint" });
+      if (S.records === "400") return json(res, 400, { ok: false, error: "at most 100 txids per request, got 130" });
       const ids = (url.searchParams.get("ids") ?? "").split(",");
       RECORD_READS.push(ids.length);
       return json(res, 200, { ok: true, tipHeight: TIP, records: Object.fromEntries(ids.filter((id) => id in VERDICTS).map((id) => [id, VERDICTS[id]])) });
@@ -385,9 +386,10 @@ test("the market going from fresh to 503 while the page is open hides the CSD/US
 });
 
 // Verdicts (Plan 85 12.2d): the records a view shows are asked of /cairnx/records, 100 txids a read; a front door or
-// resolver without that route (404) falls back to the applied-event log. The log is not read when the route answers.
-for (const records of ["on", "404"] as const) {
-  test(`domain page, /cairnx/records ${records === "on" ? "answering: two reads for 130 records, no log read" : "404: one log read"}; the refused mint shows no effect`, { skip: why || false }, async () => {
+// resolver without that route (404) or one that refuses the read (400) falls back to the applied-event log. The log is
+// not read when the route answers.
+for (const records of ["on", "404", "400"] as const) {
+  test(`domain page, /cairnx/records ${records === "on" ? "answering: two reads for 130 records, no log read" : `${records}: one log read`}; the refused mint shows no effect`, { skip: why || false }, async () => {
     Object.assign(S, { market: "off", series: true, records });
     INDEXER["/domain/cairnx:v1/proposals"] = PROPS;
     RECORD_READS.length = 0;
@@ -466,3 +468,20 @@ for (const [which, at, text, cls] of CONTENT_CASES) {
     } finally { await v.close(); }
   });
 }
+
+test("domain page: a name reveal reads as reserved, a direct claim as claimed, and nfinalize as finalized", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, records: "on" });
+  INDEXER["/domain/cairnx:v1/proposals"] = [
+    cxProp(901, { v: 1, t: "name", name: "alpha", salt: "0x" + "5a".repeat(16) }),
+    cxProp(902, { v: 1, t: "name", name: "beta" }),
+    cxProp(903, { v: 1, t: "nfinalize", name: "alpha", salt: "0x" + "5a".repeat(16) }),
+  ];
+  try {
+    const v = await open("/explorer#/domain/cairnx%3Av1", 1280, () => /proposal\(s\)/.test(document.body.innerText));
+    try {
+      assert.deepEqual(v.errors, []);
+      const acts: string[] = await v.page.evaluate(() => [...document.querySelectorAll("td.act")].map((c: any) => c.textContent));
+      assert.deepEqual(acts, ["\u{1F4DB} Reserved name alpha.csd", "\u{1F4DB} Claimed name beta.csd", "\u2705 Finalized name alpha.csd - registration paid, the lease starts"]);
+    } finally { await v.close(); }
+  } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; }
+});
