@@ -8,13 +8,9 @@
 // SDK's merkleRoot reproduces the node's header.merkle for real blocks).
 import { merkleBranch, merkleRoot } from "@inversealtruism/csd-codec";
 import { store } from "./db.js";
+import { blockTxids } from "./queries.js";
 
 export interface MerkleProof { block_height: number; pos: number; merkle: string[]; merkle_root: string; }
-
-/** Ordered txids of a (canonical) block, by position. */
-export async function blockTxids(height: number): Promise<string[]> {
-  return (await store().all<{ txid: string }>("SELECT txid FROM txs WHERE height=? ORDER BY pos", height)).map(r => r.txid);
-}
 
 /** Build the inclusion proof for a txid, or null if we don't have it. */
 export async function merkleProof(txid: string): Promise<MerkleProof | null> {
