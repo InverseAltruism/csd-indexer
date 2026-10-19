@@ -27,7 +27,7 @@ test("the registry, identity and content routes answer 404", async () => {
 });
 
 test("HAPPY PATH: the routes the explorer and the resolver read still answer", async () => {
-  for (const p of ["/health", "/domains", `/address/${ADDR}`, `/address/${ADDR}/reputation`, `/proposal/${HASH}/attestations`]) {
+  for (const p of ["/health", "/domains", "/domain/cairnx%3Av1/proposals", `/address/${ADDR}`, `/address/${ADDR}/reputation`, `/proposal/${HASH}/attestations`]) {
     const r = await fetch(base + p);
     assert.equal(r.status, 200, p);
     assert.match(r.headers.get("content-type") ?? "", /application\/json/, p);
