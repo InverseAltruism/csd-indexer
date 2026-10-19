@@ -1026,20 +1026,25 @@ async function proposalPage(v,id){
   await contentBadge($('#cibadge'),p.payload_hash);
 }
 // The proposal's content, from cairn's /content (same origin, front door only): served bytes are hashed here, as
-// received, and only bytes whose sha256 equals the on-chain payload_hash read as verified.
+// received, and only bytes whose sha256 equals the on-chain payload_hash read as verified. A mismatch is called one
+// only when cairn's own X-CSD-Payload-Hash header names this hash; any other 200 (an edge error or challenge page,
+// an app-shell fallback) is not cairn's answer, so it reads as unavailable.
 async function contentBadge(badge,hash){
   const set=(text,cls)=>{ badge.textContent=text; badge.className='badge '+cls; };
   if(!SIB.content){ set('content check needs the cairn front door','pend'); return; }
   if(!/^0x[0-9a-f]{64}$/i.test(String(hash))){ set('no content hash','pend'); return; }
-  let bytes;
+  const want=hash.toLowerCase();
+  let bytes, named;
   try{
-    const r=await fetch(SIB.content+hash.toLowerCase());
+    const r=await fetch(SIB.content+want);
     if(r.status===404){ set('content not held by this front door','pend'); return; }
     if(!r.ok){ set('content unavailable','pend'); return; }
+    named=String(r.headers.get('X-CSD-Payload-Hash')||'').toLowerCase()===want;
     bytes=new Uint8Array(await r.arrayBuffer());
   }catch{ set('content unavailable','pend'); return; }   // network error or an aborted body: nothing was checked
-  const ok=bytesToHex(await sha256(bytes))===hash.toLowerCase();
-  set(ok?'✓ content integrity verified':'✗ content MISMATCH',ok?'ok':'bad');
+  if(bytesToHex(await sha256(bytes))===want) set('✓ content integrity verified','ok');
+  else if(named) set('✗ content MISMATCH','bad');
+  else set('content unavailable','pend');
 }
 
 // ── header stats + live ──

@@ -110,8 +110,17 @@ const GOOD = Buffer.from('{"v":1,"t":"peer"}'), BINARY = Buffer.from([0xff, 0xfe
 const CONTENT = new Map<string, Buffer>([[sha(GOOD), GOOD], [sha(BINARY), BINARY], [sha(Buffer.from("claimed")), Buffer.from("served instead")]]);
 const contentProp = (n: number, payload_hash: string) => ({ txid: "0x" + (0xc0 + n).toString(16).padStart(64, "0"), domain: "csd:test", payload_hash, uri: "",
   proposer: MINER, fee: 25000000, expires_epoch: 5000, height: TIP - n, attestation_count: 0, attestation_count_truncated: false, attestations: [] as unknown[] });
+// How the stub answers some hashes instead of cairn's 200 with its X-CSD-Payload-Hash header: an edge or app-shell
+// HTML 200, a 200 naming another hash, cairn's 200 without the header, a 502, a dropped connection.
+const ODD = new Map<string, "html" | "other" | "noheader" | "502" | "drop">([[sha(Buffer.from("edge")), "html"], [sha(Buffer.from("other")), "other"],
+  [sha(GOOD).replace(/.$/, "0"), "502"], [sha(Buffer.from("drop")), "drop"]]);
+const NOHEADER = sha(Buffer.from("plain bytes"));
+CONTENT.set(NOHEADER, Buffer.from("plain bytes"));
+ODD.set(NOHEADER, "noheader");
 const CONTENT_PROPS = { good: contentProp(1, sha(GOOD)), binary: contentProp(2, sha(BINARY)), tampered: contentProp(3, sha(Buffer.from("claimed"))),
-  absent: contentProp(4, sha(Buffer.from("not held"))) };
+  absent: contentProp(4, sha(Buffer.from("not held"))), edgeHtml: contentProp(5, sha(Buffer.from("edge"))), otherHash: contentProp(6, sha(Buffer.from("other"))),
+  noHeader: contentProp(7, NOHEADER), upperCase: contentProp(8, "0x" + sha(GOOD).slice(2).toUpperCase()), e502: contentProp(9, sha(GOOD).replace(/.$/, "0")),
+  dropped: contentProp(10, sha(Buffer.from("drop"))), noHash: contentProp(11, "") };
 const REQS: string[] = [];
 const json = (res: ServerResponse, status: number, body: unknown, extra: Record<string, string> = {}) => {
   res.writeHead(status, { "content-type": "application/json", ...extra }); res.end(JSON.stringify(body));
@@ -161,9 +170,15 @@ const server = createServer(async (req, res) => {
   }
   if (p === "/api/health") return json(res, 200, { ok: true, tipHeight: TIP });
   if (p.startsWith("/content/")) {
-    const body = CONTENT.get(p.slice(9));
+    const h = p.slice(9), odd = ODD.get(h);
+    if (odd === "drop") return void req.socket.destroy();
+    if (odd === "502") return json(res, 502, { error: "bad gateway" });
+    if (odd === "html") { res.writeHead(200, { "content-type": "text/html" }); return res.end("<!doctype html><title>Just a moment...</title>"); }
+    if (odd === "other") { res.writeHead(200, { "content-type": "application/json", "x-csd-payload-hash": sha(GOOD) }); return res.end(GOOD); }
+    const body = CONTENT.get(h);
     if (!body) return json(res, 404, { ok: false, error: "unknown payload_hash (not registered here)" });
-    res.writeHead(200, { "content-type": "application/json; charset=utf-8" }); return res.end(body);
+    res.writeHead(200, { "content-type": "application/json; charset=utf-8", ...(odd === "noheader" ? {} : { "x-csd-payload-hash": h }) });
+    return res.end(body);
   }
   if (p === "/charts/chart.js") {
     res.writeHead(200, { "content-type": "text/javascript" }); return res.end(await readFile(CHART_STUB));
@@ -444,6 +459,13 @@ const CONTENT_CASES = [
   ["binary", "/explorer", "\u2713 content integrity verified", "ok"],
   ["tampered", "/explorer", "\u2717 content MISMATCH", "bad"],
   ["absent", "/explorer", "content not held by this front door", "pend"],
+  ["edgeHtml", "/explorer", "content unavailable", "pend"],
+  ["otherHash", "/explorer", "content unavailable", "pend"],
+  ["noHeader", "/explorer", "\u2713 content integrity verified", "ok"],
+  ["upperCase", "/explorer", "\u2713 content integrity verified", "ok"],
+  ["e502", "/explorer", "content unavailable", "pend"],
+  ["dropped", "/explorer", "content unavailable", "pend"],
+  ["noHash", "/explorer", "no content hash", "pend"],
   ["good", "/", "content check needs the cairn front door", "pend"],
 ] as const;
 for (const [which, at, text, cls] of CONTENT_CASES) {
@@ -455,7 +477,7 @@ for (const [which, at, text, cls] of CONTENT_CASES) {
       assert.deepEqual(v.errors, []);
       assert.equal(await v.page.textContent("#cibadge"), text);
       assert.equal(await v.page.getAttribute("#cibadge", "class"), `badge ${cls}`);
-      assert.deepEqual(v.asked.filter((x) => /\/content\//.test(x)), at === "/" ? [] : [`/content/${prop.payload_hash}`], "cairn's /content, never the indexer's");
+      assert.deepEqual(v.asked.filter((x) => /\/content\//.test(x)), at === "/" || which === "noHash" ? [] : [`/content/${prop.payload_hash.toLowerCase()}`], "cairn's /content, never the indexer's");
     } finally { await v.close(); }
   });
 }
