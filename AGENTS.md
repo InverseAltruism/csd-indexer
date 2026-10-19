@@ -18,7 +18,7 @@ This repo follows the maintainers' cross-repo engineering standard (a private do
 - Comments state constraints and non-obvious invariants, not history or audit IDs. Removing code needs the same evidence as adding it.
 - Docs: this file holds what stays true (no version tables, no status snapshots; versions live in `package.json` and tags, live state comes from a live query). Dates are absolute, no em dashes.
 
-Known deviations (checked 2026-10-11, not exhaustive; lint 2026-10-19): `npm run lint` (Biome) fails on unused imports, focused tests and `@ts-ignore`, but only warns on empty blocks, since `src/`, `public/explorer.html` and the tests still hold some (`npm run lint` lists them); `src/config.ts` reads the shared SPV checkpoint file from a sibling checkout when present and falls back to the built-in floor, and `test/config-knob-positive.test.ts:18` reads the same file; the dependency lockfile is `package-lock.json` (npm).
+Known deviations (checked 2026-10-11, not exhaustive; lint 2026-10-19): `npm run lint` (Biome) fails on unused imports, focused tests and `@ts-ignore`, but only warns on empty blocks, since `src/`, `public/explorer.html` and the tests still hold some (`npm run lint` lists them); `src/config.ts` reads the shared SPV checkpoint file from a sibling checkout when present and falls back to the built-in floor (`checkpointDefault`, which the tests call with a path of their own); the dependency lockfile is `package-lock.json` (npm).
 
 ## The stack around it
 

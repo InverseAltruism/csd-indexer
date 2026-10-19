@@ -11,12 +11,25 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { checkpointDefault } from "../src/config.js";
 
-// the shared spv-checkpoint file is the documented default source; 38142 is the hard fallback
-const SHARED_DEFAULT = (() => {
-  try { const v = Number(readFileSync("/opt/cairn_substrate/cairn/deploy/spv-checkpoint", "utf8").trim()); return Number.isFinite(v) && v > 0 ? v : 38142; } catch { return 38142; }
-})();
+// The floor an unset knob falls back to, from config.ts's own reader (the shared file when present, else 38142).
+const SHARED_DEFAULT = checkpointDefault();
+
+test("checkpointDefault: the positive number in the given file, else 38142", () => {
+  const dir = mkdtempSync(join(tmpdir(), "csdidx-ckpt-"));
+  try {
+    const file = (text: string) => { const f = join(dir, "spv-checkpoint"); writeFileSync(f, text); return f; };
+    assert.equal(checkpointDefault(file("45000\n")), 45000);
+    for (const bad of ["", "0", "-1", "abc", "Infinity"]) assert.equal(checkpointDefault(file(bad)), 38142, JSON.stringify(bad));
+    assert.equal(checkpointDefault(join(dir, "absent")), 38142, "an absent file falls back");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 type Probed = {
   checkpointFloor: number; scanFrom: number; finalDepth: number; pollSecs: number; maxAheadBlocks: number;

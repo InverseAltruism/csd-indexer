@@ -16,7 +16,6 @@ export const DASH_EXCEPTIONS = {};
 // Code allowed to read a sibling checkout, each with its reason.
 export const PATH_EXCEPTIONS = {
   "src/config.ts": "the default checkpoint floor is read from the host's shared spv-checkpoint file when present, with a built-in fallback (AGENTS.md deviation); moving it is a runtime change",
-  "test/config-knob-positive.test.ts": "predicts src/config.ts's default floor by reading the same host file, falling back the same way",
   "test/check-dashes-paths.test.ts": "fixtures for this check",
 };
 
