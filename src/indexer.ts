@@ -5,7 +5,7 @@
 // spends, and address deltas need zero extra RPC. The last `finalDepth` blocks stay
 // re-checkable; if a new block's `prev` doesn't link our stored tip, we walk back to
 // the common ancestor, unwind every row above it (DELETE WHERE height > ancestor +
-// un-spend orphaned spends), and replay the canonical branch — the electrs/Subsquid
+// un-spend orphaned spends), and replay the canonical branch; the electrs/Subsquid
 // roll-back-then-replay pattern. Blocks deeper than finalDepth are never touched.
 import * as rpc from "./rpc.js";
 import { store, getMeta, setMeta, tx as dbTx, type Store } from "./db.js";
@@ -15,33 +15,33 @@ import { bus } from "./events.js";
 
 // App-payload integers are attacker-chosen JSON. Clamp to a non-negative safe integer
 // DETERMINISTICALLY (NaN/negative → 0, >2^53-1 → 2^53-1): sqlite would store junk as
-// REAL and pg would reject "1e+21" as an int8 param — wedging the sync loop on that
-// block forever. Consensus data (heights, values, time) is NOT clamped — only app JSON.
+// REAL and pg would reject "1e+21" as an int8 param; wedging the sync loop on that
+// block forever. Consensus data (heights, values, time) is NOT clamped; only app JSON.
 // NOTE: clampInt is for app ints the resolver compares against SMALL EXACT ENUMS (score vs
-// SCORE_FILL, confidence vs CONF_TOKEN_FILL) — saturating to 2^53-1 cannot change those branch
+// SCORE_FILL, confidence vs CONF_TOKEN_FILL); saturating to 2^53-1 cannot change those branch
 // outcomes, so it cannot fork. A consensus-bound app int that feeds an arithmetic/range comparison
-// (expires_epoch) must use safeValue() instead — saturation there WOULD fork (GRX-WIRE-CLAMP-1).
+// (expires_epoch) must use safeValue() instead; saturation there WOULD fork (GRX-WIRE-CLAMP-1).
 function clampInt(v: unknown): number {
   const n = Math.floor(Number(v ?? 0));
   if (!Number.isFinite(n) || n <= 0) return 0;
   return n > Number.MAX_SAFE_INTEGER ? Number.MAX_SAFE_INTEGER : n;
 }
 
-// Output value parse — TYPE-HONEST (F20). CSD's max supply (~1e17 sats) exceeds 2^53, so a
+// Output value parse; TYPE-HONEST (F20). CSD's max supply (~1e17 sats) exceeds 2^53, so a
 // single legitimate UTXO value can be past JS's safe-integer range. Going through Number()
 // would silently round it (corrupting the row AND every SUM it feeds). So parse exactly: prefer
 // the node's string/number as a BigInt, return a bigint when past 2^53 (the store binds bigint
 // to the BIGINT column and reads it back exact, both backends), a number when it fits. A
-// malformed (fractional / NaN / negative) value still degrades to 0n — never a lossy REAL.
+// malformed (fractional / NaN / negative) value still degrades to 0n; never a lossy REAL.
 //
 // Upper clamp (parity with safeEpoch's clamp): the value column is signed-64-bit (sqlite int64 /
 // pg int8). A value >= 2^63 throws on bind inside writeBlock, the tx rolls back, the tip never
 // advances, and the same block re-poisons every poll = a PERMANENT indexer wedge. No consensus-
 // valid output can reach this (max supply ~1.05e16 is ~877x below 2^63), so the clamp is pure
 // defense-in-depth against a buggy/hostile node and is byte-identical for every real value. We
-// clamp (not drop) so a bogus value still INGESTS rather than wedging — staying live is the job;
+// clamp (not drop) so a bogus value still INGESTS rather than wedging; staying live is the job;
 // the only cost is one impossible row's SUM contribution, which can never legitimately occur.
-const VALUE_BIND_MAX = (1n << 63n) - 1n;   // signed-int64 ceiling — the most the value column can bind
+const VALUE_BIND_MAX = (1n << 63n) - 1n;   // signed-int64 ceiling; the most the value column can bind
 function clampValue(n: bigint): bigint { return n > VALUE_BIND_MAX ? VALUE_BIND_MAX : n; }   // n is already >= 0n
 function safeValue(v: unknown): bigint {
   if (typeof v === "bigint") return v >= 0n ? clampValue(v) : 0n;
@@ -51,16 +51,16 @@ function safeValue(v: unknown): bigint {
 }
 
 // expires_epoch parse for the proposals row. It is a CONSENSUS field (drives offer/bid expiry) AND an
-// attacker-chosen u64. Two failure modes to avoid: (1) clampInt's old bug — saturating >2^53 to a SAFE int
+// attacker-chosen u64. Two failure modes to avoid: (1) clampInt's old bug; saturating >2^53 to a SAFE int
 // (2^53-1) made the indexer-fed resolver (Granus) ACCEPT what an SPV replayer reading the raw u64 REJECTS via
 // Number.isSafeInteger → canonicalState fork (GRX-WIRE-CLAMP-1, un-masked once V22 removes the duration cap);
-// (2) preserving the raw bigint unbounded — a u64 >= 2^63 OVERFLOWS the signed-64-bit BIGINT bind (int64 in
+// (2) preserving the raw bigint unbounded; a u64 >= 2^63 OVERFLOWS the signed-64-bit BIGINT bind (int64 in
 // sqlite, int8 in pg), throws inside writeBlock, never advances the tip, and re-poisons the block every poll
 // (permanent indexer wedge). The resolver rejects EVERY value > MAX_SAFE_INTEGER regardless of magnitude, so
 // exactness past 2^53 is pointless here: preserve the JS-safe range exactly, and clamp anything above it to a
 // fixed NON-safe sentinel (still > MAX_SAFE_INTEGER → Number() stays non-safe → the fork-guard fires IDENTICALLY
 // on Granus and SPV) that always fits the column. (Unlike safeValue for UTXO output values, which DO feed SUMs.)
-const EXPIRES_EPOCH_SENTINEL = BigInt(Number.MAX_SAFE_INTEGER) + 1n; // 2^53 — smallest non-safe int, well within int64
+const EXPIRES_EPOCH_SENTINEL = BigInt(Number.MAX_SAFE_INTEGER) + 1n; // 2^53; smallest non-safe int, well within int64
 function safeEpoch(v: unknown): bigint {
   const n = safeValue(v);
   return n > BigInt(Number.MAX_SAFE_INTEGER) ? EXPIRES_EPOCH_SENTINEL : n;
@@ -78,9 +78,9 @@ export async function indexedHeight(): Promise<number> {
   // real blocks table (an unwind that committed before the OLD out-of-txn setMeta ran), clamp DOWN to the true
   // stored tip so the forward scan (from = indexedHeight()+1) cannot SKIP the un-re-indexed gap and serve an
   // output whose canonical spend at that height was never re-applied as a live UTXO (the 2026-07-06 ghost class).
-  // MAX over non-orphaned blocks is the real indexed tip; meta above it is stale-ahead, so MAX wins. A meta
+  // MAX over the blocks table is the real indexed tip; meta above it is stale-ahead, so MAX wins. A meta
   // BEHIND the tip is already self-healing (writeBlock is idempotent and re-writes the height next poll).
-  const r = await store().get<{ h: number | null }>("SELECT MAX(height) AS h FROM blocks WHERE orphaned=0");
+  const r = await store().get<{ h: number | null }>("SELECT MAX(height) AS h FROM blocks");
   const maxStored = r?.h == null ? null : Number(r.h);
   return maxStored != null && maxStored >= CFG.scanFrom && meta > maxStored ? maxStored : meta;
 }
@@ -89,7 +89,7 @@ export async function indexedHeight(): Promise<number> {
  * Accumulated chainwork at our indexed tip. Stored as TEXT; compared as BigInt.
  *
  * F7 (guard hygiene): distinguish a LEGITIMATE stored 0 from an UNREADABLE read. The old body collapsed
- * three cases to 0n — missing row, empty chainwork, AND a BigInt parse THROW on garbage — so an unreadable
+ * three cases to 0n; missing row, empty chainwork, AND a BigInt parse THROW on garbage; so an unreadable
  * own-work read silently produced 0n, which made the 2026-07-05 regression guard (HOLD only when
  * ourWork > 0n && nodeWork < ourWork) fail OPEN: a garbage read could disable the guard and let a
  * lower-work node drive an unwind. Now:
@@ -104,7 +104,7 @@ export async function indexedChainwork(): Promise<bigint | null> {
   if (h < CFG.scanFrom) return 0n;                             // fresh: nothing indexed, legitimately zero work
   let r: { chainwork: string | null } | undefined;
   try {
-    r = await store().get<{ chainwork: string | null }>("SELECT chainwork FROM blocks WHERE height=? AND orphaned=0", h);
+    r = await store().get<{ chainwork: string | null }>("SELECT chainwork FROM blocks WHERE height=?", h);
   } catch { return null; }                                     // (a) store read threw -> unreadable
   if (!r) return null;                                         // (b) no row at our own tip -> inconsistent/unreadable
   const raw = r.chainwork;
@@ -116,13 +116,13 @@ export async function indexedChainwork(): Promise<bigint | null> {
   // ourWork = 0n makes `ourWork > 0n` false, the regression guard never fires, reconcileTipWindow walks a
   // matching-but-shorter chain to converged = nodeTip, and unwindAbove(nodeTip) deletes every row above it
   // (~41k rows, /names emptied). A cumulative chainwork of exactly zero at a height we have ALREADY indexed
-  // above the scan floor is not a chain with no work, it is a figure we cannot read — so classify it as
+  // above the scan floor is not a chain with no work, it is a figure we cannot read; so classify it as
   // UNREADABLE and let the existing fail-closed HOLD handle it. The plan's own pre-flight SQL already
   // treats chainwork='0' as poison, so this is a state we expect to see, not a hypothetical.
   //
   // Bounded at `h > CFG.scanFrom` deliberately, so this cannot fail-close on honest traffic: the FIRST
   // indexed height (genesis when scanFrom=0) keeps today's behavior exactly, which is what a chain whose
-  // genesis legitimately carries zero cumulative work needs. Nothing is given up there — at h == scanFrom
+  // genesis legitimately carries zero cumulative work needs. Nothing is given up there; at h == scanFrom
   // the index holds a single block, so there is no accumulated history for the guard to protect. Measured
   // 2026-08-02 against all three live backends: every sampled height from genesis to tip serves a present,
   // positive chainwork (genesis itself is 16777472), so no real block reaches this branch.
@@ -143,7 +143,7 @@ export async function indexedChainwork(): Promise<bigint | null> {
  * (un-spends outputs spent by this height + deletes this height's txs/outputs/proposals/
  * attestations/address_history), so re-writing a height whose tx set SHRANK leaves no stale rows
  * even if the caller didn't unwindAbove first. Precondition for a BURIED height (later blocks still
- * present): call unwindAbove(height-1) first — in the production reorg path that always happens, and
+ * present): call unwindAbove(height-1) first; in the production reorg path that always happens, and
  * forward writes are always at the tip, so this clear is correct there (no later spends to lose).
  */
 export async function writeBlock(b: rpc.RpcBlock): Promise<void> {
@@ -200,7 +200,7 @@ export async function writeBlock(b: rpc.RpcBlock): Promise<void> {
         const prev = inp.prev_txid ?? inp.prevTxid;
         // coinbase input: absent prev, or the all-zero txid + vout 0xFFFFFFFF marker. An
         // all-zero txid can never exist, so skipping is exactly the old "lookup misses"
-        // behavior — and it keeps the 2^32-1 vout away from pg's int4 param inference.
+        // behavior; and it keeps the 2^32-1 vout away from pg's int4 param inference.
         if (!prev || /^(0x)?0+$/.test(prev)) continue;
         const vout = Number(inp.vout ?? 0);
         const prevOut = await d.get<{ addr: string | null; value: number | bigint }>(SQL_LOOKUP, prev, vout);
@@ -280,7 +280,7 @@ export async function unwindAbove(ancestor: number, newTip: number = ancestor): 
 
 /** Stored canonical block hash at height, or null. */
 async function storedHash(height: number): Promise<string | null> {
-  const r = await store().get<{ hash: string }>("SELECT hash FROM blocks WHERE height=? AND orphaned=0", height);
+  const r = await store().get<{ hash: string }>("SELECT hash FROM blocks WHERE height=?", height);
   return r?.hash ?? null;
 }
 
@@ -290,21 +290,21 @@ async function storedHash(height: number): Promise<string | null> {
  * that's the common ancestor. Returns it, or -1 if no reorg, or scanFrom-1 if the divergence
  * runs below our scan floor (→ re-scan from the floor).
  *
- * We follow the reorg as DEEP as the scan floor — not just finalDepth. A reorg deeper than
+ * We follow the reorg as DEEP as the scan floor; not just finalDepth. A reorg deeper than
  * finalDepth is rare but REAL (consensus moved; our "final" rows are genuinely orphaned), so
  * following it is correct AND keeps the loop making forward progress. The old code threw here,
  * which wedged syncOnce on every poll for any deep reorg at/above the tip (finding D-I1).
  */
 // findReorgAncestor sentinel: the node WITHHELD the blocks needed to locate the ancestor, so we have no
 // evidence of how deep the divergence runs. Distinct from -1 (no reorg). syncOnce must ABORT+retry, never
-// unwind, on this — wiping on absence of evidence is CAIRN-IDXREORG-1/2.
+// unwind, on this; wiping on absence of evidence is CAIRN-IDXREORG-1/2.
 const REORG_ABORT = -2;
 
 async function findReorgAncestor(newBlock: rpc.RpcBlock): Promise<number> {
   const prevH = newBlock.height - 1;
   const storedPrev = await storedHash(prevH);
   if (storedPrev == null) return -1;                       // nothing to link against (fresh / gap)
-  if (storedPrev === (newBlock.header.prev ?? "")) return -1; // links cleanly — no reorg
+  if (storedPrev === (newBlock.header.prev ?? "")) return -1; // links cleanly; no reorg
   // diverged: walk back until node's hash matches what we stored (bounded by the scan floor)
   // I2 (O-2 / P74-35): this walk SKIPS heights the node did not answer, so a transient absence below a
   // confirmed mismatch would otherwise let the ancestor fall past heights the node never contradicted, and
@@ -317,7 +317,7 @@ async function findReorgAncestor(newBlock: rpc.RpcBlock): Promise<number> {
   let sawNodeAbsence = false;
   for (let h = prevH - 1; h >= CFG.scanFrom; h--) {
     const nodeBlk = await rpc.blockByHeight(h);
-    if (!nodeBlk) { sawNodeAbsence = true; continue; }      // node didn't answer — absence, not divergence
+    if (!nodeBlk) { sawNodeAbsence = true; continue; }      // node didn't answer; absence, not divergence
     const ours = await storedHash(h);
     if (ours && nodeBlk.hash === ours) return clampAncestor(h); // common ancestor
     if (ours) lowestMismatch = h;                           // confirmed contradiction (walk is descending)
@@ -330,8 +330,8 @@ async function findReorgAncestor(newBlock: rpc.RpcBlock): Promise<number> {
 
 /**
  * Reconcile the re-checkable tip window against the node BEFORE the forward scan. The forward scan
- * only ever detects a reorg when a TALLER block arrives whose prev mismatches — so a reorg that
- * lands on an equal-or-LOWER tip height (more chainwork, same/fewer blocks — possible under LWMA,
+ * only ever detects a reorg when a TALLER block arrives whose prev mismatches; so a reorg that
+ * lands on an equal-or-LOWER tip height (more chainwork, same/fewer blocks; possible under LWMA,
  * and an equal-height tip-swap is common on any PoW chain) would otherwise be missed entirely,
  * leaving orphaned blocks/txs/outputs/proposals at heights (nodeTip..ourTip] served as canonical
  * (inflated tip, ghost proposals, double-counted balances, L3 resolving an orphaned mapping).
@@ -343,8 +343,8 @@ async function reconcileTipWindow(tip: number): Promise<number> {
   if (top < CFG.scanFrom) return 0;
   const ceil = Math.min(top, tip);
   // Highest height ≤ ceil where our stored hash still matches the node. Fast path scans the
-  // finalDepth window (the common, shallow case); if NOTHING converges there — a reorg deeper than
-  // finalDepth, or a node tip at/below ours that diverged across the whole window — extend the search
+  // finalDepth window (the common, shallow case); if NOTHING converges there; a reorg deeper than
+  // finalDepth, or a node tip at/below ours that diverged across the whole window; extend the search
   // down to the scan floor so we ALWAYS find the true ancestor and make forward progress. The old code
   // returned 0 here when the node tip was ≥ ours, leaving the forward scan to throw every poll and
   // wedge the loop on a deep taller/equal-height reorg (finding D-I1).
@@ -356,7 +356,7 @@ async function reconcileTipWindow(tip: number): Promise<number> {
   // contradicted and un-spending their outputs back into live UTXOs. Absence is not evidence
   // (CAIRN-IDXREORG-1/2), so it may never WIDEN an unwind: clamp converged to lowestMismatch-1 below.
   let lowestMismatch = Number.POSITIVE_INFINITY;
-  let sawNodeAbsence = false; // node returned null (didn't answer) for a height in the walk — absence ≠ divergence
+  let sawNodeAbsence = false; // node returned null (didn't answer) for a height in the walk; absence ≠ divergence
   const fastFloor = Math.max(CFG.scanFrom, ceil - CFG.finalDepth);
   for (let h = ceil; h >= fastFloor; h--) {
     const nb = await rpc.blockByHeight(h);
@@ -368,7 +368,7 @@ async function reconcileTipWindow(tip: number): Promise<number> {
       if (h < lowestMismatch) lowestMismatch = h;
     }
   }
-  if (converged < 0) {                                     // deep divergence — walk on to the floor
+  if (converged < 0) {                                     // deep divergence; walk on to the floor
     for (let h = fastFloor - 1; h >= CFG.scanFrom; h--) {
       const nb = await rpc.blockByHeight(h);
       if (!nb) { sawNodeAbsence = true; continue; }
@@ -379,7 +379,7 @@ async function reconcileTipWindow(tip: number): Promise<number> {
         if (h < lowestMismatch) lowestMismatch = h;
       }
     }
-    // CAIRN-IDXREORG-1: only unwind to the floor on CONFIRMED contiguous divergence — i.e. the node ANSWERED
+    // CAIRN-IDXREORG-1: only unwind to the floor on CONFIRMED contiguous divergence; i.e. the node ANSWERED
     // every height down to scanFrom and they all mismatched. If we never converged because the node WITHHELD
     // deeper blocks (sawNodeAbsence), that is absence of evidence, NOT a reorg: abort and retry next poll
     // instead of hard-DELETEing the entire index to genesis. The original L10 guard below only caught the
@@ -390,7 +390,7 @@ async function reconcileTipWindow(tip: number): Promise<number> {
     }
   }
   // Never unwind on ABSENCE of evidence (finding L10): if we dropped below the window only because
-  // every /block/height call failed (blockByHeight nulls — node serves /tip but not blocks), the
+  // every /block/height call failed (blockByHeight nulls; node serves /tip but not blocks), the
   // node is unhealthy, not diverged. Abort this reconcile and retry next poll; a real reorg always
   // shows a CONFIRMED hash mismatch at a height the node actually returned (or a lowered node tip
   // we matched at, in which case converged === ceil and this guard doesn't fire).
@@ -400,12 +400,12 @@ async function reconcileTipWindow(tip: number): Promise<number> {
   // divergence. Clamping UP here keeps the unwind exactly as deep as the evidence, so the un-answered
   // heights (and their spends) survive and get re-checked on the next poll instead of being deleted.
   if (Number.isFinite(lowestMismatch) && converged < lowestMismatch - 1) converged = lowestMismatch - 1;
-  if (converged >= top) return 0;                          // consistent up to our tip — nothing to unwind
+  if (converged >= top) return 0;                          // consistent up to our tip; nothing to unwind
   // CHECKPOINT-FLOOR backstop (2026-07-05): refuse to unwind below the highest shipped SPV checkpoint.
   // No honest reorg crosses a buried checkpoint; a "reorg" that would is a node tip-regression the
   // chainwork guard normally caught earlier. Hold + let a human look rather than hard-DELETE the index.
   if (converged < CFG.checkpointFloor && top >= CFG.checkpointFloor) {
-    console.warn(`[indexer] REFUSING to unwind to ${converged} (< SPV checkpoint floor ${CFG.checkpointFloor}); holding — node likely resyncing/regressed, not a real reorg`);
+    console.warn(`[indexer] REFUSING to unwind to ${converged} (< SPV checkpoint floor ${CFG.checkpointFloor}); holding; node likely resyncing/regressed, not a real reorg`);
     return 0;
   }
   const depth = top - converged;
@@ -431,10 +431,10 @@ export async function syncOnce(): Promise<IndexResult> {
   // REGRESSION GUARD (2026-07-05 incident). Never reconcile/unwind against a node presenting LESS
   // accumulated chainwork than we have already indexed. A db-loss resync or a lagging node drops its
   // tip far below ours WITHOUT offering a heavier chain; the old code saw that low tip "converge" at a
-  // buried height (the low blocks genuinely match — same chain) and hard-DELETEd every row above it
+  // buried height (the low blocks genuinely match; same chain) and hard-DELETEd every row above it
   // (~41k rows gone, /names emptied). A genuine reorg ALWAYS presents chainwork >= ours. So when the
   // node is behind on work, HOLD: keep serving the last-good index and re-derive forward once the node
-  // catches up. Fail closed + re-derivable — the behavior the resilience audit praised for cairnx.
+  // catches up. Fail closed + re-derivable; the behavior the resilience audit praised for cairnx.
   if (CFG.workGuard) {
     const top = await indexedHeight();
     if (top >= CFG.scanFrom) {
@@ -453,11 +453,11 @@ export async function syncOnce(): Promise<IndexResult> {
         let fresh = 0n;
         try { fresh = nb?.chainwork != null ? BigInt(String(nb.chainwork).trim()) : 0n; } catch { fresh = 0n; }
         if (nb && fresh > 0n) {
-          await store().run("UPDATE blocks SET chainwork=? WHERE height=? AND hash=? AND orphaned=0",
+          await store().run("UPDATE blocks SET chainwork=? WHERE height=? AND hash=?",
             String(nb.chainwork).trim(), top, nb.hash);
           console.warn(`[indexer] HOLD(self-heal): rewrote unreadable stored chainwork at h=${top} from hash-matched node payload; next poll re-evaluates`);
         } else {
-          console.warn(`[indexer] HOLD: own indexed chainwork at h=${top} is unreadable/unparseable (fail-closed) — NOT reconciling/unwinding; manual recovery (or CSD_INDEX_WORK_GUARD=0 to override)`);
+          console.warn(`[indexer] HOLD: own indexed chainwork at h=${top} is unreadable/unparseable (fail-closed); NOT reconciling/unwinding; manual recovery (or CSD_INDEX_WORK_GUARD=0 to override)`);
         }
         return { from: top + 1, to: top, tip, blocks, reorgs, reorgDepth };
       }
@@ -467,7 +467,7 @@ export async function syncOnce(): Promise<IndexResult> {
       // cannot verify must never drive an unwind. Only advance when node work is a valid figure >= ours.
       if (ourWork > 0n && nodeWork < ourWork) {
         const why = nodeWork <= 0n ? "node chainwork missing/unparseable (fail-closed)" : "node behind on chainwork";
-        console.warn(`[indexer] HOLD: ${why} (node h=${tip} w=${nodeWork} vs indexed h=${top} w=${ourWork}) — NOT reconciling/unwinding; re-derives forward once the node presents valid, sufficient work`);
+        console.warn(`[indexer] HOLD: ${why} (node h=${tip} w=${nodeWork} vs indexed h=${top} w=${ourWork}); NOT reconciling/unwinding; re-derives forward once the node presents valid, sufficient work`);
         return { from: top + 1, to: top, tip, blocks, reorgs, reorgDepth };
       }
     }
@@ -482,16 +482,16 @@ export async function syncOnce(): Promise<IndexResult> {
 
   for (let h = from; h <= tip; h++) {
     const blk = await rpc.blockByHeight(h);
-    if (!blk) break; // gap — stop; next poll retries
+    if (!blk) break; // gap; stop; next poll retries
     // reorg check (only matters once we have a stored predecessor)
     const ancestor = await findReorgAncestor(blk);
-    if (ancestor === REORG_ABORT) break; // node withheld deeper blocks — retry next poll; never act on absence
+    if (ancestor === REORG_ABORT) break; // node withheld deeper blocks; retry next poll; never act on absence
     if (ancestor >= 0) {
       const prevIndexed = await indexedHeight();
       // Checkpoint-floor backstop (mirrors reconcileTipWindow): never hard-unwind below a buried SPV
       // checkpoint via the forward scan either. Stop this pass and retry; a real reorg does not cross it.
       if (ancestor < CFG.checkpointFloor && prevIndexed >= CFG.checkpointFloor) {
-        console.warn(`[indexer] REFUSING forward-scan unwind to ${ancestor} (< SPV checkpoint floor ${CFG.checkpointFloor}); stopping this pass — node likely resyncing`);
+        console.warn(`[indexer] REFUSING forward-scan unwind to ${ancestor} (< SPV checkpoint floor ${CFG.checkpointFloor}); stopping this pass; node likely resyncing`);
         break;
       }
       await unwindAbove(ancestor);   // F11: tip pointer set to `ancestor` ATOMICALLY inside unwindAbove

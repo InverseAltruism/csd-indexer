@@ -7,16 +7,16 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: '22' }
       - run: npm ci
       - name: typecheck
         run: npm run typecheck
       # CAIRN-IDX CI-1: use `npm test` (globs test/*.test.ts) so a new test file is NEVER silently dropped.
-      # The old hand-listed set omitted analytics.test.ts — exactly the emission/supply money-math that the
+      # The old hand-listed set omitted analytics.test.ts: exactly the emission/supply money-math that the
       # DUP-ANALYTICS lockstep guard now lives in.
-      - name: test (offline, deterministic — glob, no hand-listing)
+      - name: test (offline, deterministic; glob, no hand-listing)
         run: npm test
       # CAIRN-IDX-LOCKSTEP-1: the determinism-bearing codec/registry MUST be exact-pinned to the ecosystem
       # lockstep version (no caret → no silent float on a fresh install; the stale 0.1.2/0.1.1 was the fork seam).
@@ -44,9 +44,21 @@ jobs:
     env:
       CSD_INDEX_PG: postgres://postgres:postgres@127.0.0.1:5432/csdidx
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: '22' }
       - run: npm ci
       - name: test on the Postgres backend
         run: npm test
+  # Full-history secret scan with the repo's .gitleaks.toml; the release binary is checked against its sha256.
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with: { fetch-depth: 0 }
+      - name: gitleaks 8.18.4 (full history, blocking)
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/gitleaks.tgz" https://github.com/gitleaks/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz
+          echo "ba6dbb656933921c775ee5a2d1c13a91046e7952e9d919f9bac4cec61d628e7d  $RUNNER_TEMP/gitleaks.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/gitleaks.tgz" -C "$RUNNER_TEMP" gitleaks
+          "$RUNNER_TEMP/gitleaks" detect --no-banner --redact -c .gitleaks.toml --log-opts="--full-history --all --diff-merges=first-parent"

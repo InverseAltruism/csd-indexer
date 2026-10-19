@@ -18,7 +18,12 @@ const SHARED_DEFAULT = (() => {
   try { const v = Number(readFileSync("/opt/cairn_substrate/cairn/deploy/spv-checkpoint", "utf8").trim()); return Number.isFinite(v) && v > 0 ? v : 38142; } catch { return 38142; }
 })();
 
-function probe(env: Record<string, string | undefined>): { checkpointFloor: number; scanFrom: number; finalDepth: number; pollSecs: number; maxAheadBlocks: number } {
+type Probed = {
+  checkpointFloor: number; scanFrom: number; finalDepth: number; pollSecs: number; maxAheadBlocks: number;
+  routePlausibility: boolean; workEscapeCycles: number; powVerifyTimeoutMs: number; routeBlockSecs: number;
+  maxSse: number; maxWs: number; maxSubKeys: number; maxSseBuffer: number;
+};
+function probe(env: Record<string, string | undefined>): Probed {
   const e: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !k.startsWith("CSD_")) e[k] = v;
   for (const [k, v] of Object.entries(env)) if (v !== undefined) e[k] = v;
@@ -62,4 +67,41 @@ test("HAPPY PATH: an empty string and zero still mean 'unset', exactly as before
   assert.equal(probe({ CSD_INDEX_CHECKPOINT_FLOOR: "" }).checkpointFloor, SHARED_DEFAULT);
   assert.equal(probe({ CSD_INDEX_CHECKPOINT_FLOOR: "0" }).checkpointFloor, SHARED_DEFAULT);
   assert.equal(probe({ CSD_INDEX_FROM: "0" }).scanFrom, 0, "scanFrom's own default is 0, so an explicit 0 is a no-op");
+});
+
+// The rpc.ts and stream.ts knobs are parsed here like every other knob. Before, each call site parsed its
+// own: a garbage CSD_RPC_BLOCK_SECS became NaN and switched the route delta cap off (`claimed > NaN` is
+// false), and a garbage CSD_INDEX_MAX_SSE or CSD_INDEX_MAX_SSE_BUFFER removed that bound the same way.
+const RPC_STREAM_KEYS = {
+  CSD_RPC_WORK_ESCAPE: "workEscapeCycles", CSD_RPC_POW_TIMEOUT: "powVerifyTimeoutMs", CSD_RPC_BLOCK_SECS: "routeBlockSecs",
+  CSD_INDEX_MAX_SSE: "maxSse", CSD_INDEX_MAX_WS: "maxWs", CSD_INDEX_MAX_SUB: "maxSubKeys", CSD_INDEX_MAX_SSE_BUFFER: "maxSseBuffer",
+} as const;
+const RPC_STREAM_DEFAULTS = { workEscapeCycles: 20, powVerifyTimeoutMs: 5000, routeBlockSecs: 120, maxSse: 500, maxWs: 500, maxSubKeys: 1000, maxSseBuffer: 4 * 1024 * 1024 };
+
+test("HAPPY PATH: the rpc and stream knobs default as their call sites did, and the plausibility gate is on", async () => {
+  const c = probe({});
+  for (const [k, d] of Object.entries(RPC_STREAM_DEFAULTS)) assert.equal(c[k as keyof Probed], d, k);
+  assert.equal(c.routePlausibility, true);
+});
+
+test("HAPPY PATH: a legitimate positive override of each rpc and stream knob is honored", async () => {
+  const env: Record<string, string> = {};
+  Object.keys(RPC_STREAM_KEYS).forEach((k, i) => { env[k] = String(7 + i); });
+  const c = probe(env);
+  Object.entries(RPC_STREAM_KEYS).forEach(([k, f], i) => assert.equal(c[f], 7 + i, k));
+});
+
+test("a garbage, empty, zero or negative rpc or stream knob falls back to its default", async () => {
+  for (const bad of ["abc", "", "0", "-3"]) {
+    const env: Record<string, string> = {};
+    for (const k of Object.keys(RPC_STREAM_KEYS)) env[k] = bad;
+    const c = probe(env);
+    for (const [k, f] of Object.entries(RPC_STREAM_KEYS)) assert.equal(c[f], RPC_STREAM_DEFAULTS[f], `${k}=${JSON.stringify(bad)}`);
+  }
+});
+
+test("CSD_RPC_ROUTE_PLAUSIBILITY: only 0 turns the gate off", async () => {
+  assert.equal(probe({ CSD_RPC_ROUTE_PLAUSIBILITY: "0" }).routePlausibility, false);
+  assert.equal(probe({ CSD_RPC_ROUTE_PLAUSIBILITY: "1" }).routePlausibility, true);
+  assert.equal(probe({ CSD_RPC_ROUTE_PLAUSIBILITY: "" }).routePlausibility, true);
 });

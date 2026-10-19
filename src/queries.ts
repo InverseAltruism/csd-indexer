@@ -10,8 +10,8 @@ export interface TxRow { txid: string; height: number; pos: number; app_type: st
 export interface OutRow { txid: string; vout: number; addr: string; value: number | string; height: number; spent_txid: string | null; spent_height: number | null; }
 
 // Serialize a sats amount: a JS number when it fits exactly, else a decimal string. CSD max supply
-// (~1e17 sats) exceeds 2^53 — a high-value address must never 500 the API or corrupt silently.
-// THE one copy since B8c (analytics.ts imports it; was defined near-verbatim in both files —
+// (~1e17 sats) exceeds 2^53; a high-value address must never 500 the API or corrupt silently.
+// THE one copy since B8c (analytics.ts imports it; was defined near-verbatim in both files:
 // this pass-through-number variant is canonical: it never throws on a weird store value where
 // the old big()-normalizing twin would RangeError on a non-integer number).
 export function amt(v: number | bigint | null | undefined): number | string {
@@ -21,7 +21,7 @@ export function amt(v: number | bigint | null | undefined): number | string {
 }
 // Raw-row JSON safety: the store returns bigint for any integer past 2^53 (e.g. an
 // attacker-chosen expires_epoch in a Propose payload). A stray bigint crashes
-// JSON.stringify — one poisoned row must never 500 a whole endpoint, so every raw row
+// JSON.stringify; one poisoned row must never 500 a whole endpoint, so every raw row
 // that goes straight to res.json passes through here (bigint → decimal string).
 function jsonSafe<T>(row: T): T {
   if (row == null || typeof row !== "object") return row;
@@ -30,7 +30,7 @@ function jsonSafe<T>(row: T): T {
   return row;
 }
 const jsonSafeAll = <T>(rows: T[]): T[] => { rows.forEach(jsonSafe); return rows; };
-// height params arrive from URLs — only a non-negative safe integer can match a row,
+// height params arrive from URLs; only a non-negative safe integer can match a row,
 // and anything else must 404, not 500 (pg would reject 1e21/2.5 as an int8 param).
 const heightOk = (h: number): boolean => Number.isSafeInteger(h) && h >= 0;
 
@@ -38,20 +38,20 @@ const heightOk = (h: number): boolean => Number.isSafeInteger(h) && h >= 0;
 // (tipHeight here, analytics' tipRow/tipKey). Selecting the full row costs the same index walk
 // as MAX(height) and every caller derives what it needs.
 export async function tipRow(): Promise<{ height: number; hash: string; time: number; chainwork: string } | null> {
-  return ((await store().get("SELECT height, hash, time, chainwork FROM blocks WHERE orphaned=0 ORDER BY height DESC LIMIT 1")) as never) ?? null;
+  return ((await store().get("SELECT height, hash, time, chainwork FROM blocks ORDER BY height DESC LIMIT 1")) as never) ?? null;
 }
 export async function tipHeight(): Promise<number> {
   return (await tipRow())?.height ?? -1;
 }
 export async function blockByHeight(h: number): Promise<BlockRow | null> {
   if (!heightOk(h)) return null;
-  return jsonSafe(((await store().get<BlockRow>("SELECT * FROM blocks WHERE height=? AND orphaned=0", h)) as BlockRow) ?? null);
+  return jsonSafe(((await store().get<BlockRow>("SELECT * FROM blocks WHERE height=?", h)) as BlockRow) ?? null);
 }
 export async function blockByHash(hash: string): Promise<BlockRow | null> {
-  return jsonSafe(((await store().get<BlockRow>("SELECT * FROM blocks WHERE hash=? AND orphaned=0", hash.toLowerCase())) as BlockRow) ?? null);
+  return jsonSafe(((await store().get<BlockRow>("SELECT * FROM blocks WHERE hash=?", hash.toLowerCase())) as BlockRow) ?? null);
 }
 export async function recentBlocks(limit = 25): Promise<BlockRow[]> {
-  return jsonSafeAll(await store().all<BlockRow>("SELECT * FROM blocks WHERE orphaned=0 ORDER BY height DESC LIMIT ?", limit));
+  return jsonSafeAll(await store().all<BlockRow>("SELECT * FROM blocks ORDER BY height DESC LIMIT ?", limit));
 }
 export async function blockTxids(height: number): Promise<string[]> {
   return (await store().all<{ txid: string }>("SELECT txid FROM txs WHERE height=? ORDER BY pos", height)).map(r => r.txid);
@@ -59,14 +59,35 @@ export async function blockTxids(height: number): Promise<string[]> {
 export async function tx(txid: string): Promise<TxRow | null> {
   return jsonSafe(((await store().get<TxRow>("SELECT * FROM txs WHERE txid=?", txid)) as TxRow) ?? null);
 }
-export async function txOutputs(txid: string): Promise<OutRow[]> {
-  const rows = await store().all<OutRow>("SELECT * FROM outputs WHERE txid=? ORDER BY vout", txid);
-  return rows.map((r) => ({ ...r, value: amt(r.value as never) }));
+// The tx rows of one block in block order: one query, where a per-txid lookup would hold one pool
+// connection per tx of the block.
+export async function blockTxs(height: number): Promise<TxRow[]> {
+  return jsonSafeAll(await store().all<TxRow>("SELECT * FROM txs WHERE height=? ORDER BY pos", height));
+}
+// Tx rows with their outputs for a list of txids, in the list's order (an unknown txid is left out),
+// in two queries whatever the list length. Callers pass a page (at most addressTxids' limit), so the
+// IN list stays far below both engines' bind-parameter limits.
+export async function txsWithOutputs(txids: string[]): Promise<(TxRow & { outputs: OutRow[] })[]> {
+  if (txids.length === 0) return [];
+  const marks = txids.map(() => "?").join(",");
+  const rows = jsonSafeAll(await store().all<TxRow>(`SELECT * FROM txs WHERE txid IN (${marks})`, ...txids));
+  const outs = await store().all<OutRow>(`SELECT * FROM outputs WHERE txid IN (${marks}) ORDER BY txid, vout`, ...txids);
+  const byTx = new Map<string, OutRow[]>();
+  for (const o of outs) {
+    const list = byTx.get(o.txid) ?? [];
+    list.push({ ...o, value: amt(o.value as never) });
+    byTx.set(o.txid, list);
+  }
+  const byId = new Map(rows.map((r) => [r.txid, r]));
+  return txids.flatMap((id) => {
+    const t = byId.get(id);
+    return t ? [{ ...t, outputs: byTx.get(id) ?? [] }] : [];
+  });
 }
 
 // Esplora-style address tx list: distinct txids touching addr, newest-first.
 // CAIRN-IDX PAGINATION-DATALOSS-1: the keyset cursor is the FULL (height, txid) tuple matching the
-// `height DESC, txid ASC` order — a height-only cursor silently DROPS the remaining same-height txids when
+// `height DESC, txid ASC` order; a height-only cursor silently DROPS the remaining same-height txids when
 // one block has more than `limit` txids touching the address (a busy treasury/faucet/exchange address):
 // page 1 fills with `limit` rows all at height H, the next page `height < H` skips the rest of H forever.
 // Mirrors the (height, txid) keyset attestationsFor already uses.
@@ -105,7 +126,7 @@ export async function addressStats(addr: string): Promise<{ funded: number | str
 // ── CSD-specific (the reason this exists) ──
 export async function proposal(id: string): Promise<any> { return jsonSafe((await store().get("SELECT * FROM proposals WHERE txid=?", id)) ?? null); }
 export async function proposalsByDomain(domain: string, limit = 100, from?: number): Promise<any[]> {
-  // clamp: callers (e.g. metaprotocol resolvers) may ask for the full domain history —
+  // clamp: callers (e.g. metaprotocol resolvers) may ask for the full domain history:
   // a resolver fed a truncated feed would silently lose its oldest records (deploys!)
   const lim = Math.min(Math.max(1, Math.floor(Number(limit) || 100)), 10_000);
   // `from` = height cursor: rows at height >= from in ASCENDING order, so a resolver can page
@@ -134,8 +155,8 @@ export async function attestationsFor(
 ): Promise<any[]> {
   // Bound the row count PER REQUEST (a hot proposal can accrue unlimited attests; inlined into
   // /proposal/:id one popular item could balloon every response). But the CairnX resolver REQUIRES the
-  // COMPLETE list to replay fills/cancels/partial-fills deterministically — a silent truncation would
-  // diverge ledger state — so this also supports a keyset cursor (afterHeight, afterTxid) over the same
+  // COMPLETE list to replay fills/cancels/partial-fills deterministically; a silent truncation would
+  // diverge ledger state; so this also supports a keyset cursor (afterHeight, afterTxid) over the same
   // (height, txid) ASC order, letting a consumer page through ALL rows in bounded chunks. txids are
   // lowercase 0x-hex, so byte-wise `txid > ?` matches the ORDER BY under every collation.
   const n = Number(opts.limit);
@@ -157,7 +178,9 @@ export async function attestationsFor(
 export async function attestationCountFor(proposalId: string): Promise<number> {
   return Number((await store().get<{ n: number }>("SELECT COUNT(*) n FROM attestations WHERE proposal_id=?", proposalId))?.n ?? 0);
 }
-export async function attestationsBy(addr: string, limit = 200): Promise<any[]> {
+// /address/:a/reputation aggregates over at most this many of an attester's newest attestations.
+export const REPUTATION_WINDOW = 200;
+export async function attestationsBy(addr: string, limit: number): Promise<any[]> {
   return jsonSafeAll(await store().all("SELECT * FROM attestations WHERE attester=? ORDER BY height DESC, txid ASC LIMIT ?", addr.toLowerCase(), limit));
 }
 export async function domains(): Promise<{ domain: string; proposals: number }[]> {
@@ -166,5 +189,5 @@ export async function domains(): Promise<{ domain: string; proposals: number }[]
 }
 export async function counts(): Promise<{ blocks: number; txs: number; proposals: number; attestations: number }> {
   const c = async (t: string, w = "") => Number((await store().get<{ n: number }>(`SELECT COUNT(*) n FROM ${t} ${w}`))?.n ?? 0);
-  return { blocks: await c("blocks", "WHERE orphaned=0"), txs: await c("txs"), proposals: await c("proposals"), attestations: await c("attestations") };
+  return { blocks: await c("blocks"), txs: await c("txs"), proposals: await c("proposals"), attestations: await c("attestations") };
 }

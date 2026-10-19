@@ -1,4 +1,4 @@
-// Thin client for the CSD node RPC — the only thing the indexer trusts (and even
+// Thin client for the CSD node RPC; the only thing the indexer trusts (and even
 // then, every derived claim it serves is independently recomputable from these
 // raw blocks, so the node is a data source, not an authority).
 //
@@ -24,15 +24,11 @@ let ACTIVE = (CFG.rpcBackends && CFG.rpcBackends[0]) || CFG.rpc;
 const HYSTERESIS_BLOCKS = 3; // keep ACTIVE unless it falls more than this many blocks behind the best HEIGHT
 // Work-escape: height hysteresis ALONE would pin ACTIVE to a same-height but LOWER-CHAINWORK backend (a
 // minority fork that keeps pace in height) indefinitely. If ACTIVE stays below the best chainwork for this
-// many consecutive cycles, force a switch to the highest-work backend. Configurable for tests.
-const WORK_ESCAPE_CYCLES = Number(process.env.CSD_RPC_WORK_ESCAPE || 20);
+// many consecutive cycles (CFG.workEscapeCycles), force a switch to the highest-work backend.
 // ROUTE-1 (IDX-BACKEND-POW-1): a NON-primary backend may only WIN on work/height if its tip header is
-// PoW-valid AND hash-bound (mirrors cairn's rpcroute.ts ROUTE-1). Timeout on the one header fetch we do
-// when a non-primary CLAIMS to out-work the trusted primary; short so a hung/forged backend fails soft
-// fast instead of stalling the probe. Configurable for tests (matches the WORK_ESCAPE idiom).
-const POW_VERIFY_TIMEOUT_MS = Number(process.env.CSD_RPC_POW_TIMEOUT || 5000);
-// Chain target block spacing (s); used ONLY by the wall-clock-aware route delta cap (M1), never consensus.
-const ROUTE_BLOCK_SECS = Math.max(1, Number(process.env.CSD_RPC_BLOCK_SECS || 120));
+// PoW-valid AND hash-bound (mirrors cairn's rpcroute.ts ROUTE-1). The one header fetch we do when a
+// non-primary CLAIMS to out-work the trusted primary is bounded by CFG.powVerifyTimeoutMs, short so a
+// hung/forged backend fails soft fast instead of stalling the probe.
 let behindStreak = 0;
 export function activeBackend(): string { return ACTIVE; }
 
@@ -63,10 +59,10 @@ export function tipHeaderPowOk(header: unknown, claimedTipHash: string | null): 
 
 // F6 (ROUTE-1 route-capture) plausibility gate. `tipHeaderPowOk` above only checks a header against its
 // OWN declared bits (powOk is floored at POW_LIMIT), so a REAL min-difficulty header (bits at/near
-// POW_LIMIT, trivial to grind) hashes valid and hash-binds — passing ROUTE-1 while the backend claims
+// POW_LIMIT, trivial to grind) hashes valid and hash-binds; passing ROUTE-1 while the backend claims
 // arbitrary chainwork/height in /tip. That lets a co-located miner/standby (or a compromised
 // CSD_RPC_BACKENDS entry) capture the whole projection feed. This gate rejects such a contender by
-// anchoring on the indexer's OWN local finality-gated headers (the blocks table) — NEVER the live primary,
+// anchoring on the indexer's OWN local finality-gated headers (the blocks table); NEVER the live primary,
 // so a genuinely-ahead honest secondary still wins when the primary is stale/wedged (that is the whole
 // point of ROUTE-1; anchoring on the primary would pin routing on a dead primary = the availability
 // regression the design forbids). Two anchored bounds:
@@ -77,15 +73,15 @@ export function tipHeaderPowOk(header: unknown, claimedTipHash: string | null): 
 // (the contender cannot win); a legitimately EMPTY/too-shallow local index (cold start / mid-backfill, no
 // anchor to check against) -> the gate is INACTIVE (true) so it never breaks the legitimate failover path
 // before the index is established. Runs ONLY for a backend that CLAIMS to beat the anchor (never on the
-// healthy path), so it adds no read to a normal cycle. Kill switch CSD_RPC_ROUTE_PLAUSIBILITY=0 (read
-// per-call) mirrors CSD_INDEX_WORK_GUARD: an operator escape if an extreme honest retarget ever mis-fires.
+// healthy path), so it adds no read to a normal cycle. Kill switch CSD_RPC_ROUTE_PLAUSIBILITY=0
+// (CFG.routePlausibility) mirrors CSD_INDEX_WORK_GUARD: an operator escape if an extreme honest retarget ever mis-fires.
 async function contenderPlausible(claimedHeight: number, header: unknown): Promise<boolean> {
-  if (process.env.CSD_RPC_ROUTE_PLAUSIBILITY === "0") return true; // operator escape valve (default on)
+  if (!CFG.routePlausibility) return true; // operator escape valve (default on)
   // Read our local finality-gated tip. A store THROW is a genuine read error -> fail closed (false).
   let localTip: { height: number | bigint | null; bits: number | bigint | null; time: number | bigint | null } | undefined;
   try {
     localTip = await store().get<{ height: number | bigint | null; bits: number | bigint | null; time: number | bigint | null }>(
-      "SELECT height, bits, time FROM blocks WHERE orphaned=0 ORDER BY height DESC LIMIT 1");
+      "SELECT height, bits, time FROM blocks ORDER BY height DESC LIMIT 1");
   } catch { return false; }
   // No local anchor yet (fresh index / mid-backfill): nothing to plausibility-check against, so the gate is
   // inactive rather than block a legitimate failover before the index exists.
@@ -104,7 +100,7 @@ async function contenderPlausible(claimedHeight: number, header: unknown): Promi
   if (!Number.isFinite(claimed)) return false;                 // shape error -> fail closed
   const nowSecs = Math.floor(Date.now() / 1000);
   const ltTime = Number(localTip.time);
-  const staleBlocks = Number.isFinite(ltTime) ? Math.max(0, Math.floor((nowSecs - ltTime) / ROUTE_BLOCK_SECS)) : 0;
+  const staleBlocks = Number.isFinite(ltTime) ? Math.max(0, Math.floor((nowSecs - ltTime) / CFG.routeBlockSecs)) : 0;
   if (claimed > lh + CFG.maxAheadBlocks + staleBlocks) return false;  // implausibly far beyond the staleness-adjusted tip
   // LWMA PLAUSIBILITY. Parse the contender's declared tip target from its bits.
   const h = header as Partial<BlockHeader> | null | undefined;
@@ -140,7 +136,7 @@ async function expectedLocalTarget(localHeight: number): Promise<bigint | null> 
   try {
     const floor = Math.max(CFG.scanFrom, localHeight - LWMA_WINDOW);
     const rows = await store().all<{ time: number | bigint; bits: number | bigint }>(
-      "SELECT time, bits FROM blocks WHERE orphaned=0 AND height < ? AND height >= ? ORDER BY height ASC",
+      "SELECT time, bits FROM blocks WHERE height < ? AND height >= ? ORDER BY height ASC",
       localHeight, floor);
     if (rows.length < 2) return null;
     // window[last] must be the parent (localHeight-1); expectedBitsFromWindow computes the expected bits for
@@ -170,7 +166,7 @@ async function expectedLocalTarget(localHeight: number): Promise<bigint | null> 
 async function contenderEligible(base: string, claimedHeight: number, claimedTipHash: string | null): Promise<boolean> {
   if (!claimedTipHash) return false;
   try {
-    const res = await fetch(base + `/block/height/${claimedHeight}`, { signal: AbortSignal.timeout(POW_VERIFY_TIMEOUT_MS) });
+    const res = await fetch(base + `/block/height/${claimedHeight}`, { signal: AbortSignal.timeout(CFG.powVerifyTimeoutMs) });
     if (!res.ok) return false;
     const j: any = await res.json();
     const b = j.block ?? j;
@@ -228,7 +224,7 @@ async function tipOf(base: string): Promise<{ height: number; chainwork: bigint;
  * (bits at/near POW_LIMIT, trivial to grind) passes powOk against its OWN bits, so a contender can pair a
  * cheap valid header with a huge forged /tip chainwork/height and win. `contenderEligible` therefore also
  * runs `contenderPlausible`, which anchors on the indexer's OWN local finality-gated headers (delta cap +
- * LWMA ease factor), never the live primary — so a min-diff forgery is excluded while a genuinely-ahead
+ * LWMA ease factor), never the live primary; so a min-diff forgery is excluded while a genuinely-ahead
  * honest secondary at the correct local difficulty is still selected when the primary is stale.
  */
 type Probe = { height: number; chainwork: bigint; tipHash: string | null };
@@ -259,7 +255,7 @@ export async function selectBackend(): Promise<{ active: string; switched: boole
   const bestHeight = Math.max(...eligible.map((r) => r.t.height));
   const activeEntry = eligible.find((r) => r.b === ACTIVE);
   behindStreak = (activeEntry && activeEntry.t.chainwork < maxWork) ? behindStreak + 1 : 0;
-  const workEscape = behindStreak >= WORK_ESCAPE_CYCLES;                // ACTIVE out-worked too long -> force a switch
+  const workEscape = behindStreak >= CFG.workEscapeCycles;                // ACTIVE out-worked too long -> force a switch
   const chosen = (activeEntry && activeEntry.t.height >= bestHeight - HYSTERESIS_BLOCKS && !workEscape)
     ? ACTIVE                                                          // sticky: close in HEIGHT and not persistently out-worked
     : (best.find((r) => r.b === primary)?.b ?? best[0]!.b);          // switch to highest-work, primary-preferred

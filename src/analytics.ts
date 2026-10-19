@@ -1,16 +1,16 @@
-// Miner / holder / supply analytics — read-only aggregates over the relational store.
+// Miner / holder / supply analytics; read-only aggregates over the relational store.
 // Frontier item #2 (cairn docs/ecosystem/06-frontier.md): miners are the chain's only
 // existing audience and nobody serves them charts. Everything here is canonical-row math
 // (reorged rows are deleted by the indexer, so no orphan filtering is needed on txs/outputs).
 //
-// Integer columns arrive from the store as number-when-exact / bigint-past-2^53 (db.ts) —
+// Integer columns arrive from the store as number-when-exact / bigint-past-2^53 (db.ts):
 // big() normalizes to BigInt for math, amt() serializes (a stray BigInt would crash
 // JSON.stringify; total emission crosses 2^53 in a few years and must never 500 these endpoints).
 import { store } from "./db.js";
 import { amt, tipRow as tipRowCanonical } from "./queries.js";
 import { workForBits } from "@inversealtruism/csd-codec";
 
-// nominal blocks per window at the 120s target (heights, not wall-time — deterministic)
+// nominal blocks per window at the 120s target (heights, not wall-time; deterministic)
 const WINDOWS: Record<string, number> = { "1d": 720, "7d": 5040, "30d": 21600 };
 
 // Canonicalize the public args BEFORE they reach the memo cache key (below), so an attacker varying
@@ -33,7 +33,7 @@ import { blockRewardBase, maxSupplyBase, HALVING_INTERVAL } from "@inversealtrui
 export const blockReward = blockRewardBase;
 export const maxSupply = maxSupplyBase;
 
-// store values are number|bigint|null — normalize for BigInt math. amt() (serialization) is the
+// store values are number|bigint|null; normalize for BigInt math. amt() (serialization) is the
 // ONE copy in queries.ts since B8c (was defined verbatim-adjacent in both files).
 function big(v: number | bigint | null | undefined): bigint { return v == null ? 0n : BigInt(v); }
 
@@ -46,7 +46,7 @@ async function tipRow(): Promise<{ height: number; time: number; chainwork: stri
 // ── per-tip memoization ──────────────────────────────────────────────────────
 // supply / richlist / miners are O(table) full scans (SUM/GROUP BY over outputs+txs) that are
 // reachable unauthenticated via the cairn proxy and run on the SAME single event loop that writes
-// blocks — so a request flood would otherwise stall ingestion at scale. Their result changes ONLY
+// blocks; so a request flood would otherwise stall ingestion at scale. Their result changes ONLY
 // when the canonical tip changes (a new block or a reorg), so cache keyed on the tip identity
 // (height + hash → a same-height reorg also busts it). Args are canonicalized by the exported
 // wrappers (normWindow/normLimit) BEFORE keying, so the dedup holds even under garbage-varied params
@@ -90,8 +90,8 @@ function rateBetween(a: WorkPoint | undefined, b: WorkPoint | undefined): { hash
 
 /** Network hashrate over [from..to] derived from cumulative chainwork: exact, no bits math. */
 async function windowHashrate(fromHeight: number, toHeight: number): Promise<{ hashrate: number; seconds: number } | null> {
-  const a = await store().get<WorkPoint>("SELECT time, chainwork FROM blocks WHERE orphaned=0 AND height=?", fromHeight);
-  const b = await store().get<WorkPoint>("SELECT time, chainwork FROM blocks WHERE orphaned=0 AND height=?", toHeight);
+  const a = await store().get<WorkPoint>("SELECT time, chainwork FROM blocks WHERE height=?", fromHeight);
+  const b = await store().get<WorkPoint>("SELECT time, chainwork FROM blocks WHERE height=?", toHeight);
   return rateBetween(a ?? undefined, b ?? undefined);
 }
 
@@ -110,7 +110,7 @@ async function minersImpl(window: string): Promise<unknown> {
 
   const total = rows.reduce((s, r) => s + Number(r.blocks), 0);
   const minH = from === 0
-    ? Number((await store().get<{ h: number }>("SELECT MIN(height) h FROM blocks WHERE orphaned=0"))?.h ?? 0)
+    ? Number((await store().get<{ h: number }>("SELECT MIN(height) h FROM blocks"))?.h ?? 0)
     : from;
   const hr = await windowHashrate(minH, Number(tip.height));
 
@@ -132,7 +132,7 @@ async function minersImpl(window: string): Promise<unknown> {
 
   const agg = await store().get<{ blocks: number | bigint; txs: number | bigint | null; t0: number | bigint | null; t1: number | bigint | null }>(`
     SELECT COUNT(*) AS blocks, SUM(tx_count) AS txs, MIN(time) AS t0, MAX(time) AS t1
-    FROM blocks WHERE orphaned=0 AND height > ? AND height <= ?
+    FROM blocks WHERE height > ? AND height <= ?
   `, from, tip.height);
   const fees = await store().get<{ f: number | bigint | null }>("SELECT SUM(fee) AS f FROM txs WHERE coinbase=0 AND height > ? AND height <= ?", from, tip.height);
   const nBlocks = Number(agg?.blocks ?? 0);
@@ -215,7 +215,7 @@ async function seriesImpl(window: string, points: number): Promise<unknown> {
   const tip = await tipRow();
   if (!tip) return { window, from: null, to: null, points: [] as SeriesPoint[] };
   const to = Number(tip.height);
-  const minH = Number((await store().get<{ h: number | bigint | null }>("SELECT MIN(height) AS h FROM blocks WHERE orphaned=0"))?.h ?? to);
+  const minH = Number((await store().get<{ h: number | bigint | null }>("SELECT MIN(height) AS h FROM blocks"))?.h ?? to);
   const span = WINDOWS[window];
   const from = span ? Math.max(minH, to - span) : minH;
   const n = to - from + 1;
@@ -226,7 +226,7 @@ async function seriesImpl(window: string, points: number): Promise<unknown> {
   if (!buckets) endHeights.push(to);
   const wanted = [from, ...endHeights];
   const rows = await store().all<SeriesRow>(
-    `SELECT height, time, bits, chainwork FROM blocks WHERE orphaned=0 AND height IN (${wanted.map(() => "?").join(",")})`,
+    `SELECT height, time, bits, chainwork FROM blocks WHERE height IN (${wanted.map(() => "?").join(",")})`,
     ...wanted,
   );
   const byHeight = new Map(rows.map((r) => [Number(r.height), r]));
@@ -251,7 +251,7 @@ async function seriesImpl(window: string, points: number): Promise<unknown> {
   return { window, from, to, points: out };
 }
 
-// Public endpoints (server.ts) — args canonicalized (normWindow/normLimit) THEN memoized per canonical
+// Public endpoints (server.ts); args canonicalized (normWindow/normLimit) THEN memoized per canonical
 // tip, so the cache key is bounded and the dedup fires for repeated AND garbage-varied params. The
 // *Impl functions above are the uncached source of truth (and what the offline analytics test exercises
 // through these exports). supply() is argless.

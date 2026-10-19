@@ -1,8 +1,8 @@
-// F6 (ROUTE-1 route-capture) — the local-anchored plausibility gate on selectBackend. `tipHeaderPowOk`
+// F6 (ROUTE-1 route-capture); the local-anchored plausibility gate on selectBackend. `tipHeaderPowOk`
 // alone only checks a tip header against its OWN declared bits (powOk is floored at POW_LIMIT), so a REAL
 // min-difficulty header hashes valid + hash-binds while the backend lies about chainwork/height in /tip.
 // contenderPlausible() rejects such a contender by anchoring on the indexer's OWN local finality-gated
-// headers (the blocks table) — NEVER the live primary — with two bounds:
+// headers (the blocks table); NEVER the live primary; with two bounds:
 //   (1) DELTA CAP: claimed height must be <= localTip + CFG.maxAheadBlocks.
 //   (2) LWMA EASE: the contender's declared tip target (from its bits) must not be EASIER than the honest
 //       expected local target (csd-light expectedBitsFromWindow) times CFG.maxEaseFactor.
@@ -60,6 +60,7 @@ process.env.CSD_INDEX_PG_SCHEMA = "t_rpcplaus";
 process.env.CSD_INDEX_FROM = "0";
 
 const rpc = await import("../src/rpc.js");
+const { CFG } = await import("../src/config.js");
 const { store, resetStoreForTests, closeDb } = await import("../src/db.js");
 
 const LOCAL_TIP = 50;
@@ -108,23 +109,23 @@ test("MUTATION (delta cap): disabling the gate lets the forged HUGE-height tip W
   await populateLocal(REAL_BITS);
   A.set({ height: LOCAL_TIP, work: 1_000n, up: true });
   B.set({ height: 99999, work: 9_000_000_000n, up: true, header: realHeader, tipHash: realTipHash });
-  process.env.CSD_RPC_ROUTE_PLAUSIBILITY = "0";        // disable the gate
+  CFG.routePlausibility = false;                       // disable the gate (CSD_RPC_ROUTE_PLAUSIBILITY=0)
   try {
     const s = await rpc.selectBackend();
     assert.equal(s.active, B.url(), "with the gate OFF the forged higher-work contender captures the feed");
     assert.equal(s.height, 99999, "and its forged height reaches the caller -> proves the gate blocks this");
-  } finally { delete process.env.CSD_RPC_ROUTE_PLAUSIBILITY; }
+  } finally { CFG.routePlausibility = true; }
 });
 
 test("MUTATION (LWMA): disabling the gate lets the TOO-EASY tip WIN (LWMA bound is load-bearing)", async () => {
   await populateLocal(HARDER_BITS);
   A.set({ height: LOCAL_TIP, work: 1_000n, up: true });
   B.set({ height: LOCAL_TIP + 5, work: 9_000_000_000n, up: true, header: realHeader, tipHash: realTipHash });
-  process.env.CSD_RPC_ROUTE_PLAUSIBILITY = "0";
+  CFG.routePlausibility = false;
   try {
     const s = await rpc.selectBackend();
     assert.equal(s.active, B.url(), "with the gate OFF the too-easy contender wins -> the LWMA bound is what blocks it");
-  } finally { delete process.env.CSD_RPC_ROUTE_PLAUSIBILITY; }
+  } finally { CFG.routePlausibility = true; }
 });
 
 // ── M1 (Plan 70 R2 final red-team): the wall-clock-aware delta cap. A reachable-but-FROZEN primary wedge

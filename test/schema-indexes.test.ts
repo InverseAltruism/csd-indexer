@@ -78,7 +78,7 @@ function assertUsesIndex(p: string, table: string, ix: string, label: string) {
 
 test("blockByHash lookup uses idx_blocks_hash (no table scan)", { skip: !SQLITE && "EXPLAIN QUERY PLAN is sqlite-only" }, async () => {
   // exact statement from queries.ts blockByHash
-  const p = await plan("SELECT * FROM blocks WHERE hash=? AND orphaned=0", hashes[5]);
+  const p = await plan("SELECT * FROM blocks WHERE hash=?", hashes[5]);
   assertUsesIndex(p, "blocks", "idx_blocks_hash", "blockByHash");
 });
 
