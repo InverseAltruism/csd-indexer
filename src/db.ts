@@ -1,23 +1,23 @@
 // Relational store with two interchangeable backends behind ONE async interface:
 //
-//   - sqlite (node:sqlite, built into Node 22 — no native dep, no build step). The
+//   - sqlite (node:sqlite, built into Node 22; no native dep, no build step). The
 //     DEFAULT: zero-config, perfect for one operator / CI / third parties re-running
 //     the index to audit determinism.
-//   - Postgres (`pg` pool), selected by CSD_INDEX_PG=postgres://... — the scale path.
+//   - Postgres (`pg` pool), selected by CSD_INDEX_PG=postgres://...; the scale path.
 //     node:sqlite is SYNCHRONOUS: every query blocks the event loop, so concurrent
 //     readers serialize behind each other and behind the block writer. Postgres moves
 //     queries off-loop onto a pool, which is what lets the API keep answering while
 //     blocks are being written.
 //
 // CSD's payload is relational (per-attester rows, address history, domain rankings,
-// UTXO spends), which a relational engine models far better than a KV index — so we
+// UTXO spends), which a relational engine models far better than a KV index; so we
 // extend Cairn's sqlite scanner rather than adopt electrs's RocksDB (see docs/ecosystem/03).
 //
 // Reorg invariant: EVERY row carries `height`, so unwinding orphaned blocks is
 // `DELETE ... WHERE height > ancestor` + un-spending outputs whose spender was
 // orphaned. Nothing deeper than CONFIRMATIONS_FINAL is ever touched.
 //
-// Number policy (both backends): 64-bit integer columns are read EXACTLY — values
+// Number policy (both backends): 64-bit integer columns are read EXACTLY; values
 // within Number.MAX_SAFE_INTEGER come back as `number`, anything past 2^53 comes back
 // as `bigint` (never silently truncated, never thrown). Callers that serialize amounts
 // use amt()-style helpers to keep JSON clean.
@@ -29,7 +29,7 @@ import { CFG } from "./config.js";
 // optional at runtime for sqlite-only users.
 const require = createRequire(import.meta.url);
 
-/** number when exact, bigint when past 2^53 — never lossy. */
+/** number when exact, bigint when past 2^53; never lossy. */
 function exact(v: bigint): number | bigint {
   return v <= BigInt(Number.MAX_SAFE_INTEGER) && v >= BigInt(Number.MIN_SAFE_INTEGER) ? Number(v) : v;
 }
@@ -156,7 +156,7 @@ class SqliteStore implements Store {
   }
   // ISOLATION INVARIANT (load-bearing, experimentally verified): the BEGIN..COMMIT window
   // stays atomic w.r.t. HTTP readers ONLY because every await inside dbTx callbacks is a
-  // store call (a microtask — the event loop cannot run I/O callbacks until the microtask
+  // store call (a microtask; the event loop cannot run I/O callbacks until the microtask
   // chain drains). Adding `await fetch(...)`/fs/timers inside a dbTx callback would let
   // readers interleave on this SAME connection and see uncommitted rows. Don't.
   async tx<T>(fn: (s: Store) => Promise<T>): Promise<T> {
@@ -188,7 +188,7 @@ class PgStore implements Store {
     const { Pool, types } = require("pg") as typeof import("pg");
     // Exact integer reads, same policy as the sqlite backend: int8 (OID 20) and the
     // NUMERIC (OID 1700) that SUM(bigint) yields come back as number within 2^53,
-    // bigint past it (the sums here are integral — sats, counts, heights).
+    // bigint past it (the sums here are integral; sats, counts, heights).
     const exactParser = (v: string) => exact(BigInt(v));
     const perPool = {
       getTypeParser: (oid: number, format?: string) =>
@@ -196,27 +196,27 @@ class PgStore implements Store {
     } as unknown as import("pg").CustomTypesConfig;
     this.pool = new Pool({
       connectionString: url, max: CFG.pgPoolSize, types: perPool,
-      // CAIRN-IDX-POOL-1 / PG-7: per-acquire timeout — any single acquire fails after 10s rather
+      // CAIRN-IDX-POOL-1 / PG-7: per-acquire timeout; any single acquire fails after 10s rather
       // than hanging. NOTE: this bounds how long ONE waiter waits, not how MANY can wait; pg-pool
       // 3.x has no built-in maxWaitingClients, so the queue length is bounded explicitly below in
       // acquireGuard() (the prior comment claimed "never queue forever" but the queue was unbounded).
       connectionTimeoutMillis: 10_000,
       // server-side guards: statement_timeout (30s) caps any single query so no runaway read
       // starves the block writer; idle_in_transaction_session_timeout (60s) keeps an abandoned
-      // BEGIN from holding locks. Both exceed connectionTimeoutMillis by design — the acquire
+      // BEGIN from holding locks. Both exceed connectionTimeoutMillis by design; the acquire
       // timeout fails fast; these bound work that is already running on a connection.
       options: "-c statement_timeout=30000 -c idle_in_transaction_session_timeout=60000",
     });
     // pg-pool EMITS 'error' for connection failures on IDLE pooled clients (server
     // restart, idle kill, network blip). With no listener that's an uncaught exception
-    // that takes the whole process down — log and let the pool replace the client.
+    // that takes the whole process down; log and let the pool replace the client.
     this.pool.on("error", (e) => console.error(`[pg pool] idle client error: ${e.message}`));
     this.schemaSafe = schema.replace(/[^a-zA-Z0-9_]/g, "");
     // every pooled connection joins the schema; errors here surface on the user query
     this.pool.on("connect", (client) => { client.query(`SET search_path TO ${this.schemaSafe}`).catch(() => {}); });
   }
   // Lazily (re)established: if the first connect/DDL fails (pg still starting, network
-  // blip), the failure must NOT be cached forever — the next call retries from scratch,
+  // blip), the failure must NOT be cached forever; the next call retries from scratch,
   // so the indexer loop recovers as soon as Postgres does.
   private ready(): Promise<void> {
     if (this._ready) return this._ready;

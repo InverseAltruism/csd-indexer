@@ -10,8 +10,8 @@ export interface TxRow { txid: string; height: number; pos: number; app_type: st
 export interface OutRow { txid: string; vout: number; addr: string; value: number | string; height: number; spent_txid: string | null; spent_height: number | null; }
 
 // Serialize a sats amount: a JS number when it fits exactly, else a decimal string. CSD max supply
-// (~1e17 sats) exceeds 2^53 — a high-value address must never 500 the API or corrupt silently.
-// THE one copy since B8c (analytics.ts imports it; was defined near-verbatim in both files —
+// (~1e17 sats) exceeds 2^53; a high-value address must never 500 the API or corrupt silently.
+// THE one copy since B8c (analytics.ts imports it; was defined near-verbatim in both files:
 // this pass-through-number variant is canonical: it never throws on a weird store value where
 // the old big()-normalizing twin would RangeError on a non-integer number).
 export function amt(v: number | bigint | null | undefined): number | string {
@@ -21,7 +21,7 @@ export function amt(v: number | bigint | null | undefined): number | string {
 }
 // Raw-row JSON safety: the store returns bigint for any integer past 2^53 (e.g. an
 // attacker-chosen expires_epoch in a Propose payload). A stray bigint crashes
-// JSON.stringify — one poisoned row must never 500 a whole endpoint, so every raw row
+// JSON.stringify; one poisoned row must never 500 a whole endpoint, so every raw row
 // that goes straight to res.json passes through here (bigint → decimal string).
 function jsonSafe<T>(row: T): T {
   if (row == null || typeof row !== "object") return row;
@@ -30,7 +30,7 @@ function jsonSafe<T>(row: T): T {
   return row;
 }
 const jsonSafeAll = <T>(rows: T[]): T[] => { rows.forEach(jsonSafe); return rows; };
-// height params arrive from URLs — only a non-negative safe integer can match a row,
+// height params arrive from URLs; only a non-negative safe integer can match a row,
 // and anything else must 404, not 500 (pg would reject 1e21/2.5 as an int8 param).
 const heightOk = (h: number): boolean => Number.isSafeInteger(h) && h >= 0;
 
@@ -87,7 +87,7 @@ export async function txsWithOutputs(txids: string[]): Promise<(TxRow & { output
 
 // Esplora-style address tx list: distinct txids touching addr, newest-first.
 // CAIRN-IDX PAGINATION-DATALOSS-1: the keyset cursor is the FULL (height, txid) tuple matching the
-// `height DESC, txid ASC` order — a height-only cursor silently DROPS the remaining same-height txids when
+// `height DESC, txid ASC` order; a height-only cursor silently DROPS the remaining same-height txids when
 // one block has more than `limit` txids touching the address (a busy treasury/faucet/exchange address):
 // page 1 fills with `limit` rows all at height H, the next page `height < H` skips the rest of H forever.
 // Mirrors the (height, txid) keyset attestationsFor already uses.
@@ -126,7 +126,7 @@ export async function addressStats(addr: string): Promise<{ funded: number | str
 // ── CSD-specific (the reason this exists) ──
 export async function proposal(id: string): Promise<any> { return jsonSafe((await store().get("SELECT * FROM proposals WHERE txid=?", id)) ?? null); }
 export async function proposalsByDomain(domain: string, limit = 100, from?: number): Promise<any[]> {
-  // clamp: callers (e.g. metaprotocol resolvers) may ask for the full domain history —
+  // clamp: callers (e.g. metaprotocol resolvers) may ask for the full domain history:
   // a resolver fed a truncated feed would silently lose its oldest records (deploys!)
   const lim = Math.min(Math.max(1, Math.floor(Number(limit) || 100)), 10_000);
   // `from` = height cursor: rows at height >= from in ASCENDING order, so a resolver can page
@@ -155,8 +155,8 @@ export async function attestationsFor(
 ): Promise<any[]> {
   // Bound the row count PER REQUEST (a hot proposal can accrue unlimited attests; inlined into
   // /proposal/:id one popular item could balloon every response). But the CairnX resolver REQUIRES the
-  // COMPLETE list to replay fills/cancels/partial-fills deterministically — a silent truncation would
-  // diverge ledger state — so this also supports a keyset cursor (afterHeight, afterTxid) over the same
+  // COMPLETE list to replay fills/cancels/partial-fills deterministically; a silent truncation would
+  // diverge ledger state; so this also supports a keyset cursor (afterHeight, afterTxid) over the same
   // (height, txid) ASC order, letting a consumer page through ALL rows in bounded chunks. txids are
   // lowercase 0x-hex, so byte-wise `txid > ?` matches the ORDER BY under every collation.
   const n = Number(opts.limit);

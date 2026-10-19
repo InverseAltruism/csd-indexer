@@ -1,5 +1,5 @@
 // REST API: the Esplora contract (so existing clients + the L0 light client work
-// against it unchanged) plus the CSD-specific extras the thin node omits — merkle
+// against it unchanged) plus the CSD-specific extras the thin node omits; merkle
 // proofs, per-attester data, domain views, content joins. Every response is a
 // derived view; trust comes from the light client re-verifying the merkle proofs.
 import express, { type Request, type Response } from "express";
@@ -48,7 +48,7 @@ export function buildApp() {
   // async handlers: express 4 doesn't catch a rejected promise, so wrap every handler.
   // Params are typed as plain strings (the routes below only read params they declare).
   type Req = Request<Record<string, string>, unknown, unknown, Record<string, string | undefined>>;
-  // CAIRN-IDX-ERR-1: never leak the raw error to a public client — a thrown error here can carry a
+  // CAIRN-IDX-ERR-1: never leak the raw error to a public client; a thrown error here can carry a
   // pg connection string, the failing SQL/schema, or a sqlite file path. Log the full error
   // server-side and return a generic, stable body. Status stays 500 (clients branch on status).
   const fail = (res: Response, e: unknown) => {
@@ -60,11 +60,11 @@ export function buildApp() {
 
   // ── health / status ──
   // Freshness surface (added for multi-host failover): a load balancer or failover client
-  // routes/refuses on tip_hash + chainwork + seconds_since_tip, NOT just height — two hosts
+  // routes/refuses on tip_hash + chainwork + seconds_since_tip, NOT just height; two hosts
   // can sit at equal height on different forks, and a wedged node serves a stale-but-answering
   // tip. All original fields (ok, indexed_height, counts) are preserved; the rest are additive.
   //
-  // CAIRN-IDX-FAILOVER-1 — TRUST CAVEAT (READ BEFORE ROUTING ON THESE FIELDS):
+  // CAIRN-IDX-FAILOVER-1; TRUST CAVEAT (READ BEFORE ROUTING ON THESE FIELDS):
   // tip_hash / chainwork / tip_height / seconds_since_tip are NODE-REPORTED and are NOT
   // PoW-verified by the indexer. seconds_since_tip is derived from `header.time`, which we
   // store verbatim from the node (indexer.ts writeBlock), so a wedged-but-answering node can
@@ -74,7 +74,7 @@ export function buildApp() {
   // the winning tip against the L0 light client (header PoW + chainwork comparison) and reject a
   // header whose time fails an MTP / max-future-drift sanity bound. Treat a single indexer's
   // /health as untrusted for fork selection.
-  // counts() is four COUNT(*) full scans and /health is the failover-LB poll target — memoize it
+  // counts() is four COUNT(*) full scans and /health is the failover-LB poll target; memoize it
   // per canonical tip (analytics.memoByTip) so the scans run once per block, not once per poll.
   // The wall-clock freshness fields (seconds_since_tip, stale) stay live: they are computed per
   // hit from the (cheap, index-backed) tip row, never from the memo.
@@ -91,7 +91,7 @@ export function buildApp() {
     res.json({
       ok: true,
       version: PKG_VERSION,                         // cross-host version-skew tell (additive)
-      backend: store().backend,                     // "sqlite" | "postgres" — makes a storage cutover observable
+      backend: store().backend,                     // "sqlite" | "postgres"; makes a storage cutover observable
       indexed_height,
       tip_height: tipH,
       tip_hash: tip?.hash ?? null,
@@ -117,7 +117,7 @@ export function buildApp() {
     return tip < 0 ? res.status(503).json({ error: "index not ready" }) : res.json(tip);
   }));
   app.get("/blocks/tip/hash", h(async (_req, res) => { const b = await q.blockByHeight(await q.tipHeight()); return b ? res.json(b.hash) : nf(res); }));
-  // Recent blocks in ONE call (newest-first) — replaces a client tip→N×(height→hash→block) waterfall.
+  // Recent blocks in ONE call (newest-first); replaces a client tip→N×(height→hash→block) waterfall.
   // Backed by the existing q.recentBlocks(); rows carry height/hash/tx_count/time for the explorer feed.
   app.get("/blocks/recent", h(async (req, res) => {
     const limit = Math.min(50, Math.max(1, Math.floor(Number(req.query.limit ?? 12)) || 12));
@@ -157,7 +157,7 @@ export function buildApp() {
     if (!t) return nf(res, "unknown tx");
     const tip = await q.tipHeight();
     // CAIRN-IDX-ERR-3: only report confirmations when the tip is at/above the tx's height.
-    // tipHeight() is -1 on an empty index, and an in-flight reorg can briefly leave tip<height —
+    // tipHeight() is -1 on an empty index, and an in-flight reorg can briefly leave tip<height:
     // either way `tip - height + 1` would be a misleading large-negative count, so clamp to null.
     const confs = tip >= t.height ? tip - t.height + 1 : null;
     res.json({ confirmed: true, block_height: t.height, confirmations: confs, final: confs != null && confs >= CFG.finalDepth });
@@ -180,7 +180,7 @@ export function buildApp() {
     res.json(await q.txsWithOutputs(ids.map((r) => r.txid)));
   }));
   app.get("/address/:a/txs/chain/:last", h(async (req, res) => {
-    // Esplora `/address/:addr/txs/chain/:last_seen_txid` — page by the last-seen TXID (not a raw height).
+    // Esplora `/address/:addr/txs/chain/:last_seen_txid`; page by the last-seen TXID (not a raw height).
     // CAIRN-IDX PAGINATION-DATALOSS-1 + PG-2/PGDIV-1: the prior impl used `Number(:last)` as a height-only
     // cursor, which (a) dropped same-height txids past the page limit and (b) on Postgres raised a 500 for a
     // fractional/out-of-range value. Resolving the cursor txid's height and paging the full (height, txid)
@@ -261,7 +261,7 @@ export function buildApp() {
   }));
 
   // Content join: resolve canonical bytes by payload_hash via the L1 swarm gateway
-  // (self-certifying — the gateway re-checks sha256==hash; we just proxy).
+  // (self-certifying; the gateway re-checks sha256==hash; we just proxy).
   app.get("/content/:hash", async (req, res) => {
     const hash = String(req.params.hash! || "").toLowerCase();
     if (!HASH.test(hash)) return bad(res, "want /content/0x<64-hex payload_hash>");
@@ -271,9 +271,9 @@ export function buildApp() {
       let buf: Buffer;
       try {
         // explicit byte cap, enforced WHILE streaming (don't rely on the gateway's object limit
-        // for our own memory safety — abort the read the moment the body crosses the cap)
+        // for our own memory safety; abort the read the moment the body crosses the cap)
         const r = await registry.fetchCapped(`${CFG.swarmGateway}/content/${hash}`, ctrl.signal, 4 * 1024 * 1024);
-        // CAIRN-IDX-ERR-5: the swarm gateway is an untrusted upstream — normalize its failure status
+        // CAIRN-IDX-ERR-5: the swarm gateway is an untrusted upstream; normalize its failure status
         // to a fixed 502 (as the sibling oversize/verify/unreachable branches do) rather than
         // forwarding an attacker-influenceable raw r.status to our clients.
         if (!r.ok) return res.status(502).json({ error: "content unavailable via swarm gateway" });
@@ -283,7 +283,7 @@ export function buildApp() {
       // SELF-CERTIFY before serving: the swarm gateway is an untrusted transport, and a buggy/
       // hostile one (or a cache in front) could hand back wrong bytes. We assert integrity
       // headers (ETag/immutable/X-CSD-Payload-Hash), so we must prove sha256(bytes)==hash here
-      // rather than trust the gateway — else we'd pin wrong bytes under a content-address forever.
+      // rather than trust the gateway; else we'd pin wrong bytes under a content-address forever.
       if (!verifyContentBytes(new Uint8Array(buf), hash)) {
         return res.status(502).json({ error: "content failed self-verification (gateway returned bytes that do not hash to the payload_hash)" });
       }

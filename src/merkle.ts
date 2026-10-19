@@ -1,8 +1,8 @@
-// Merkle inclusion proofs — the reason this layer exists for the light client.
+// Merkle inclusion proofs; the reason this layer exists for the light client.
 //
 // The node serves no proof endpoint. We have every block's ordered tx list (txs.pos),
 // so we rebuild the Electrum-format proof: { block_height, pos, merkle:[siblings…] }.
-// The branch is produced by @inversealtruism/csd-codec's merkleBranch — the SAME
+// The branch is produced by @inversealtruism/csd-codec's merkleBranch; the SAME
 // function the L0 light client folds with verifyMerkleProof against the header root,
 // so prover and verifier share one convention by construction (verified live: the
 // SDK's merkleRoot reproduces the node's header.merkle for real blocks).

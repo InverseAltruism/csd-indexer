@@ -1,27 +1,27 @@
 // Environment configuration for the standalone indexer. Everything is overridable
 // so a third party can point it at their own node + paths and run an identical
-// indexer (determinism is the audit — see the roadmap's honest limits).
+// indexer (determinism is the audit; see the roadmap's honest limits).
 import { readFileSync } from "node:fs";
 
 export const CFG = {
-  // Node RPC (the source of truth). 8789 = the node itself. (8790 was the MINER's RPC —
+  // Node RPC (the source of truth). 8789 = the node itself. (8790 was the MINER's RPC:
   // the miner is disabled since 2026-06-12; never default to it.)
   rpc: env("CSD_RPC", "http://127.0.0.1:8789"),
   // RPC failover backends: read the healthiest (reachable, highest cumulative chainwork) of these each
-  // sync cycle, so a node that falls behind (db-loss resync / lag) does not stall the projection — it
+  // sync cycle, so a node that falls behind (db-loss resync / lag) does not stall the projection; it
   // reads the on-host miner (:8790) or standby (:8795) instead. Primary is rpcBackends[0]. Override with
   // a comma list in CSD_RPC_BACKENDS. max-chainwork selection with stickiness (no auto-failback) is in
   // rpc.ts, and it composes with the reorg chainwork guard: this picks the most-caught-up source, the
   // guard HOLDS only when EVERY source is behind our indexed tip.
   rpcBackends: backendList(),
-  // sqlite file. node:sqlite (built into Node 22) — no native dep, no build step.
+  // sqlite file. node:sqlite (built into Node 22); no native dep, no build step.
   db: env("CSD_INDEX_DB", "./csd-index.db"),
-  // Postgres connection string. When set, the indexer uses Postgres INSTEAD of sqlite —
+  // Postgres connection string. When set, the indexer uses Postgres INSTEAD of sqlite:
   // the scale path: node:sqlite is synchronous (every query blocks the event loop), so
   // concurrent API readers serialize; a pg pool keeps reads flowing during block writes.
   // e.g. CSD_INDEX_PG=postgres://csd:***@127.0.0.1:5432/csd_index
   pg: env("CSD_INDEX_PG", ""),
-  // Postgres schema (namespace) for all tables — lets several indexers share one database.
+  // Postgres schema (namespace) for all tables; lets several indexers share one database.
   pgSchema: env("CSD_INDEX_PG_SCHEMA", "public"),
   // Postgres pool size (readers + the single writer).
   pgPoolSize: num("CSD_INDEX_PG_POOL", 10),
@@ -34,12 +34,12 @@ export const CFG = {
   // Blocks deeper than this are treated as final and never unwound (reorg bound).
   finalDepth: num("CSD_CONFIRMATIONS_FINAL", 6),
   // Blocks at/under this depth are "confirmed" for display; the tip stays tentative.
-  // NOTE (audit dead-key): currently UNCONSULTED — the API derives finality from `finalDepth`
+  // NOTE (audit dead-key): currently UNCONSULTED; the API derives finality from `finalDepth`
   // and per-event tentative/confirmed status. Kept (not removed) to preserve the env surface for
   // a future display tier; reading the env var here is harmless. Do not assume it gates anything.
   displayDepth: num("CSD_CONFIRMATIONS_DISPLAY", 3),
   // Blocks per persisted scan chunk.
-  // NOTE (audit dead-key): currently UNCONSULTED — the indexer loop walks block-by-block, so this
+  // NOTE (audit dead-key): currently UNCONSULTED; the indexer loop walks block-by-block, so this
   // knob does not change behavior. Kept to preserve the env surface; do not assume it tunes batching.
   batch: num("CSD_INDEX_BATCH", 200),
   // Poll interval (seconds) for the continuous indexer loop.
@@ -124,7 +124,7 @@ function backendList(): string[] {
   if (raw) return raw.split(",").map((s) => s.trim()).filter(Boolean);
   const prim = env("CSD_RPC", "http://127.0.0.1:8789");
   // Only auto-append OUR on-host miner + standby when running against OUR default node. A custom CSD_RPC
-  // (a third party, or a test mock) gets NO implicit extra backends — otherwise it would silently poll
+  // (a third party, or a test mock) gets NO implicit extra backends; otherwise it would silently poll
   // 127.0.0.1:8790/8795, which is both wrong for third parties and lethal in tests (they would read the
   // live chain instead of their mock). Set CSD_RPC_BACKENDS explicitly to opt a custom setup into failover.
   if (prim !== "http://127.0.0.1:8789") return [prim];

@@ -1,8 +1,8 @@
-// F6 (ROUTE-1 route-capture) — the local-anchored plausibility gate on selectBackend. `tipHeaderPowOk`
+// F6 (ROUTE-1 route-capture); the local-anchored plausibility gate on selectBackend. `tipHeaderPowOk`
 // alone only checks a tip header against its OWN declared bits (powOk is floored at POW_LIMIT), so a REAL
 // min-difficulty header hashes valid + hash-binds while the backend lies about chainwork/height in /tip.
 // contenderPlausible() rejects such a contender by anchoring on the indexer's OWN local finality-gated
-// headers (the blocks table) — NEVER the live primary — with two bounds:
+// headers (the blocks table); NEVER the live primary; with two bounds:
 //   (1) DELTA CAP: claimed height must be <= localTip + CFG.maxAheadBlocks.
 //   (2) LWMA EASE: the contender's declared tip target (from its bits) must not be EASIER than the honest
 //       expected local target (csd-light expectedBitsFromWindow) times CFG.maxEaseFactor.

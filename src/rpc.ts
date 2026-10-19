@@ -1,4 +1,4 @@
-// Thin client for the CSD node RPC — the only thing the indexer trusts (and even
+// Thin client for the CSD node RPC; the only thing the indexer trusts (and even
 // then, every derived claim it serves is independently recomputable from these
 // raw blocks, so the node is a data source, not an authority).
 //
@@ -59,10 +59,10 @@ export function tipHeaderPowOk(header: unknown, claimedTipHash: string | null): 
 
 // F6 (ROUTE-1 route-capture) plausibility gate. `tipHeaderPowOk` above only checks a header against its
 // OWN declared bits (powOk is floored at POW_LIMIT), so a REAL min-difficulty header (bits at/near
-// POW_LIMIT, trivial to grind) hashes valid and hash-binds — passing ROUTE-1 while the backend claims
+// POW_LIMIT, trivial to grind) hashes valid and hash-binds; passing ROUTE-1 while the backend claims
 // arbitrary chainwork/height in /tip. That lets a co-located miner/standby (or a compromised
 // CSD_RPC_BACKENDS entry) capture the whole projection feed. This gate rejects such a contender by
-// anchoring on the indexer's OWN local finality-gated headers (the blocks table) — NEVER the live primary,
+// anchoring on the indexer's OWN local finality-gated headers (the blocks table); NEVER the live primary,
 // so a genuinely-ahead honest secondary still wins when the primary is stale/wedged (that is the whole
 // point of ROUTE-1; anchoring on the primary would pin routing on a dead primary = the availability
 // regression the design forbids). Two anchored bounds:
@@ -224,7 +224,7 @@ async function tipOf(base: string): Promise<{ height: number; chainwork: bigint;
  * (bits at/near POW_LIMIT, trivial to grind) passes powOk against its OWN bits, so a contender can pair a
  * cheap valid header with a huge forged /tip chainwork/height and win. `contenderEligible` therefore also
  * runs `contenderPlausible`, which anchors on the indexer's OWN local finality-gated headers (delta cap +
- * LWMA ease factor), never the live primary — so a min-diff forgery is excluded while a genuinely-ahead
+ * LWMA ease factor), never the live primary; so a min-diff forgery is excluded while a genuinely-ahead
  * honest secondary at the correct local difficulty is still selected when the primary is stale.
  */
 type Probe = { height: number; chainwork: bigint; tipHash: string | null };

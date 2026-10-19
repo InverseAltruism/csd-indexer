@@ -66,7 +66,7 @@ function matches(sub: Sub, e: IndexEvent): boolean {
   // There is no per-block WS subscription, and a narrow client (track-domain/address/proposal)
   // only wants the matching proposal/attestation/reorg stream. A client that wants every block
   // sends {track-all:true} (returns above) or uses the SSE GET /stream/blocks firehose. (Was
-  // `return sub.all` here, dead since sub.all is already false at this point — made explicit.)
+  // `return sub.all` here, dead since sub.all is already false at this point; made explicit.)
   if (e.kind === "block") return false;
   if (e.kind === "proposal") return sub.domains.has(e.domain);
   if (e.kind === "attestation") return sub.proposals.has(e.proposal_id) || sub.addresses.has(e.attester.toLowerCase());
