@@ -103,6 +103,19 @@ test("HONEST FAILOVER intact: a genuinely-ahead secondary at the CORRECT local d
   assert.equal(rpc.activeBackend(), B.url());
 });
 
+// The local anchor read is the adapter's own I/O (csd-light's check is pure), so its failure mode is pinned here.
+test("FAIL CLOSED: a local store read error excludes the honest secondary; once the read works it wins again", async () => {
+  await populateLocal(REAL_BITS);
+  A.set({ height: LOCAL_TIP - 10, work: 100n, up: true });
+  B.set({ height: LOCAL_TIP + 5, work: 9_000_000_000n, up: true, header: realHeader, tipHash: realTipHash });
+  await store().exec("DROP TABLE blocks");              // the anchor read now throws on both backends
+  const broken = await rpc.selectBackend();
+  assert.equal(broken.active, A.url(), "an unreadable local anchor cannot let a contender win");
+  await populateLocal(REAL_BITS);
+  const healthy = await rpc.selectBackend();
+  assert.equal(healthy.active, B.url(), "the same honest secondary wins once the anchor reads");
+});
+
 test("MUTATION (delta cap): disabling the gate lets the forged HUGE-height tip WIN (gate is load-bearing)", async () => {
   await populateLocal(REAL_BITS);
   A.set({ height: LOCAL_TIP, work: 1_000n, up: true });

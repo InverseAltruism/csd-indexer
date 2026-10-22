@@ -4,6 +4,8 @@
 
 - `@inversealtruism/csd-light` 0.1.21 to 0.1.24, `@inversealtruism/csd-crypto` 0.1.16 to 0.1.19 and
   `@inversealtruism/csd-codec` 0.1.16 to 0.1.18 (the codec both of them require; the install resolves one copy).
+- The ROUTE-1 checks come from csd-light: `src/rpc.ts` drops its copy of `tipHeaderPowOk`, and its
+  `contenderPlausible` reads the local anchor and passes the settings to csd-light's. Routing verdicts are unchanged.
 - `addrFromScriptPubkey` comes from csd-crypto. For every script_pubkey the node writes (0x and 40 lowercase hex)
   the address is unchanged. A script_pubkey with surrounding whitespace now yields the address the node's own
   parser reads, where it yielded none; a non-string one yields none, where it threw while the block was written.
