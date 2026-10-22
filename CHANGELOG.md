@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.1
+
+- `@inversealtruism/csd-light` 0.1.21 to 0.1.24, `@inversealtruism/csd-crypto` 0.1.16 to 0.1.19 and
+  `@inversealtruism/csd-codec` 0.1.16 to 0.1.18 (the codec both of them require; the install resolves one copy).
+
 ## 0.3.0
 
 Removed, since the content swarm they served is gone (owner decision P-5, 2026-10-13):
