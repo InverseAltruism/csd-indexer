@@ -8,8 +8,8 @@
 //   GET /tx/:txid          -> { ... } (or { tx: {...} })
 //   tx  = { txid, version, locktime, app?, inputs:[{prev_txid,vout,script_sig}], outputs:[{script_pubkey,value}] }
 import { CFG } from "./config.js";
-import { headerHashBytes, powOk, bitsToTarget, targetToBigInt, POW_LIMIT_BITS, LWMA_WINDOW, type BlockHeader } from "@inversealtruism/csd-codec";
-import { expectedBitsFromWindow } from "@inversealtruism/csd-light";
+import { LWMA_WINDOW, type BlockHeader } from "@inversealtruism/csd-codec";
+import { type ContenderPlausibleOpts, contenderPlausible as routeContenderPlausible, expectedBitsFromWindow, tipHeaderPowOk } from "@inversealtruism/csd-light";
 import { store } from "./db.js";
 
 export interface RpcHeader { bits: number; merkle: string; nonce: number; prev: string; time: number; version: number; }
@@ -26,101 +26,55 @@ const HYSTERESIS_BLOCKS = 3; // keep ACTIVE unless it falls more than this many 
 // minority fork that keeps pace in height) indefinitely. If ACTIVE stays below the best chainwork for this
 // many consecutive cycles (CFG.workEscapeCycles), force a switch to the highest-work backend.
 // ROUTE-1 (IDX-BACKEND-POW-1): a NON-primary backend may only WIN on work/height if its tip header is
-// PoW-valid AND hash-bound (mirrors cairn's rpcroute.ts ROUTE-1). The one header fetch we do when a
+// PoW-valid AND hash-bound (csd-light `tipHeaderPowOk`). The one header fetch we do when a
 // non-primary CLAIMS to out-work the trusted primary is bounded by CFG.powVerifyTimeoutMs, short so a
 // hung/forged backend fails soft fast instead of stalling the probe.
 let behindStreak = 0;
 export function activeBackend(): string { return ACTIVE; }
 
-// PoW verdict on a backend's tip header, ported byte-for-byte from cairn's rpcroute.ts `tipHeaderPowOk`
-// (the ecosystem's single ROUTE-1 rule; reuses the SDK codec, no hand-rolled PoW math). Returns false on
-// ANY shape/verification error (FAIL SAFE): a header that does not decode, does not hash to the claimed
-// tip hash, or whose hash exceeds the target for its own `bits` is NOT a valid winner. Hash-binding
-// (computed header hash === claimed tipHash) stops a backend pairing a real, easy-PoW header with a LIE
-// about which block is its tip.
-export function tipHeaderPowOk(header: unknown, claimedTipHash: string | null): boolean {
-  try {
-    const h = header as Partial<BlockHeader> | null | undefined;
-    if (!h || typeof h !== "object") return false;
-    if (typeof h.bits !== "number" || !Number.isFinite(h.bits)) return false;
-    if (typeof h.prev !== "string" || typeof h.merkle !== "string") return false;
-    const bh: BlockHeader = { version: Number(h.version ?? 0), prev: h.prev, merkle: h.merkle, time: (h.time as number) ?? 0, bits: h.bits, nonce: Number(h.nonce ?? 0) };
-    const hashBytes = headerHashBytes(bh);
-    // A non-hex/missing claimedTipHash is a HARD FAIL, not a skipped binding: a backend with no
-    // well-formed tip hash has no business winning a work-based route.
-    if (typeof claimedTipHash !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(claimedTipHash)) return false;
-    const computed = "0x" + Buffer.from(hashBytes).toString("hex");
-    if (computed.toLowerCase() !== claimedTipHash.toLowerCase()) return false;
-    return powOk(hashBytes, bh.bits);
-  } catch {
-    return false;
-  }
-}
+// The ROUTE-1 PoW + hash-binding rule is csd-light's. Exported here so the rule this module applies is the one
+// test/rpc-pow-route.test.ts pins.
+export { tipHeaderPowOk };
 
-// F6 (ROUTE-1 route-capture) plausibility gate. `tipHeaderPowOk` above only checks a header against its
-// OWN declared bits (powOk is floored at POW_LIMIT), so a REAL min-difficulty header (bits at/near
-// POW_LIMIT, trivial to grind) hashes valid and hash-binds; passing ROUTE-1 while the backend claims
-// arbitrary chainwork/height in /tip. That lets a co-located miner/standby (or a compromised
-// CSD_RPC_BACKENDS entry) capture the whole projection feed. This gate rejects such a contender by
-// anchoring on the indexer's OWN local finality-gated headers (the blocks table); NEVER the live primary,
-// so a genuinely-ahead honest secondary still wins when the primary is stale/wedged (that is the whole
-// point of ROUTE-1; anchoring on the primary would pin routing on a dead primary = the availability
-// regression the design forbids). Two anchored bounds:
-//   (1) DELTA CAP: reject a claimed height more than CFG.maxAheadBlocks beyond the local tip.
-//   (2) LWMA PLAUSIBILITY: reject a declared tip target EASIER than expected_local_target * maxEaseFactor,
-//       where expected_local_target = csd-light expectedBitsFromWindow over the local LWMA window.
-// FAIL-SAFE and availability-aware: a store READ/parse THROW or an unparseable contender bits -> false
-// (the contender cannot win); a legitimately EMPTY/too-shallow local index (cold start / mid-backfill, no
-// anchor to check against) -> the gate is INACTIVE (true) so it never breaks the legitimate failover path
-// before the index is established. Runs ONLY for a backend that CLAIMS to beat the anchor (never on the
-// healthy path), so it adds no read to a normal cycle. Kill switch CSD_RPC_ROUTE_PLAUSIBILITY=0
-// (CFG.routePlausibility) mirrors CSD_INDEX_WORK_GUARD: an operator escape if an extreme honest retarget ever mis-fires.
+// F6 (ROUTE-1 route-capture) plausibility gate. `tipHeaderPowOk` only checks a header against its OWN
+// declared bits (powOk is floored at POW_LIMIT), so a REAL min-difficulty header hashes valid and hash-binds
+// while the backend claims arbitrary chainwork/height in /tip; that would let a co-located miner/standby (or
+// a compromised CSD_RPC_BACKENDS entry) capture the whole projection feed. csd-light's `contenderPlausible`
+// decides (delta cap grown by the local tip's wall-clock age, then the LWMA ease test); this adapter supplies
+// the indexer's own anchor: its local finality-gated tip from the blocks table, never the live primary, so a
+// genuinely-ahead honest secondary still wins when the primary is stale. A store READ throw fails closed
+// (false); no local tip yet (cold start / mid-backfill) passes, so failover works before the index exists.
+// The kill switch CSD_RPC_ROUTE_PLAUSIBILITY=0 (CFG.routePlausibility) returns before the store read.
+// Runs only for a backend that CLAIMS to beat the trust anchor, so it adds no read to a normal cycle.
+type LocalTip = { height: number | bigint | null; bits: number | bigint | null; time: number | bigint | null };
 async function contenderPlausible(claimedHeight: number, header: unknown): Promise<boolean> {
-  if (!CFG.routePlausibility) return true; // operator escape valve (default on)
-  // Read our local finality-gated tip. A store THROW is a genuine read error -> fail closed (false).
-  let localTip: { height: number | bigint | null; bits: number | bigint | null; time: number | bigint | null } | undefined;
+  if (!CFG.routePlausibility) return true;
+  let localTip: LocalTip | undefined;
   try {
-    localTip = await store().get<{ height: number | bigint | null; bits: number | bigint | null; time: number | bigint | null }>(
-      "SELECT height, bits, time FROM blocks ORDER BY height DESC LIMIT 1");
+    localTip = await store().get<LocalTip>("SELECT height, bits, time FROM blocks ORDER BY height DESC LIMIT 1");
   } catch { return false; }
-  // No local anchor yet (fresh index / mid-backfill): nothing to plausibility-check against, so the gate is
-  // inactive rather than block a legitimate failover before the index exists.
   if (!localTip || localTip.height == null) return true;
-  const lh = Number(localTip.height);
-  if (!Number.isFinite(lh) || lh < CFG.scanFrom) return true;
-  // DELTA CAP (wall-clock-aware; M1 fix, Plan 70 R2 final red-team). The local anchor is fed by the
-  // primary-following scanner, so during a reachable-but-FROZEN primary wedge it stops advancing while the
-  // honest chain (and a genuinely-ahead honest secondary) keep going. A FIXED maxAhead cap would then reject
-  // the honest secondary after ~maxAhead blocks of wedge = the incident-#10 stale-failover regression ROUTE-1
-  // exists to prevent. So GROW the cap by how STALE the local tip is in wall-clock terms: an honest secondary
-  // can legitimately be ~(now - localTip.time)/blockSecs blocks past a frozen anchor. A forger still cannot
-  // claim more height than wall-clock allows, and the LWMA-ease test below stays the real min-diff forgery
-  // defense (a RELATIVE difficulty check, robust to a stale anchor). Runtime route decision, so Date.now() is fine.
-  const claimed = Number(claimedHeight);
-  if (!Number.isFinite(claimed)) return false;                 // shape error -> fail closed
-  const nowSecs = Math.floor(Date.now() / 1000);
-  const ltTime = Number(localTip.time);
-  const staleBlocks = Number.isFinite(ltTime) ? Math.max(0, Math.floor((nowSecs - ltTime) / CFG.routeBlockSecs)) : 0;
-  if (claimed > lh + CFG.maxAheadBlocks + staleBlocks) return false;  // implausibly far beyond the staleness-adjusted tip
-  // LWMA PLAUSIBILITY. Parse the contender's declared tip target from its bits.
-  const h = header as Partial<BlockHeader> | null | undefined;
-  const cbits = Number(h?.bits);
-  if (!Number.isFinite(cbits)) return false;                   // shape error -> fail closed
-  let contenderTarget: bigint;
-  try { contenderTarget = targetToBigInt(bitsToTarget(cbits)); } catch { return false; }
-  if (contenderTarget <= 0n) return false;                     // invalid compact bits -> fail closed
-  const expected = await expectedLocalTarget(lh);
-  // Could not derive a local LWMA anchor (window too short / our own data anomalous): the DELTA CAP already
-  // applied above; skip the LWMA test rather than punish the contender for a LOCAL gap (availability-safe,
-  // and the local window is our own data, not attacker-influenced).
-  if (expected == null) return true;
-  let threshold = expected * BigInt(Math.max(1, Math.floor(CFG.maxEaseFactor)));
-  const powLimitTarget = targetToBigInt(bitsToTarget(POW_LIMIT_BITS));
-  if (threshold > powLimitTarget) threshold = powLimitTarget;  // graceful min-difficulty degrade
-  // Reject only when the contender's tip is EASIER (larger target) than honest expected * ease. A contender
-  // at the correct (or harder) local-LWMA difficulty passes; a POW_LIMIT forgery is orders of magnitude
-  // easier and is rejected (unless the local chain itself is at min difficulty, handled by the cap above).
-  return contenderTarget <= threshold;
+  const localHeight = Number(localTip.height);
+  const opts: ContenderPlausibleOpts = {
+    enabled: true,
+    claimedHeight,
+    contenderBits: Number((header as Partial<BlockHeader> | null | undefined)?.bits),
+    localHeight,
+    anchorFloor: CFG.scanFrom,
+    // Number(null) is 0: a tip row without a time counts its staleness from the epoch.
+    localTime: Number(localTip.time),
+    nowSecs: Math.floor(Date.now() / 1000),
+    blockSecs: CFG.routeBlockSecs,
+    expectedLocalBits: null,
+    maxAhead: CFG.maxAheadBlocks,
+    maxEase: CFG.maxEaseFactor,
+  };
+  // A null expectedLocalBits skips only the LWMA test, so a contender refused here is refused either way, and
+  // the local window is read only once the delta cap and the contender's bits pass (or, as an empty range,
+  // when the local tip is below the anchor floor).
+  if (!routeContenderPlausible(opts)) return false;
+  if (!Number.isFinite(localHeight)) return true; // no usable anchor: passed above, and there is no window to read
+  return routeContenderPlausible({ ...opts, expectedLocalBits: await expectedLocalBits(localHeight) });
 }
 
 // I9 (Q-03): one-shot visibility flag for the catch below. A guard that fail-softs to INERT in silence is
@@ -129,10 +83,10 @@ async function contenderPlausible(claimedHeight: number, header: unknown): Promi
 // would be a journal flood, and the flag must never gate behavior.
 let warnedLocalTargetThrow = false;
 
-// Honest expected target AT the local tip, from the local LWMA window (finality-gated blocks table only).
-// Returns null when it cannot be derived (fewer than 2 local headers, or a compute anomaly) so the caller
-// treats the LWMA test as inactive rather than throwing. Never touches the network or the live primary.
-async function expectedLocalTarget(localHeight: number): Promise<bigint | null> {
+// Honest expected bits AT the local tip, from the local LWMA window (finality-gated blocks table only).
+// Returns null when it cannot be derived (fewer than 2 local headers, or a compute anomaly); csd-light then
+// skips the LWMA test and the delta cap still applies. Never touches the network or the live primary.
+async function expectedLocalBits(localHeight: number): Promise<number | null> {
   try {
     const floor = Math.max(CFG.scanFrom, localHeight - LWMA_WINDOW);
     const rows = await store().all<{ time: number | bigint; bits: number | bigint }>(
@@ -142,14 +96,10 @@ async function expectedLocalTarget(localHeight: number): Promise<bigint | null> 
     // window[last] must be the parent (localHeight-1); expectedBitsFromWindow computes the expected bits for
     // the block AT localHeight given its preceding chronological window.
     const window: BlockHeader[] = rows.map((r) => ({ version: 0, prev: "", merkle: "", time: Number(r.time), bits: Number(r.bits), nonce: 0 }));
-    const eb = expectedBitsFromWindow(window, localHeight);
-    const t = targetToBigInt(bitsToTarget(eb));
-    return t > 0n ? t : null;
+    return expectedBitsFromWindow(window, localHeight);
   } catch (e) {
-    // I9 (Q-03): the fail-soft STAYS (the caller treats a null as "LWMA test inactive" and the ROUTE-1 PoW
-    // arm plus the delta cap remain armed, so this never opens a route). What changes is only that the
-    // disarming is now VISIBLE: without this line the F6 local-anchored plausibility arm could be inert for
-    // the whole process life and nothing would say so. Verdicts are unchanged; this only prints.
+    // I9 (Q-03): the fail-soft STAYS (a null makes the LWMA test inactive while the ROUTE-1 PoW arm and the
+    // delta cap remain armed, so this never opens a route). The line only makes the disarming visible.
     if (!warnedLocalTargetThrow) {
       warnedLocalTargetThrow = true;
       console.warn(`[rpc] F6 plausibility: local LWMA anchor threw (${e instanceof Error ? e.message : String(e)}) at localHeight=${localHeight}; the LWMA arm of ROUTE-1 is INERT until this is fixed (the PoW + delta-cap arms stay armed). Logged once per process.`);
