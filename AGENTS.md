@@ -18,7 +18,7 @@ This repo follows the maintainers' cross-repo engineering standard (a private do
 - Comments state constraints and non-obvious invariants, not history or audit IDs. Removing code needs the same evidence as adding it.
 - Docs: this file holds what stays true (no version tables, no status snapshots; versions live in `package.json` and tags, live state comes from a live query). Dates are absolute, no em dashes.
 
-Known deviations (checked 2026-10-19, not exhaustive): `src/config.ts` reads the shared SPV checkpoint file from a sibling checkout when present and falls back to the built-in floor (`checkpointDefault`, which the tests call with a path of their own); the dependency lockfile is `package-lock.json` (npm).
+Known deviations (re-checked 2026-10-22, not exhaustive): `src/config.ts` reads the shared SPV checkpoint file from a sibling checkout when present and falls back to the built-in floor (`checkpointDefault`, which the tests call with a path of their own). The path (`SPV_CHECKPOINT_FILE`) is an absolute path on the maintainers' host, published in this public repo; on any other machine the file is absent and the fallback applies. The dependency lockfile is `package-lock.json` (npm).
 
 ## The stack around it
 
@@ -27,19 +27,20 @@ The chain is the only source of truth; every layer above is a deterministic repl
 | Layer | Repo / component | Where |
 |---|---|---|
 | Chain node + miner | compute-substrate (Rust) | run your own; the node RPC is this indexer's sole source of truth |
-| L0 SDK | csd-sdk (pnpm monorepo: csd-codec/crypto/tx/client/light/vectors + cairnx-core) | npm @inversealtruism/* |
+| L0 SDK | csd-sdk (pnpm monorepo: csd-codec/crypto/tx/client/light/siwc/indexwire/vectors + cairnx-core) | npm @inversealtruism/* |
 | L2 indexer | csd-indexer (this repo) | REST/SSE/WS API + explorer |
 | Settlement resolver | cairnx (CairnX market: tokens, DvP, .csd names) | consumes this indexer's API |
-| Web front door | cairn (board, wall, /names CNS, explorer proxy, faucet, docs) | https://cairn-substrate.com |
+| Web front door | cairn (CNS, CairnX market, Uplink, explorer proxy, docs) | https://cairn-substrate.com |
 | Signer | cairn-wallet (Chrome MV3 extension) | Chrome Web Store + GitHub releases |
-| SDK / CLI | cairn-sdk (dApp aggregator), cairn-cli | npm |
-| Bridge | csd-bridge (CSD<->Base) | TESTNET-ONLY, NO-GO for mainnet |
+| SDK | cairn-sdk (dApp aggregator) | npm |
+
+Retired: cairn-cli (deprecated on npm) and csd-bridge (CSD<->Base; its bridge contracts are testnet, but its swap scripts spend real mainnet CSD, so it is not "testnet-only").
 
 The indexer binds 127.0.0.1 by default and is meant to sit behind a reverse proxy when exposed publicly; the maintainers' instance is served through the front door at https://cairn-substrate.com/explorer. Running additional independent indexer instances is encouraged: byte-identical replay is the audit story.
 
 ## Architecture
 
-TypeScript, run directly via `tsx` (no build step, no native deps; `node:sqlite` needs Node >= 22). About 2,200 lines in `src/` (`wc -l src/*.ts`, 2026-10-19):
+TypeScript, run directly via `tsx` (no build step, no native deps; `node:sqlite` needs Node >= 22):
 
 - `src/cli.ts` - entry. `index` = one sync pass + exit (cron/CI); `run` = continuous poll loop AND API server in one process.
 - `src/config.ts` - `CFG` from env. Key vars: `CSD_RPC` (default http://127.0.0.1:8789), `CSD_RPC_BACKENDS`, `CSD_INDEX_DB`, `CSD_INDEX_PG` (set => Postgres instead of sqlite), `CSD_INDEX_LISTEN` (127.0.0.1:8793), `CSD_CONFIRMATIONS_FINAL` (6), `CSD_INDEX_POLL` (15s), `CSD_STALE_SECS` (600), `CSD_INDEX_CHECKPOINT_FLOOR` (default read from the shared spv-checkpoint file whose path is baked into config.ts, hard fallback 38142), `CSD_INDEX_WORK_GUARD` (chainwork-guard kill switch, default on), and the knobs of rpc.ts and stream.ts listed below. It is the only `process.env` reader in `src/`; a numeric knob that is empty, zero, negative or not a number falls back to its default (`test/config-knob-positive.test.ts`).
@@ -67,7 +68,7 @@ API: Esplora core (`/blocks/tip/height` 503s on empty index, `/block/:hash[/txid
 ## Invariants and red lines
 
 - Chainwork regression guard (2026-07-05 incident fix): never reconcile/unwind when the node presents LESS accumulated chainwork than the indexed tip; HOLD and keep serving last-good; fail closed when node chainwork is missing/unparseable. Strict `<` comparison. Kill switch `CSD_INDEX_WORK_GUARD=0`.
-- Checkpoint floor 38142: never hard-unwind below the highest shipped SPV checkpoint. Single-sourced from the shared spv-checkpoint file (path in config.ts); guarded against empty env string.
+- Checkpoint floor: never hard-unwind below the highest shipped SPV checkpoint. The floor is `CSD_INDEX_CHECKPOINT_FLOOR` when set, else the number in the shared spv-checkpoint file (path in config.ts), else the built-in fallback 38142 (`checkpointDefault`); an empty env string does not disable it (`test/config-knob-positive.test.ts`; the unwind refusal: `test/checkpoint-floor.test.ts`).
 - Never unwind on absence of evidence: only confirmed contiguous hash mismatch justifies an unwind.
 - sqlite dbTx isolation invariant (db.ts, guarded by test/dbtx-isolation.test.ts): BEGIN..COMMIT atomicity vs HTTP readers holds only because every await inside a dbTx callback is a store call (microtask). Never add fetch/fs/timer awaits inside a dbTx callback.
 - Exact-integer policy end to end: CSD max supply exceeds 2^53, so values parse as BigInt (`safeValue`), store as BIGINT, serialize via `amt()`/`jsonSafe()`. A stray bigint in a response object crashes JSON.stringify and 500s the endpoint.
@@ -120,7 +121,7 @@ Gotcha: stale dev servers squat :8793; find the squatter and kill it by PID (che
 ## Production notes
 
 - The maintainers' production instance runs the Postgres backend (`CSD_INDEX_PG`), cut over 2026-07-03 after a from-genesis backfill + cross-backend row diff + full suite. SQLite remains the default for dev, CI, and third-party deployments. Both backends must produce identical API responses; there is deliberately no copy tool between them (a fresh replay IS the integrity check).
-- Consumers: the cairnx scanner (reads via `CSD_INDEXER`; complete proposal + attestation lists come from here), the cairn site (netstats/treasury/faucet plus public GET-only allowlisted proxies /explorer/api/* and /trade/api/*), the explorer SPA, the cairn-sdk indexer namespace, and the @inversealtruism/csd-indexwire wire types. Monitoring and failover clients key off `/health`.
+- Consumers: the cairnx scanner (reads via `CSD_INDEXER`; complete proposal + attestation lists come from here), the cairn site (network figures, `/api/headers` and `/api/blocks`, the market data, the faucet when it is on, the treasury CLI, and the public GET-only allowlisted proxy `/explorer/api/*`), the explorer SPA, the cairn-sdk indexer namespace, and the @inversealtruism/csd-indexwire wire types. Monitoring and failover clients key off `/health`.
 - Upstreams: the CSD node RPC (with the multi-backend failover list in config.ts).
 
 ## Gotchas and incident history
