@@ -4,10 +4,9 @@
 // runs once per tip and re-runs on a new block, (3) freshness fields stay live (not memoized).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { rmSync } from "node:fs";
+import { tmpDb } from "./_tmpdb.js";
 
-const DB = `/tmp/csd-idx-health-${process.pid}.db`;
-for (const s of ["", "-wal", "-shm"]) rmSync(DB + s, { force: true });
+const DB = tmpDb("health");
 process.env.CSD_INDEX_DB = DB;
 process.env.CSD_INDEX_PG_SCHEMA = "t_health";
 

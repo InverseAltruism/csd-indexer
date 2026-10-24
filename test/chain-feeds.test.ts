@@ -6,11 +6,10 @@
 // indexer's own writeBlock and unwindAbove.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { rmSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { tmpDb } from "./_tmpdb.js";
 
-const DB = `/tmp/csd-idx-feeds-${process.pid}.db`;
-for (const s of ["", "-wal", "-shm"]) rmSync(DB + s, { force: true });
+const DB = tmpDb("feeds");
 process.env.CSD_INDEX_DB = DB;
 process.env.CSD_INDEX_PG_SCHEMA = "t_feeds";
 process.env.CSD_INDEX_FROM = "0";
@@ -22,7 +21,7 @@ const { buildApp } = await import("../src/server.js");
 const srv = buildApp().listen(0, "127.0.0.1");
 await new Promise((r) => srv.once("listening", r));
 const base = `http://127.0.0.1:${(srv.address() as { port: number }).port}`;
-test.after(async () => { srv.close(); await closeDb(); for (const s of ["", "-wal", "-shm"]) rmSync(DB + s, { force: true }); });
+test.after(async () => { srv.close(); await closeDb(); });
 
 const U = "uplink:v1", OTHER = "cairnx:v1", DEPTH = 3;
 const id = (n: number) => "0x" + n.toString(16).padStart(64, "0");

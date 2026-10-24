@@ -4,11 +4,10 @@
 // The rows served are unchanged: each list element equals the per-txid row plus its outputs.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { rmSync } from "node:fs";
 import type { AddressInfo } from "node:net";
+import { tmpDb } from "./_tmpdb.js";
 
-const DB = `/tmp/csd-idx-fanout-${process.pid}.db`;
-for (const s of ["", "-wal", "-shm"]) rmSync(DB + s, { force: true });
+const DB = tmpDb("fanout");
 process.env.CSD_INDEX_DB = DB;
 process.env.CSD_INDEX_PG_SCHEMA = "t_fanout";
 process.env.CSD_INDEX_PG_POOL = "2";   // a small pool: its wait-queue bound is then max(64, 2*8) = 64

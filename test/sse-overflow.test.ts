@@ -5,11 +5,10 @@
 // every client. The cap here is 1 slot, so a leaked slot shows up as a 503 for the next client.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { rmSync } from "node:fs";
 import { connect, type Socket, type AddressInfo } from "node:net";
+import { tmpDb } from "./_tmpdb.js";
 
-const DB = `/tmp/csd-idx-sse-overflow-${process.pid}.db`;
-for (const s of ["", "-wal", "-shm"]) rmSync(DB + s, { force: true });
+const DB = tmpDb("sse-overflow");
 process.env.CSD_INDEX_DB = DB;
 process.env.CSD_INDEX_PG_SCHEMA = "t_sseoverflow";
 process.env.CSD_INDEX_MAX_SSE = "1";

@@ -5,10 +5,9 @@
 // requests, not four.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { rmSync } from "node:fs";
+import { tmpDb } from "./_tmpdb.js";
 
-const DB = `/tmp/csd-idx-acquire-${process.pid}.db`;
-for (const s of ["", "-wal", "-shm"]) rmSync(DB + s, { force: true });
+const DB = tmpDb("acquire");
 process.env.CSD_INDEX_DB = DB;
 process.env.CSD_INDEX_PG_SCHEMA = "t_acquire";
 process.env.CSD_INDEX_PG_POOL = "2";   // wait-queue bound: max(64, 2 * 8) = 64

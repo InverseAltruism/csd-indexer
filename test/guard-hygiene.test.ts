@@ -7,11 +7,10 @@
 // HOLDs on an unreadable own-work read instead of reconciling.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { rmSync } from "node:fs";
 import { createServer, type Server } from "node:http";
+import { tmpDb } from "./_tmpdb.js";
 
-const DB = `/tmp/csd-idx-guard-${process.pid}.db`;
-for (const s of ["", "-wal", "-shm"]) rmSync(DB + s, { force: true });
+const DB = tmpDb("guard");
 
 // mock node (checkpoint-floor pattern): a settable chain, so we can drive an equal/heavier reorg.
 type Blk = { hash: string; height: number; chainwork: string; header: any; txs: any[] };

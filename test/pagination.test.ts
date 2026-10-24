@@ -4,10 +4,9 @@
 // treasury/faucet/exchange address); they appear on NO page. This drives the real query layer.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { rmSync } from "node:fs";
+import { tmpDb } from "./_tmpdb.js";
 
-const DB = `/tmp/csd-idx-pag-${process.pid}.db`;
-for (const s of ["", "-wal", "-shm"]) rmSync(DB + s, { force: true });
+const DB = tmpDb("pag");
 process.env.CSD_INDEX_DB = DB;
 process.env.CSD_INDEX_PG_SCHEMA = "t_pag";
 process.env.CSD_INDEX_FROM = "0";

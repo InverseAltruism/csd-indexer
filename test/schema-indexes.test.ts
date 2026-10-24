@@ -11,12 +11,11 @@
 // would be flaky by design (CI's test-postgres job still runs the existence half).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { rmSync } from "node:fs";
 import { merkleRoot } from "@inversealtruism/csd-codec";
+import { tmpDb } from "./_tmpdb.js";
 
 // isolate the DB BEFORE importing any module that reads config
-const DB = `/tmp/csd-idx-schemaidx-test-${process.pid}.db`;
-for (const s of ["", "-wal", "-shm"]) { try { rmSync(DB + s); } catch { /* gone */ } }
+const DB = tmpDb("schemaidx-test");
 process.env.CSD_INDEX_DB = DB;
 process.env.CSD_INDEX_PG_SCHEMA = "t_schema_indexes";
 process.env.CSD_INDEX_FROM = "0";
@@ -25,7 +24,7 @@ const { writeBlock, unwindAbove } = await import("../src/indexer.js");
 const { store, resetStoreForTests, closeDb } = await import("../src/db.js");
 const { BLOCK_AT_OR_AFTER_SQL } = await import("../src/queries.js");
 await resetStoreForTests();
-test.after(async () => { await closeDb(); for (const s of ["", "-wal", "-shm"]) { try { rmSync(DB + s); } catch { /* gone */ } } });
+test.after(async () => { await closeDb(); });
 
 const SQLITE = store().backend === "sqlite";
 const BP5_INDEXES = ["idx_blocks_hash", "idx_out_height", "idx_out_spent_height", "idx_addrhist_height"];

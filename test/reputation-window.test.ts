@@ -2,11 +2,10 @@
 // (`truncated`, `note`) instead of presenting the figures as lifetime totals.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { rmSync } from "node:fs";
 import type { AddressInfo } from "node:net";
+import { tmpDb } from "./_tmpdb.js";
 
-const DB = `/tmp/csd-idx-reputation-${process.pid}.db`;
-for (const s of ["", "-wal", "-shm"]) rmSync(DB + s, { force: true });
+const DB = tmpDb("reputation");
 process.env.CSD_INDEX_DB = DB;
 process.env.CSD_INDEX_PG_SCHEMA = "t_reputation";
 

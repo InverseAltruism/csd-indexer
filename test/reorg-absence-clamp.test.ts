@@ -10,11 +10,10 @@
 // Two scenarios, one per walk. Both are exit-code gated.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { rmSync } from "node:fs";
 import { createServer, type Server } from "node:http";
+import { tmpDb } from "./_tmpdb.js";
 
-const DB = `/tmp/csd-idx-absclamp-${process.pid}.db`;
-for (const s of ["", "-wal", "-shm"]) rmSync(DB + s, { force: true });
+const DB = tmpDb("absclamp");
 
 type B = { hash: string; height: number; chainwork: string; header: any; txs: any[] };
 let CHAIN: B[] = [];

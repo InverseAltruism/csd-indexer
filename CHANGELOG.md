@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.3
+
+- `GET /proposals` and `GET /attestations` (#14): `after` now needs the hashed snapshot `at=<height>:<hash>` and
+  answers 400 without it (no `at`, or `at=<height>` alone), since a height-only snapshot cannot detect a reorg and a
+  walk across one mixed the new chain's rows with the orphaned ones.
+- The explorer (#14) words a CairnX Propose line with its effect ("Minted", "Finalized name") only when the resolver
+  applied the record; without a verdict (standalone, or the read failing) it reads as the request, a refused record
+  struck through.
+- Tests only: each test database under `/tmp` is removed with its `-wal` and `-shm` files when the test process
+  exits (`test/_tmpdb.ts`); two tests that pinned no behaviour are gone, and the `/domains` and `/address/:a` reads
+  they hit moved to `test/json-safe-read.test.ts`.
+
 ## 0.3.2
 
 - `GET /blocks/at-or-after/:time`: the lowest-height block whose time is at or after `time`, with the tip height,

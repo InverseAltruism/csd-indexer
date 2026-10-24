@@ -8,6 +8,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import { realHeader, realTipHash } from "./fixtures/header-32803.js";
+import { tmpDb } from "./_tmpdb.js";
 
 function mockNode() {
   let height = 0, work = 0n, up = true;
@@ -36,8 +37,7 @@ process.env.CSD_RPC_BACKENDS = `${A.url()},${B.url()}`;
 process.env.CSD_RPC_WORK_ESCAPE = "3";   // small so the work-escape test does not need 20 cycles
 // Isolate an EMPTY local index so the F6 route-plausibility gate has no anchor and stays inactive here:
 // these honest-failover assertions must hold on their own (the gate is exercised in rpc-route-plausibility).
-process.env.CSD_INDEX_DB = `/tmp/csd-idx-rpcfo-${process.pid}.db`;
-for (const s of ["", "-wal", "-shm"]) (await import("node:fs")).rmSync(process.env.CSD_INDEX_DB + s, { force: true });
+process.env.CSD_INDEX_DB = tmpDb("rpcfo");
 process.env.CSD_INDEX_PG_SCHEMA = "t_rpcfo";   // own schema: the route gate reads `blocks`, which peer files seed
 const rpc = await import("../src/rpc.js");
 

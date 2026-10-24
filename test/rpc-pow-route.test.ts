@@ -14,6 +14,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import { realHeader, realTipHash } from "./fixtures/header-32803.js";
+import { tmpDb } from "./_tmpdb.js";
 
 type HeaderMode = "valid" | "badpow" | "hang" | "none";
 function mockNode() {
@@ -49,8 +50,7 @@ process.env.CSD_RPC_WORK_ESCAPE = "1000";   // high: the forged/hung cases must 
 process.env.CSD_RPC_POW_TIMEOUT = "300";     // short: the hung-header case fails soft fast
 // Empty, isolated local index -> the F6 plausibility gate has no anchor and stays inactive here, so these
 // ROUTE-1 badpow/hung assertions are proven independently (the plausibility gate is tested separately).
-process.env.CSD_INDEX_DB = `/tmp/csd-idx-rpcpow-${process.pid}.db`;
-for (const s of ["", "-wal", "-shm"]) (await import("node:fs")).rmSync(process.env.CSD_INDEX_DB + s, { force: true });
+process.env.CSD_INDEX_DB = tmpDb("rpcpow");
 process.env.CSD_INDEX_PG_SCHEMA = "t_rpcpow";   // same isolation on the Postgres job (the default `public` is shared)
 const rpc = await import("../src/rpc.js");
 

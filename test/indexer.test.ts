@@ -7,12 +7,11 @@
 // CSD_INDEX_PG_SCHEMA below) to run the IDENTICAL suite against Postgres.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { rmSync } from "node:fs";
 import { verifyMerkleProof, merkleRoot } from "@inversealtruism/csd-codec";
+import { tmpDb } from "./_tmpdb.js";
 
 // isolate the DB BEFORE importing any module that reads config
-const DB = `/tmp/csd-idx-test-${process.pid}.db`;
-for (const s of ["", "-wal", "-shm"]) rmSync(DB + s, { force: true });
+const DB = tmpDb("test");
 process.env.CSD_INDEX_DB = DB;
 process.env.CSD_INDEX_PG_SCHEMA = "t_indexer";
 process.env.CSD_INDEX_FROM = "0";
