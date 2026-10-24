@@ -23,6 +23,7 @@ process.env.CSD_INDEX_FROM = "0";
 
 const { writeBlock, unwindAbove } = await import("../src/indexer.js");
 const { store, resetStoreForTests, closeDb } = await import("../src/db.js");
+const { BLOCK_AT_OR_AFTER_SQL } = await import("../src/queries.js");
 await resetStoreForTests();
 test.after(async () => { await closeDb(); for (const s of ["", "-wal", "-shm"]) { try { rmSync(DB + s); } catch { /* gone */ } } });
 
@@ -80,6 +81,10 @@ test("blockByHash lookup uses idx_blocks_hash (no table scan)", { skip: !SQLITE 
   // exact statement from queries.ts blockByHash
   const p = await plan("SELECT * FROM blocks WHERE hash=?", hashes[5]);
   assertUsesIndex(p, "blocks", "idx_blocks_hash", "blockByHash");
+});
+
+test("the block-at-or-after-time lookup reads idx_blocks_time (no table scan)", { skip: !SQLITE && "EXPLAIN QUERY PLAN is sqlite-only" }, async () => {
+  assertUsesIndex(await plan(BLOCK_AT_OR_AFTER_SQL, 1700000005), "blocks", "idx_blocks_time", "blockAtOrAfter");
 });
 
 test("writeBlock height self-clear uses idx_out_height and idx_addrhist_height (no table scan)", { skip: !SQLITE && "EXPLAIN QUERY PLAN is sqlite-only" }, async () => {

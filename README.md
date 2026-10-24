@@ -81,6 +81,18 @@ The extras:
 - `GET /proposal/:id` and `/proposal/:id/attestations`: a proposal and the individual attestations
   behind it (the node only gives totals), paginated with `limit`, `after_height` and `after_txid`.
 - `GET /domains`, `/domain/:d/proposals`: browse posts by category.
+- `GET /blocks/at-or-after/:time`: the lowest-height block whose time (unix seconds) is at or after
+  `time`, as `{ height, hash, time, tip_height }`, or 404 when there is none. Block times are not
+  monotonic, so this is not the block after the last one at or before `time`. The indexer indexes to
+  the tip: a caller that wants the block buried N deep checks `height <= tip_height - N`.
+- `GET /proposals` and `GET /attestations`: every proposal or attestation in chain order (height,
+  then position in the block), each row with its `pos`; `domain=` keeps the proposals of one domain
+  and the attestations of that domain's proposals. Answers `{ at, rows, next }`, at most `limit`
+  rows (default and cap 1000), only rows at or below the snapshot block `at`. Pass `at=<height>` (or
+  nothing, for the tip) on the first page, then `at=<height>:<hash>` from the answer and `after=` set
+  to `next` until `next` is null. A reorg above the snapshot leaves the walk unchanged; one at or
+  below it makes the next page answer 409, and the walk starts again. A malformed `at` or `after` is
+  400; an empty index is 503.
 - `GET /address/:a/reputation`: aggregates over the address's newest 200 attestations; past that the
   answer says `truncated: true` and names the window.
 - `GET /analytics/miners?window=`, `/analytics/richlist?limit=`, `/analytics/supply`,

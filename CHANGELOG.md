@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.2
+
+- `GET /blocks/at-or-after/:time`: the lowest-height block whose time is at or after `time`, with the tip height,
+  over a new `blocks(time, height)` index (created at start on both backends).
+- `GET /proposals` and `GET /attestations`: every proposal or attestation, or those of one domain, in chain order
+  (height, then position in the block), paged under a snapshot block with a keyset cursor; a reorg at or below the
+  snapshot answers 409. These are the reads cairn's chain scanner served (its Uplink tally and publisher, network
+  figures and legacy projection).
+- The explorer (`public/explorer.html`, #12) words an Attest on a CairnX offer or bid by the resolver's verdict
+  (`/cairnx/record`): "Bought", "Cancelled", "Reserved" only when CairnX applied it, a request line otherwise, a refused
+  record struck through with its reason; the "★ primary" badge from the resolver's primary pick; token-priced amounts
+  scaled by the token's decimals or labelled base units; the token note no longer calls delivery atomic.
+
 ## 0.3.1
 
 - `@inversealtruism/csd-light` 0.1.21 to 0.1.24, `@inversealtruism/csd-crypto` 0.1.16 to 0.1.19 and
