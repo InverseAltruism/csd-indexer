@@ -8,6 +8,10 @@
   (height, then position in the block), paged under a snapshot block with a keyset cursor; a reorg at or below the
   snapshot answers 409. These are the reads cairn's chain scanner served (its Uplink tally and publisher, network
   figures and legacy projection).
+- The explorer (`public/explorer.html`, #12) words an Attest on a CairnX offer or bid by the resolver's verdict
+  (`/cairnx/record`): "Bought", "Cancelled", "Reserved" only when CairnX applied it, a request line otherwise, a refused
+  record struck through with its reason; the "★ primary" badge from the resolver's primary pick; token-priced amounts
+  scaled by the token's decimals or labelled base units; the token note no longer calls delivery atomic.
 
 ## 0.3.1
 
