@@ -13,10 +13,11 @@
 //      sentinel does fire on a deliberately yielding callback (so silence is meaningful).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync, rmSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { merkleRoot } from "@inversealtruism/csd-codec";
+import { tmpDb } from "./_tmpdb.js";
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), "..", "src");
 
@@ -81,8 +82,7 @@ test("source scan: every await inside a dbTx callback targets the store param; n
 });
 
 // ── half 2: runtime sentinel over REAL transactions ──────────────────────────
-const DB = `/tmp/csd-idx-dbtx-test-${process.pid}.db`;
-for (const s of ["", "-wal", "-shm"]) { try { rmSync(DB + s); } catch { /* absent */ } }
+const DB = tmpDb("dbtx-test");
 process.env.CSD_INDEX_DB = DB;
 process.env.CSD_INDEX_PG_SCHEMA = "t_dbtx";
 process.env.CSD_INDEX_FROM = "0";
@@ -91,7 +91,7 @@ process.env.CSD_CONFIRMATIONS_FINAL = "6";
 const { writeBlock, unwindAbove } = await import("../src/indexer.js");
 const { store, setMeta, resetStoreForTests, closeDb } = await import("../src/db.js");
 await resetStoreForTests();
-test.after(async () => { await closeDb(); for (const s of ["", "-wal", "-shm"]) { try { rmSync(DB + s); } catch { /* gone */ } } });
+test.after(async () => { await closeDb(); });
 
 // The isolation invariant (and so the sentinel) is SQLITE-specific: pg transactions run on a
 // dedicated pooled connection where every store call is a real socket round-trip (macrotask), so

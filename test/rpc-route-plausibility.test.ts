@@ -19,9 +19,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
-import { rmSync } from "node:fs";
 import { bitsToTarget, targetToBigInt, bigIntToTarget, targetToBits } from "@inversealtruism/csd-codec";
 import { realHeader, realTipHash } from "./fixtures/header-32803.js";
+import { tmpDb } from "./_tmpdb.js";
 
 const REAL_BITS = realHeader.bits;
 const realTarget = targetToBigInt(bitsToTarget(REAL_BITS));
@@ -51,8 +51,7 @@ process.env.CSD_RPC_WORK_ESCAPE = "1000";   // high: forged cases must not be re
 process.env.CSD_RPC_POW_TIMEOUT = "800";
 process.env.CSD_RPC_MAX_AHEAD = "128";
 process.env.CSD_RPC_MAX_EASE = "16";
-const DB = `/tmp/csd-idx-plaus-${process.pid}.db`;
-for (const s of ["", "-wal", "-shm"]) rmSync(DB + s, { force: true });
+const DB = tmpDb("plaus");
 process.env.CSD_INDEX_DB = DB;
 process.env.CSD_INDEX_PG_SCHEMA = "t_rpcplaus";
 process.env.CSD_INDEX_FROM = "0";

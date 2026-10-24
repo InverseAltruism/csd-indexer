@@ -9,6 +9,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import { realHeader, realTipHash } from "./fixtures/header-32803.js";
+import { tmpDb } from "./_tmpdb.js";
 
 type HeaderMode = "valid" | "badpow";
 function mockNode() {
@@ -42,8 +43,7 @@ process.env.CSD_RPC_BACKENDS = `${A.url()},${B.url()},${C.url()}`;   // 3 backen
 process.env.CSD_RPC_WORK_ESCAPE = "1000";
 // Empty, isolated local index -> the F6 plausibility gate stays inactive (no anchor) so this primary-down
 // failover assertion holds on its own; the plausibility gate is exercised in rpc-route-plausibility.
-process.env.CSD_INDEX_DB = `/tmp/csd-idx-rpcpd-${process.pid}.db`;
-for (const s of ["", "-wal", "-shm"]) (await import("node:fs")).rmSync(process.env.CSD_INDEX_DB + s, { force: true });
+process.env.CSD_INDEX_DB = tmpDb("rpcpd");
 process.env.CSD_INDEX_PG_SCHEMA = "t_rpcpd";   // own schema: the route gate reads `blocks`, which peer files seed
 const rpc = await import("../src/rpc.js");
 

@@ -4,11 +4,10 @@
 // /domain/:d/proposals that contains it, and the resolver stops advancing.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { rmSync } from "node:fs";
 import type { AddressInfo } from "node:net";
+import { tmpDb } from "./_tmpdb.js";
 
-const DB = `/tmp/csd-idx-jsonsafe-${process.pid}.db`;
-for (const s of ["", "-wal", "-shm"]) rmSync(DB + s, { force: true });
+const DB = tmpDb("jsonsafe");
 process.env.CSD_INDEX_DB = DB;
 process.env.CSD_INDEX_PG_SCHEMA = "t_jsonsafe";
 

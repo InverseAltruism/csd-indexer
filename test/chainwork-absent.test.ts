@@ -12,11 +12,10 @@
 // moment the one-token fix is reverted. A printed "HOLD:" line is NOT a gate and is not treated as one.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { rmSync } from "node:fs";
 import { createServer, type Server } from "node:http";
+import { tmpDb } from "./_tmpdb.js";
 
-const DB = `/tmp/csd-idx-cwabsent-${process.pid}.db`;
-for (const s of ["", "-wal", "-shm"]) rmSync(DB + s, { force: true });
+const DB = tmpDb("cwabsent");
 
 type B = { hash: string; height: number; chainwork: string; header: any; txs: any[] };
 let CHAIN: B[] = [];

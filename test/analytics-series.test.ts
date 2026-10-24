@@ -6,10 +6,9 @@
 // Backend-agnostic: sqlite by default; CSD_INDEX_PG runs the identical suite on Postgres.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { rmSync } from "node:fs";
+import { tmpDb } from "./_tmpdb.js";
 
-const DB = `/tmp/csd-idx-series-${process.pid}.db`;
-for (const s of ["", "-wal", "-shm"]) { try { rmSync(DB + s); } catch { /* no stale file to remove */ } }
+const DB = tmpDb("series");
 process.env.CSD_INDEX_DB = DB;
 process.env.CSD_INDEX_PG_SCHEMA = "t_series";
 

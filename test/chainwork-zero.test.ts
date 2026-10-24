@@ -11,11 +11,10 @@
 // reverted. A printed "HOLD:" line is observed, never treated as the gate.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { rmSync } from "node:fs";
 import { createServer, type Server } from "node:http";
+import { tmpDb } from "./_tmpdb.js";
 
-const DB = `/tmp/csd-idx-cwzero-${process.pid}.db`;
-for (const s of ["", "-wal", "-shm"]) rmSync(DB + s, { force: true });
+const DB = tmpDb("cwzero");
 
 type B = { hash: string; height: number; chainwork: string; header: any; txs: any[] };
 let CHAIN: B[] = [];

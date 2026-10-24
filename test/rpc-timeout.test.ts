@@ -5,7 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
-import { rmSync } from "node:fs";
+import { tmpDb } from "./_tmpdb.js";
 
 let stallBlock = false;
 const realHeader = { version: 1, prev: "0x" + "0".repeat(64), merkle: "0x" + "0".repeat(64), time: 1700000000, bits: 0x1e00ffff, nonce: 0 };
@@ -22,8 +22,7 @@ await new Promise<void>((r) => srv.listen(0, "127.0.0.1", () => r()));
 process.env.CSD_RPC = `http://127.0.0.1:${(srv.address() as any).port}`;
 process.env.CSD_RPC_BACKENDS = process.env.CSD_RPC;
 process.env.CSD_RPC_TIMEOUT = "400";                         // short so the stall test is fast
-process.env.CSD_INDEX_DB = `/tmp/csd-idx-timeout-${process.pid}.db`;
-for (const s of ["", "-wal", "-shm"]) rmSync(process.env.CSD_INDEX_DB + s, { force: true });
+process.env.CSD_INDEX_DB = tmpDb("timeout");
 const rpc = await import("../src/rpc.js");
 
 test("healthy path: /tip and a fast /block return normally (no false abort)", async () => {

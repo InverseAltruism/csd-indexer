@@ -4,10 +4,9 @@
 // collapses the unauthenticated O(table) scans from once-per-request to once-per-block.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { rmSync } from "node:fs";
+import { tmpDb } from "./_tmpdb.js";
 
-const DB = `/tmp/csd-idx-memo-${process.pid}.db`;
-for (const s of ["", "-wal", "-shm"]) rmSync(DB + s, { force: true });
+const DB = tmpDb("memo");
 process.env.CSD_INDEX_DB = DB;
 process.env.CSD_INDEX_PG_SCHEMA = "t_memo";
 

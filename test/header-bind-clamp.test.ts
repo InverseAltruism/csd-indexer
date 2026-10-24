@@ -20,11 +20,10 @@
 // is what actually differs, and CI's postgres job re-runs the behavioral arms against a real int8 bind.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { rmSync } from "node:fs";
 import { createServer, type Server } from "node:http";
+import { tmpDb } from "./_tmpdb.js";
 
-const DB = `/tmp/csd-idx-hdrclamp-${process.pid}.db`;
-for (const s of ["", "-wal", "-shm"]) rmSync(DB + s, { force: true });
+const DB = tmpDb("hdrclamp");
 
 const INT64_MAX = "9223372036854775807";
 const INT32_MAX = 2147483647;          // the int4 ceiling `version INTEGER` used to impose on Postgres

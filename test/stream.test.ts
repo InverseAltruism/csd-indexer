@@ -3,11 +3,10 @@
 // drive the in-process bus directly, which is exactly what the indexer publishes.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { rmSync } from "node:fs";
 import { WebSocket } from "ws";
+import { tmpDb } from "./_tmpdb.js";
 
-const DB = `/tmp/csd-idx-stream-${process.pid}.db`;
-for (const s of ["", "-wal", "-shm"]) rmSync(DB + s, { force: true });
+const DB = tmpDb("stream");
 process.env.CSD_INDEX_DB = DB;
 
 const { serve } = await import("../src/server.js");
