@@ -1,0 +1,14 @@
+/* A stand-in for cairn's /ui/tokens.css (test/explorer-browser.test.ts): the same layer and theme selectors, with values
+   unlike the page's standalone fallback, so a test can tell which one applied. */
+@layer tokens {
+  :root,
+  [data-theme="light"] {
+    --ui-bg: #FAFAF0;
+    --ui-ink: #111111;
+  }
+  [data-theme="dark"] {
+    color-scheme: dark;
+    --ui-bg: #101014;
+    --ui-ink: #EEEEEE;
+  }
+}
