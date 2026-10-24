@@ -641,7 +641,7 @@ async function home(v){
         $('#tok-rest',tokPanel).innerHTML=`<table><thead><tr><th>token</th><th>name</th><th class="opt">minted</th></tr></thead><tbody>${f.slice(0,300).map(t=>`<tr><td>${link('/token/'+encodeURIComponent(t.ticker),t.ticker,'amber')}</td><td class="dim">${esc(t.name||'')}</td><td class="opt">${fmtAmt(t.minted,t.decimals)}</td></tr>`).join('')||'<tr><td colspan="3" class="dim">no matches</td></tr>'}</tbody></table>`;};
       renderRest(''); $('#tok-search',tokPanel).addEventListener('input',(e)=>renderRest(e.target.value.trim().toLowerCase()));
     }
-    $('#tok-note',tokPanel).innerHTML=`Every token is <b>CairnX</b>: records carried inside ordinary chain transactions (the Ordinals/Runes class, with atomic delivery-versus-payment built into consensus). ${names?`<b>${names.length}</b> <span class="green">.csd</span> names registered. `:''}Trade at <a href="https://cairn-substrate.com/trade" target="_blank">/trade</a> · <a href="https://cairn-substrate.com/docs" target="_blank">docs</a>.`;
+    $('#tok-note',tokPanel).innerHTML=`Every token is <b>CairnX</b>: records carried inside ordinary chain transactions (the Ordinals/Runes class). The chain carries a fill's payment and the CairnX resolver decides its delivery, so a paid fill can be refused (shown here as no effect). ${names?`<b>${names.length}</b> <span class="green">.csd</span> names registered. `:''}Trade at <a href="https://cairn-substrate.com/trade" target="_blank">/trade</a> · <a href="https://cairn-substrate.com/docs" target="_blank">docs</a>.`;
   })();
 
   v.appendChild(el(`<div class="row">

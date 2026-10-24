@@ -298,6 +298,8 @@ for (const market of ["fresh", "stale", "off"] as const) for (const width of [39
       assert.deepEqual(narrow, [], "each chart's pane fills its plot");
       const text: string = await v.page.evaluate(() => document.body.innerText);
       assert.doesNotMatch(text, bad);
+      assert.match(await v.page.textContent("#tok-note"), /a paid fill can be refused/, "the token note says delivery is the resolver's");
+      assert.doesNotMatch(text, /atomic/i, "no atomic delivery claim: a paid fill can be refused");
       if (market === "off") {
         assert.equal(await v.page.isVisible("#csd-mkt"), false, "the CSD/USD block hidden");
         assert.doesNotMatch(text, /USD/, "no USD text with the market off");
