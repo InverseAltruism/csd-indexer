@@ -29,12 +29,12 @@ const UI = (f: string) => fileURLToPath(new URL(`./fixtures/ui/${f}`, import.met
 const SHELL: Record<string, [string, string]> = {
   "/ui/theme-init.js": [UI("theme-init.js"), "text/javascript"], "/ui/theme.js": [UI("theme.js"), "text/javascript"],
   "/ui/tokens.css": [UI("tokens.css"), "text/css"], "/ui/fonts.css": [UI("empty.css"), "text/css"], "/ui/theme.css": [UI("empty.css"), "text/css"],
-  "/ui/components.css": [UI("empty.css"), "text/css"], "/header.js": [UI("header.js"), "text/javascript"],
+  "/ui/components.css": [UI("components.css"), "text/css"], "/header.js": [UI("header.js"), "text/javascript"],
 };
 
 // playwright-core is loaded untyped, and the page callbacks below run in the browser (this file has no DOM lib):
 // `any` at those two boundaries only.
-declare const document: any, location: any, innerWidth: number, getComputedStyle: any;
+declare const document: any, location: any, innerWidth: number, getComputedStyle: any, navigator: any;
 let chromium: any = null, why = "";
 try { chromium = createRequire(import.meta.url)(process.env.PLAYWRIGHT_CORE || "playwright-core").chromium; }
 catch { why = "playwright-core not found (set PLAYWRIGHT_CORE to its path)"; }
@@ -581,7 +581,7 @@ for (const width of [390, 1280]) {
     try {
       assert.deepEqual(twin.errors, []);
       assert.equal(await twin.page.locator(".namehdr .badge").count(), 0, "a self-pointing name the resolver did not pick: no badge");
-      assert.equal(await twin.page.textContent(".panel:has(h2:text-is('for sale')) .action"), "Market Listed for 123.45 QTOK \u00b7 open offer");
+      assert.equal(await twin.page.textContent(".panel:has(h2:text-is('For sale')) .action"), "Market Listed for 123.45 QTOK \u00b7 open offer");
       const hist: string[] = await twin.page.evaluate(() => [...document.querySelectorAll(".panel:has(h2) tbody tr td:first-child")].map((c: any) => c.textContent));
       assert.deepEqual(hist, ["Market bought / sold (fill) \u2715 no effect: offer filled", "Market bought / sold (fill)"]);
       assert.equal(twin.overflow, 0, "horizontal overflow");
@@ -653,7 +653,7 @@ test("name page: an offer without a price reads \"Listed for sale\", no dash in 
   const v = await open("/explorer#/name/onsale", 1280, () => /for sale/.test(document.body.innerText));
   try {
     assert.deepEqual(v.errors, []);
-    assert.equal(await v.page.textContent(".panel:has(h2:text-is('for sale')) .action"), "Market Listed for sale \u00b7 open offer");
+    assert.equal(await v.page.textContent(".panel:has(h2:text-is('For sale')) .action"), "Market Listed for sale \u00b7 open offer");
   } finally { await v.close(); }
 });
 
@@ -666,7 +666,7 @@ test("proposal page at 390 px: the attestations table scrolls inside its own box
     const v = await open(`/explorer#/proposal/${prop.txid}`, 390, () => document.querySelectorAll("tbody tr td").length > 3);
     try {
       const m = await v.page.evaluate(() => {
-        const t = [...document.querySelectorAll("h2")].find((h: any) => /^attestations/.test(h.textContent))!.parentElement.querySelector("table");
+        const t = [...document.querySelectorAll("h2")].find((h: any) => /^Attestations/.test(h.textContent))!.parentElement.querySelector("table");
         const box = t.closest(".scroll-x");
         return { boxed: !!box, boxRight: box ? box.getBoundingClientRect().right : Infinity, width: innerWidth, body: document.body.scrollWidth,
           scrolls: box ? box.scrollWidth > box.clientWidth : false };
@@ -887,8 +887,59 @@ test("a German-locale browser: amounts grouped with commas, numbers right-aligne
       assert.equal(h.text, hash, "the hash whole");
       assert.equal(h.zeros, hash.match(/^0x0+/)![0]);
       assert.ok(h.dim, "the zeros dimmed");
-      assert.match(h.time, /^\d{1,2} (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4}, \d\d:\d\d:\d\d UTC \(\d+[smhd] ago\)$/);
+      assert.match(h.time, /^\d{1,2} (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4}, \d\d:\d\d:\d\d UTC · \d+[smhd] ago$/);
+      assert.equal(await blk.page.textContent("#blkconfs"), "1 confirmation", "the indexer's tip is this block");
       assert.equal(blk.overflow, 0, "horizontal overflow");
     } finally { await blk.close(); }
+    // at the indexer's final depth (6 in the fixture's /health) the badge turns to "up"
+    const deep = block(TIP - 10);
+    Object.assign(INDEXER, { [`/block/${deep.hash}`]: deep, [`/block/${deep.hash}/txids`]: [] });
+    const old = await open(`/explorer#/block/${deep.hash}`, 1280, () => !!document.querySelector("#blkconfs"));
+    try {
+      assert.equal(await old.page.textContent("#blkconfs"), "11 confirmations");
+      assert.equal(await old.page.getAttribute("#blkconfs", "class"), "badge ok");
+    } finally { await old.close(); }
   } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; }
+});
+
+// The preview's search: "/" outside a field puts the cursor in it; inside a field "/" is a character.
+test("\"/\" focuses the search from anywhere on the page and types normally inside a field", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true });
+  const v = await open("/explorer", 1280, () => !!document.querySelector("#pu-hr"));
+  try {
+    await v.page.keyboard.press("/");
+    assert.equal(await v.page.evaluate(() => document.activeElement?.id), "q");
+    assert.equal(await v.page.inputValue("#q"), "", "the key itself is not typed");
+    await v.page.keyboard.type("a/b");
+    assert.equal(await v.page.inputValue("#q"), "a/b");
+  } finally { await v.close(); }
+});
+
+// An address in a detail view is grouped in fours by spacing only: what a reader copies, by selection or the button, is
+// the address itself.
+test("address page: the address grouped in fours on screen, copied whole by selection and by the copy button", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true });
+  const v = await open(`/explorer#/address/${WALLET}`, 1280, () => !!document.querySelector(".kv .g4"));
+  try {
+    await v.page.context().grantPermissions(["clipboard-read", "clipboard-write"], { origin: ORIGIN });
+    const shown = await v.page.evaluate(() => { const val = document.querySelector(".kv > div:nth-child(2)") as any;
+      return { groups: val.querySelectorAll(".g4").length, text: val.textContent, inner: val.innerText }; });
+    assert.equal(shown.groups, 10, "0x plus nine more groups of four");
+    assert.equal(shown.text, WALLET, "the text carries no spaces");
+    assert.equal(shown.inner.replace(/\s+$/, ""), WALLET, "nor does the rendered text a selection copies");
+    await v.page.click(".kv > div:nth-child(2) button.copy");
+    await until(v.page, () => !!document.querySelector("button.copy.done"));
+    assert.equal(await v.page.evaluate(() => navigator.clipboard.readText()), WALLET);
+    assert.deepEqual(v.errors, []);
+  } finally { await v.close(); }
+});
+
+// The live markers are dots drawn by CSS beside their words: inline in running text they need a box of their own.
+test("the live dot beside \"live\" and the status line's dot have a size", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true });
+  const v = await open("/explorer", 1280, () => !!document.querySelector("#stats .ui-dot") && !!document.querySelector("#livepill .ui-dot"));
+  try {
+    const sizes = await v.page.evaluate(() => ["#stats .ui-dot", "#livepill .ui-dot"].map((s) => { const r = document.querySelector(s).getBoundingClientRect(); return [Math.round(r.width), Math.round(r.height)]; }));
+    for (const [w, h] of sizes) assert.ok(w > 0 && h > 0, `a dot of ${w} by ${h}`);
+  } finally { await v.close(); }
 });

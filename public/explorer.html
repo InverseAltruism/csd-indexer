@@ -20,7 +20,7 @@
       --ui-leading-tight: 1.1; --ui-leading-snug: 1.3; --ui-leading-body: 1.55;
       --ui-track-heading: -0.03em; --ui-track-snug: -0.015em; --ui-track-label: 0.08em;
       --ui-space-1: 4px; --ui-space-2: 8px; --ui-space-3: 12px; --ui-space-4: 16px; --ui-space-5: 24px; --ui-space-6: 32px;
-      --ui-space-7: 48px;
+      --ui-space-7: 48px; --ui-space-8: 64px;
       --ui-radius-sm: 6px; --ui-radius-md: 10px; --ui-radius-lg: 14px; --ui-radius-pill: 999px;
       --ui-ease: cubic-bezier(0.16, 1, 0.3, 1); --ui-ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
       --ui-dur-1: 120ms; --ui-dur-2: 200ms; --ui-dur-3: 320ms; --ui-dur-4: 460ms;
@@ -41,26 +41,33 @@
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%23050505'/%3E%3Crect x='3' y='3' width='4.4' height='4.4' rx='1' fill='%2357d977'/%3E%3Crect x='8.6' y='3' width='4.4' height='4.4' rx='1' fill='%23173b22'/%3E%3Crect x='3' y='8.6' width='4.4' height='4.4' rx='1' fill='%23173b22'/%3E%3Crect x='8.6' y='8.6' width='4.4' height='4.4' rx='1' fill='%23ffd24a'/%3E%3C/svg%3E" />
 <style>
 @layer page {
-  /* raw px below: hairlines (1px), the focus ring and nudges (2px, 3px), and layout minimums (column, field and measure widths) */
+  /* Measured against the approved preview's #explorer. Raw px below: hairlines (1px), the focus ring and nudges (2px), and
+     the preview's layout widths (the key column, the content measure, field and card minimums). Sizes the token scale
+     lacks take the nearest token and are listed as token additions in the wave report. */
   [hidden] { display: none !important; }
   *, *::before, *::after { box-sizing: border-box; }
   /* clip, not hidden: clip makes no scroll container, so the site header's position:sticky keeps working */
   html, body { overflow-x: clip; }
-  body { margin: 0; background: var(--ui-bg); color: var(--ui-ink); font: 400 var(--ui-text-sm) / var(--ui-leading-body) var(--ui-font-sans);
+  body { margin: 0; background: var(--ui-bg); color: var(--ui-ink); font: 400 var(--ui-text-md) / var(--ui-leading-body) var(--ui-font-sans);
     -webkit-font-smoothing: antialiased; }
   a { color: var(--ui-ink); text-decoration: none; text-underline-offset: 3px; text-decoration-thickness: 1px; }
   a:hover { text-decoration: underline; }
   :focus-visible { outline: 2px solid var(--ui-ink); outline-offset: 2px; border-radius: var(--ui-radius-sm); }
   b { font-weight: 600; }
-  .mono { font-family: var(--ui-font-mono); font-size: var(--ui-text-xs); }
-  .num, .num-l { font-family: var(--ui-font-mono); font-size: var(--ui-text-xs); font-variant-numeric: tabular-nums; }
+  svg.i { width: var(--ui-text-lg); height: var(--ui-text-lg); flex: none; fill: none; stroke: currentColor; stroke-width: 1.6;
+    stroke-linecap: round; stroke-linejoin: round; }
+  /* mono only for hashes, addresses, heights and amounts in tables */
+  .mono, .num { font-family: var(--ui-font-mono); font-size: var(--ui-text-xs); }
+  .num { font-variant-numeric: tabular-nums; }
   .num { text-align: right; }
   .dim, .muted { color: var(--ui-muted); }
   .green { color: var(--ui-up); }
   .red { color: var(--ui-down); }
   .amber { color: var(--ui-warn); }
-  /* a block hash's leading zeros: colour only, the hash stays whole and selectable */
+  /* a hash's 0x and leading zeros: colour only, the hash stays whole and selectable */
   .lz { color: var(--ui-muted); }
+  /* an address in groups of four, by spacing only: a copy of it carries no spaces */
+  .g4 + .g4, .g4 + .gx, .gx + .g4 { margin-left: 0.4em; }
 
   /* standalone: cairn's header.js is absent and #site-header keeps this page's own brand line */
   #site-header:empty { display: none; }
@@ -69,84 +76,111 @@
   .ex-brand { font-weight: 600; letter-spacing: var(--ui-track-snug); }
 
   /* 1200 px: the content measure the site's other pages use */
-  .ex-wrap { max-width: 1200px; margin: 0 auto; padding: 0 clamp(var(--ui-space-4), 4vw, var(--ui-space-6)); }
-  .ex-top { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ui-space-3) var(--ui-space-5); padding: var(--ui-space-5) 0; }
-  form.search { flex: 1 1 420px; min-width: 0; display: flex; align-items: center; gap: var(--ui-space-2); min-height: var(--ui-space-7);
-    padding: 0 var(--ui-space-1) 0 var(--ui-space-4); border: 1px solid var(--ui-line-2); border-radius: var(--ui-radius-md);
-    background: var(--ui-surface); transition: border-color var(--ui-dur-2) var(--ui-ease); }
-  form.search:focus-within { border-color: var(--ui-ink); }
-  form.search input { flex: 1; min-width: 0; padding: var(--ui-space-3) 0; border: 0; outline: 0; background: transparent; color: var(--ui-ink);
-    font: 400 var(--ui-text-md) / var(--ui-leading-snug) var(--ui-font-sans); }
+  .ex-wrap { max-width: 1200px; margin: 0 auto; }
+  .ex-top { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ui-space-4); padding: var(--ui-space-4) var(--ui-space-5);
+    border-bottom: 1px solid var(--ui-line); }
+  form.search { flex: 1 1 420px; min-width: 0; display: flex; align-items: center; gap: var(--ui-space-2); height: var(--ui-space-7);
+    padding: 0 var(--ui-space-3); border: 1px solid var(--ui-line); border-radius: var(--ui-radius-md); background: var(--ui-surface);
+    transition: border-color var(--ui-dur-2) var(--ui-ease), box-shadow var(--ui-dur-2) var(--ui-ease); }
+  form.search > svg.i { color: var(--ui-muted); }
+  form.search:focus-within { border-color: var(--ui-ink); box-shadow: 0 0 0 3px color-mix(in oklab, var(--ui-ink) 10%, transparent); }
+  form.search input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--ui-ink); font: inherit;
+    font-size: var(--ui-text-md); }
   form.search input::placeholder { color: var(--ui-muted); }
-  form.search button { flex: none; min-height: calc(var(--ui-space-6) + var(--ui-space-1)); padding: 0 var(--ui-space-4); border: 0;
-    border-radius: var(--ui-radius-sm); background: var(--ui-ink); color: var(--ui-on-ink); font: 500 var(--ui-text-sm) / 1 var(--ui-font-sans);
-    cursor: pointer; }
+  .kbd { padding: 2px var(--ui-space-1); border: 1px solid var(--ui-line-2); border-bottom-width: 2px; border-radius: var(--ui-radius-sm);
+    color: var(--ui-muted); font: 500 var(--ui-text-2xs) var(--ui-font-mono); }
   .stats { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ui-space-1) var(--ui-space-4); color: var(--ui-muted);
-    font: 400 var(--ui-text-xs) / var(--ui-leading-snug) var(--ui-font-mono); font-variant-numeric: tabular-nums; }
-  .stats b { color: var(--ui-ink-2); font-weight: 500; }
-  .stats .ui-dot { margin-right: var(--ui-space-1); }
+    font-size: var(--ui-text-xs); line-height: var(--ui-leading-snug); }
+  .stats b { color: var(--ui-ink-2); font-weight: 500; font-variant-numeric: tabular-nums; }
+  /* components.css sizes .ui-dot for a flex badge; in running text it needs a box of its own */
+  .ui-dot { display: inline-block; vertical-align: 1px; }
+  .stats .ui-dot, .pill .ui-dot { margin-right: var(--ui-space-1); }
 
   main { padding-bottom: var(--ui-space-6); }
-  .panel { position: relative; min-width: 0; padding: var(--ui-space-5) 0; border-top: 1px solid var(--ui-line); }
-  h2 { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ui-space-2); margin: 0 0 var(--ui-space-3); color: var(--ui-muted);
-    font: 500 var(--ui-text-2xs) / var(--ui-leading-snug) var(--ui-font-mono); letter-spacing: var(--ui-track-label); text-transform: uppercase; }
-  h2 .badge, h2 .pill, h2 .chip { letter-spacing: normal; text-transform: none; }
-  h2.ex-title .badge, h2.ex-title .chip { margin-left: var(--ui-space-2); vertical-align: middle; }
-  h2.ex-title { display: block; margin-bottom: var(--ui-space-4); color: var(--ui-ink); font: 500 var(--ui-text-xl) / var(--ui-leading-tight) var(--ui-font-sans);
-    letter-spacing: var(--ui-track-snug); text-transform: none; }
-  .row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: var(--ui-space-6); border-top: 1px solid var(--ui-line); }
-  .row > .panel, .pulse + .panel { border-top: 0; }
+  #view > :first-child { border-top: 0; }
+  .panel { position: relative; min-width: 0; padding: var(--ui-space-5); border-top: 1px solid var(--ui-line); }
+  /* a table runs to the panel's edges; its cells carry the inset */
+  .panel > .scroll-x { margin-inline: calc(-1 * var(--ui-space-5)); }
+  h2 { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ui-space-2); margin: 0 0 var(--ui-space-3); color: var(--ui-ink);
+    font: 500 var(--ui-text-md) / var(--ui-leading-body) var(--ui-font-sans); letter-spacing: normal; }
+  h2.ex-title { gap: var(--ui-space-3); margin-bottom: var(--ui-space-2); font-size: var(--ui-text-xl); letter-spacing: var(--ui-track-snug); }
+  h2.ex-title .badge, h2 .badge { letter-spacing: normal; }
+  .row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .row > .panel + .panel { border-left: 1px solid var(--ui-line); }
 
   /* the chain at a glance: label over value, split by hairlines */
-  .pulse { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 1px; margin-bottom: var(--ui-space-5); background: var(--ui-line);
-    border-block: 1px solid var(--ui-line); }
-  .pu { min-width: 0; padding: var(--ui-space-4) var(--ui-space-4) var(--ui-space-4) 0; background: var(--ui-bg); }
-  .pu + .pu { padding-left: var(--ui-space-4); }
-  .pu .l { color: var(--ui-muted); font: 500 var(--ui-text-2xs) / var(--ui-leading-snug) var(--ui-font-mono); letter-spacing: var(--ui-track-label);
-    text-transform: uppercase; }
-  .pu .n { margin-top: var(--ui-space-1); font: 500 var(--ui-text-xl) / var(--ui-leading-tight) var(--ui-font-sans); letter-spacing: var(--ui-track-snug);
+  .pulse { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-bottom: 1px solid var(--ui-line); }
+  .pu { min-width: 0; padding: var(--ui-space-4) var(--ui-space-5); border-right: 1px solid var(--ui-line); }
+  .pu:last-child { border-right: 0; }
+  .pu .l { display: inline-block; color: var(--ui-muted); font: 500 var(--ui-text-2xs) / var(--ui-leading-body) var(--ui-font-mono);
+    letter-spacing: var(--ui-track-label); text-transform: uppercase; }
+  .pu .n { margin-top: var(--ui-space-1); font: 500 var(--ui-text-xl) / var(--ui-leading-snug) var(--ui-font-sans); letter-spacing: var(--ui-track-snug);
     font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-  .pu .n .u { color: var(--ui-muted); font-size: var(--ui-text-sm); letter-spacing: normal; }
 
-  .figs { display: flex; flex-wrap: wrap; gap: var(--ui-space-2) var(--ui-space-5); margin-bottom: var(--ui-space-3); color: var(--ui-muted); }
-  .figs b { color: var(--ui-ink); font: 500 var(--ui-text-sm) var(--ui-font-mono); font-variant-numeric: tabular-nums; }
+  /* latest blocks and the CairnX activity, side by side */
+  .ex-cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border-bottom: 1px solid var(--ui-line); }
+  .ex-col { min-width: 0; padding: 0; border-top: 0; }
+  .ex-col + .ex-col { border-left: 1px solid var(--ui-line); }
+  .ex-col > h2 { justify-content: space-between; margin: 0; padding: var(--ui-space-4) var(--ui-space-5) var(--ui-space-1); }
+  .ex-col > .scroll-x { margin: 0; }
+  .ex-col > .tabs, .ex-col > #actmore { margin-inline: var(--ui-space-5); }
+  .ex-col > #actmore { padding-bottom: var(--ui-space-4); }
+  .ex-cols + .panel { border-top: 0; }
+
+  .figs { display: flex; flex-wrap: wrap; gap: var(--ui-space-2) var(--ui-space-5); margin-bottom: var(--ui-space-3); color: var(--ui-muted);
+    font-size: var(--ui-text-sm); }
+  .figs b { color: var(--ui-ink); font-weight: 500; font-variant-numeric: tabular-nums; }
   .bar { height: var(--ui-space-1); overflow: hidden; border-radius: var(--ui-radius-pill); background: var(--ui-sunken); }
   .bar i { display: block; height: 100%; background: var(--ui-ink); }
 
   .coins { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: var(--ui-space-3); }
   .coin { display: block; padding: var(--ui-space-4); border: 1px solid var(--ui-line); border-radius: var(--ui-radius-lg); background: var(--ui-surface);
-    box-shadow: var(--ui-shadow-1); color: inherit; transition: border-color var(--ui-dur-2) var(--ui-ease); }
+    color: inherit; transition: border-color var(--ui-dur-2) var(--ui-ease); }
   .coin:hover { border-color: var(--ui-line-2); text-decoration: none; }
-  .coin .tk { font: 600 var(--ui-text-md) var(--ui-font-mono); }
+  .coin .tk { font-weight: 600; }
   .coin .nm { margin-left: var(--ui-space-2); color: var(--ui-muted); font-size: var(--ui-text-xs); }
   .coin .meta { display: flex; flex-wrap: wrap; gap: var(--ui-space-1) var(--ui-space-4); margin: var(--ui-space-2) 0 var(--ui-space-3); color: var(--ui-muted);
     font-size: var(--ui-text-xs); }
-  .coin .meta b { color: var(--ui-ink); font-family: var(--ui-font-mono); font-weight: 500; font-variant-numeric: tabular-nums; }
+  .coin .meta b { color: var(--ui-ink); font-weight: 500; font-variant-numeric: tabular-nums; }
 
-  table { width: 100%; border-collapse: collapse; font-size: var(--ui-text-sm); }
-  th, td { padding: var(--ui-space-2) var(--ui-space-3); border-bottom: 1px solid var(--ui-line); text-align: left; white-space: nowrap; vertical-align: baseline; }
-  th:first-child, td:first-child { padding-left: 0; }
-  th:last-child, td:last-child { padding-right: 0; }
-  th { color: var(--ui-muted); font: 500 var(--ui-text-2xs) / var(--ui-leading-snug) var(--ui-font-mono); letter-spacing: var(--ui-track-label);
-    text-transform: uppercase; }
-  th.num { font: 500 var(--ui-text-2xs) / var(--ui-leading-snug) var(--ui-font-mono); }
+  /* tables read like a ledger */
+  table { width: 100%; border-collapse: collapse; font-size: var(--ui-text-sm); line-height: normal; }
+  th { padding: var(--ui-space-3) var(--ui-space-5) var(--ui-space-2); border-bottom: 1px solid var(--ui-line); color: var(--ui-muted); text-align: left;
+    font: 500 var(--ui-text-2xs) / var(--ui-leading-snug) var(--ui-font-mono); letter-spacing: var(--ui-track-label); text-transform: uppercase; white-space: nowrap; }
+  td { padding: var(--ui-space-3) var(--ui-space-5); border-bottom: 1px solid var(--ui-line); text-align: left; white-space: nowrap; vertical-align: baseline; }
+  tbody tr:last-child td { border-bottom: 0; }
+  tbody tr { transition: background var(--ui-dur-1); }
+  tbody tr:hover { background: var(--ui-sunken); }
+  th.num { font-size: var(--ui-text-2xs); }
   th.num:first-child, td.num:first-child { width: 1%; }
   td.act { min-width: 260px; white-space: normal; overflow-wrap: anywhere; }
   .scroll-x { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-  .kv { display: grid; grid-template-columns: minmax(120px, 180px) minmax(0, 1fr); gap: var(--ui-space-2) var(--ui-space-5); }
-  .kv > div:nth-child(odd) { color: var(--ui-muted); }
-  .kv > .v { min-width: 0; overflow-wrap: anywhere; }
 
-  /* kind label of a record, in place of the old emoji */
-  .kind { display: inline-block; min-width: 4.5em; margin-right: var(--ui-space-1); padding: 0 var(--ui-space-2); border-radius: var(--ui-radius-sm);
-    background: var(--ui-sunken); color: var(--ui-ink-2); font: 500 var(--ui-text-2xs) / 1.8 var(--ui-font-sans); text-align: center; vertical-align: 1px;
-    text-decoration: none; white-space: nowrap; }
+  /* key and value: the preview's 120 px key column */
+  .kv { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: var(--ui-space-2) var(--ui-space-4); align-items: baseline; min-width: 0;
+    font-size: var(--ui-text-sm); }
+  .kv > div:nth-child(odd) { color: var(--ui-muted); font-size: var(--ui-text-xs); }
+  .kv > div:nth-child(odd)::first-letter { text-transform: uppercase; }
+  .kv > .v { min-width: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+  .ex-detail { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--ui-space-2) var(--ui-space-7); margin-top: var(--ui-space-4); }
+  .copy { display: inline-grid; place-items: center; width: var(--ui-space-5); height: var(--ui-space-5); margin-left: var(--ui-space-1); padding: 0;
+    border: 0; border-radius: var(--ui-radius-sm); background: transparent; color: var(--ui-muted); vertical-align: middle; cursor: pointer;
+    transition: background var(--ui-dur-1), color var(--ui-dur-1); }
+  .copy:hover { background: var(--ui-sunken); color: var(--ui-ink); }
+  .copy svg.i { width: var(--ui-text-sm); height: var(--ui-text-sm); }
+  .copy.done { color: var(--ui-up); }
+
+  /* the family label of a record */
+  .kind { display: inline-flex; align-items: center; justify-content: center; min-width: var(--ui-space-8); margin-right: var(--ui-space-1);
+    height: calc(var(--ui-text-2xs) * 2); padding: 0 var(--ui-space-2); border-radius: var(--ui-radius-sm); background: var(--ui-sunken); color: var(--ui-ink-2);
+    font: 500 var(--ui-text-2xs) var(--ui-font-sans); vertical-align: 1px; text-decoration: none; white-space: nowrap; }
   .chip, .pill { display: inline-block; padding: 0 var(--ui-space-2); border: 1px solid var(--ui-line); border-radius: var(--ui-radius-sm);
     color: var(--ui-muted); font: 500 var(--ui-text-2xs) / 1.7 var(--ui-font-mono); white-space: nowrap; vertical-align: 1px; }
   .chip { margin-left: var(--ui-space-1); }
-  .badge { display: inline-flex; align-items: center; min-height: var(--ui-space-5); padding: 0 var(--ui-space-3); border: 1px solid var(--ui-line);
-    border-radius: var(--ui-radius-pill); background: var(--ui-surface); color: var(--ui-ink-2); font: 500 var(--ui-text-xs) / 1.2 var(--ui-font-sans);
-    white-space: nowrap; }
+  .badge { display: inline-flex; align-items: center; gap: var(--ui-space-1); height: var(--ui-space-5); padding: 0 var(--ui-space-2);
+    border: 1px solid var(--ui-line); border-radius: var(--ui-radius-pill); background: var(--ui-surface); color: var(--ui-ink-2);
+    font: 500 var(--ui-text-2xs) / 1 var(--ui-font-sans); white-space: nowrap; }
+  .badge svg.i { width: var(--ui-text-xs); height: var(--ui-text-xs); stroke-width: 2; }
   .badge.ok { border-color: color-mix(in oklab, var(--ui-up) 35%, var(--ui-line)); background: var(--ui-up-tint); color: var(--ui-up); }
   .badge.bad { border-color: color-mix(in oklab, var(--ui-down) 35%, var(--ui-line)); background: var(--ui-down-tint); color: var(--ui-down); }
 
@@ -160,8 +194,9 @@
   .cx-noeffect { display: inline-block; margin-left: var(--ui-space-1); padding: 0 var(--ui-space-2); border-radius: var(--ui-radius-sm);
     background: var(--ui-down-tint); color: var(--ui-down); font: 500 var(--ui-text-2xs) / 1.8 var(--ui-font-sans); text-decoration: none;
     vertical-align: 1px; cursor: help; white-space: nowrap; }
-  .flow { display: flex; flex-wrap: wrap; gap: var(--ui-space-2) var(--ui-space-5); padding: var(--ui-space-1) 0 0; color: var(--ui-muted); }
-  .flow b { color: var(--ui-ink); font: 500 var(--ui-text-sm) var(--ui-font-mono); font-variant-numeric: tabular-nums; }
+  .flow { display: flex; flex-wrap: wrap; gap: var(--ui-space-2) var(--ui-space-5); padding: var(--ui-space-1) 0 0; color: var(--ui-muted);
+    font-size: var(--ui-text-sm); }
+  .flow b { color: var(--ui-ink); font-weight: 500; font-variant-numeric: tabular-nums; }
   .flow .out b { color: var(--ui-down); }
   .flow .in b { color: var(--ui-up); }
   .muted { font-size: var(--ui-text-xs); }
@@ -171,7 +206,7 @@
   .cxbal { display: flex; flex-wrap: wrap; gap: var(--ui-space-2); margin-top: var(--ui-space-4); }
   .cxbal .tk, .cxbal .nm { padding: var(--ui-space-1) var(--ui-space-3); border: 1px solid var(--ui-line); border-radius: var(--ui-radius-md);
     font-size: var(--ui-text-sm); }
-  .cxbal .tk b { font-family: var(--ui-font-mono); font-weight: 500; }
+  .cxbal .tk b { font-weight: 500; font-variant-numeric: tabular-nums; }
   .addrl.hasname { font-weight: 500; }
 
   .namehdr { display: flex; align-items: center; gap: var(--ui-space-4); }
@@ -192,29 +227,33 @@
   .tab.on { background: var(--ui-surface); color: var(--ui-ink); box-shadow: var(--ui-shadow-1), 0 0 0 1px var(--ui-line); }
   .ex-btn { display: inline-flex; align-items: center; min-height: var(--ui-space-6); margin-top: var(--ui-space-3); padding: 0 var(--ui-space-3);
     border: 1px solid var(--ui-line-2); border-radius: var(--ui-radius-pill); background: var(--ui-surface); color: var(--ui-ink);
-    font: 500 var(--ui-text-xs) / 1 var(--ui-font-sans); cursor: pointer; transition: border-color var(--ui-dur-2) var(--ui-ease); }
+    font: 500 var(--ui-text-xs) / 1 var(--ui-font-sans); cursor: pointer; transition: border-color var(--ui-dur-2) var(--ui-ease), transform var(--ui-dur-1) var(--ui-ease); }
   .ex-btn:hover:not(:disabled) { border-color: var(--ui-ink); }
+  .ex-btn:active:not(:disabled) { transform: scale(0.97); }
   .ex-btn:disabled { color: var(--ui-muted); cursor: progress; }
-  .tok-search { width: 100%; margin-top: var(--ui-space-3); padding: var(--ui-space-2) var(--ui-space-3); border: 1px solid var(--ui-line-2);
+  .tok-search { width: 100%; margin-top: var(--ui-space-3); padding: var(--ui-space-2) var(--ui-space-3); border: 1px solid var(--ui-line);
     border-radius: var(--ui-radius-md); background: var(--ui-surface); color: var(--ui-ink); font: 400 var(--ui-text-md) var(--ui-font-sans); }
   .tok-search:focus { outline: 0; border-color: var(--ui-ink); }
 
-  .actrow { display: flex; justify-content: space-between; align-items: baseline; gap: var(--ui-space-4); padding: var(--ui-space-2) 0;
-    border-bottom: 1px solid var(--ui-line); }
+  .actrow { display: flex; justify-content: space-between; align-items: baseline; gap: var(--ui-space-4); padding: var(--ui-space-3) var(--ui-space-5);
+    border-bottom: 1px solid var(--ui-line); font-size: var(--ui-text-sm); transition: background var(--ui-dur-1); }
+  .actrow:hover { background: var(--ui-sunken); }
   .actrow:last-child { border-bottom: 0; }
   .actrow > .action { min-width: 0; padding: 0; font-size: var(--ui-text-sm); overflow-wrap: anywhere; }
   .actrow .meta { flex: none; color: var(--ui-muted); font-size: var(--ui-text-xs); text-align: right; white-space: nowrap; }
   .actrow .meta a { color: var(--ui-muted); }
+  .ex-col .actrow { flex-direction: column; gap: var(--ui-space-1); }
+  .ex-col .actrow .meta { text-align: left; white-space: normal; }
 
-  .loading { padding: var(--ui-space-5) 0; color: var(--ui-muted); }
+  .loading { padding: var(--ui-space-5); color: var(--ui-muted); }
   /* loading is live state: the skeleton may pulse */
   .skel { height: var(--ui-space-3); margin: var(--ui-space-3) 0; border-radius: var(--ui-radius-sm); background: var(--ui-sunken);
     animation: ex-skel calc(var(--ui-dur-4) * 3) var(--ui-ease-in-out) infinite alternate; }
   @keyframes ex-skel { to { opacity: 0.45; } }
-  /* a block that arrived while the page was open: one tint fade, once */
-  .feed-row td { animation: ex-new calc(var(--ui-dur-4) * 3) var(--ui-ease) both; }
-  @keyframes ex-new { from { background: var(--ui-up-tint); } }
-  @media (prefers-reduced-motion: reduce) { .skel, .feed-row td { animation: none; } }
+  /* a block that arrived while the page was open drops in at the top of the list, once */
+  .feed-row { animation: ex-row-in var(--ui-dur-4) var(--ui-ease) both; }
+  @keyframes ex-row-in { from { opacity: 0; transform: translateY(calc(-1 * var(--ui-space-3))); } }
+  @media (prefers-reduced-motion: reduce) { .skel, .feed-row { animation: none; } }
 
   /* charts: cairn's chart module through the front door (none standalone); it reads these at mount, and the page
      mounts its charts again on a theme switch */
@@ -223,6 +262,7 @@
     --chart-down: var(--ui-down); }
   /* the library lays its panes out in a <table>: undo this page's table-cell rules there */
   .cc-plot td, .cc-plot th { max-width: none; padding: 0; border: 0; white-space: normal; }
+  .cc-plot tbody tr:hover { background: none; }
 
   /* CSD/USD figures (display only), hidden while the market read answers 503 */
   .mkt { margin-top: var(--ui-space-5); padding-top: var(--ui-space-4); border-top: 1px solid var(--ui-line); }
@@ -230,35 +270,29 @@
   .mkt-sub a, .mkt-s a { color: inherit; text-decoration: underline; }
   .mkt-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: var(--ui-space-4) var(--ui-space-5); margin: var(--ui-space-3) 0 var(--ui-space-4); }
   .mkt-fig { min-width: 0; }
-  .mkt-l { color: var(--ui-muted); font: 500 var(--ui-text-2xs) / var(--ui-leading-snug) var(--ui-font-mono); letter-spacing: var(--ui-track-label);
+  .mkt-l { color: var(--ui-muted); font: 500 var(--ui-text-2xs) / var(--ui-leading-body) var(--ui-font-mono); letter-spacing: var(--ui-track-label);
     text-transform: uppercase; }
   .mkt-v { margin-top: var(--ui-space-1); font: 500 var(--ui-text-lg) var(--ui-font-sans); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
   .mkt-u { color: var(--ui-ink-2); font-size: var(--ui-text-xs); }
   .mkt-s { margin-top: var(--ui-space-1); color: var(--ui-muted); font-size: var(--ui-text-2xs); line-height: var(--ui-leading-snug); overflow-wrap: anywhere; }
 
-  .ex-foot { max-width: 1200px; margin: var(--ui-space-6) auto 0; padding: var(--ui-space-5) clamp(var(--ui-space-4), 4vw, var(--ui-space-6));
-    border-top: 1px solid var(--ui-line); color: var(--ui-muted); font-size: var(--ui-text-xs); }
+  .ex-foot { max-width: 1200px; margin: var(--ui-space-6) auto 0; padding: var(--ui-space-5); border-top: 1px solid var(--ui-line); color: var(--ui-muted);
+    font-size: var(--ui-text-xs); }
   .ex-foot a { text-decoration: underline; }
 
-  @media (max-width: 1000px) {
-    .pulse { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-    .pu:nth-child(3n + 1) { padding-left: 0; }
+  @media (max-width: 860px) {
+    .ex-cols, .ex-detail, .row { grid-template-columns: minmax(0, 1fr); }
+    .ex-col + .ex-col { border-left: 0; border-top: 1px solid var(--ui-line); }
+    .row > .panel + .panel { border-left: 0; border-top: 1px solid var(--ui-line); }
+    .pulse { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .pu:nth-child(2) { border-right: 0; }
+    .pu:nth-child(-n + 2) { border-bottom: 1px solid var(--ui-line); }
   }
   @media (max-width: 720px) {
-    .ex-top { padding: var(--ui-space-4) 0; }
-    form.search { flex-basis: 100%; }
-    .row { grid-template-columns: minmax(0, 1fr); }
-    .row > .panel + .panel { border-top: 1px solid var(--ui-line); }
-    .pulse { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .pu:nth-child(3n + 1) { padding-left: var(--ui-space-4); }
-    .pu:nth-child(odd) { padding-left: 0; }
-    .pu .n { font-size: var(--ui-text-lg); }
-    .kv { grid-template-columns: minmax(0, 1fr); gap: 0; }
-    .kv > div:nth-child(odd) { margin-top: var(--ui-space-3); font-size: var(--ui-text-xs); }
+    .kbd { display: none; }
     .actrow { flex-wrap: wrap; }
     .actrow .meta { text-align: left; white-space: normal; }
     .cx-noeffect { white-space: normal; }
-    table { font-size: var(--ui-text-xs); }
     /* text cells wrap, so a row fits the screen and an amount is not cut at the scroll box's edge */
     td { white-space: normal; }
     td.num { white-space: nowrap; }
@@ -266,9 +300,18 @@
     td.act { min-width: 8em; }
     /* the address page's rows stack: txid and the delta on one line, the action under them at full width */
     table.stack tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--ui-space-1) var(--ui-space-3);
-      padding: var(--ui-space-2) 0; border-bottom: 1px solid var(--ui-line); }
+      padding: var(--ui-space-2) var(--ui-space-4); border-bottom: 1px solid var(--ui-line); }
     table.stack th, table.stack td { padding: 0; border: 0; }
     table.stack .act { grid-column: 1 / -1; grid-row: 2; min-width: 0; }
+  }
+  @media (max-width: 520px) {
+    .ex-top, .panel, .loading { padding-inline: var(--ui-space-4); }
+    .panel > .scroll-x { margin-inline: calc(-1 * var(--ui-space-4)); }
+    .pu, .actrow { padding-inline: var(--ui-space-4); }
+    .ex-col > .tabs, .ex-col > #actmore { margin-inline: var(--ui-space-4); }
+    th, td { padding-inline: var(--ui-space-3); }
+    .kv { grid-template-columns: minmax(0, 1fr); gap: 2px 0; }
+    .kv > .v { margin-bottom: var(--ui-space-2); }
   }
 }
 </style>
@@ -284,8 +327,9 @@
     <!-- submit is bound in the script with addEventListener: through the front door the CSP's nonce never authorizes an
          inline handler attribute -->
     <form class="search" id="search-form" role="search">
-      <input id="q" aria-label="search the chain" placeholder="Block, tx, address or name.csd" autocomplete="off" enterkeyhint="search"/>
-      <button>Search</button>
+      <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.6-3.6"/></svg>
+      <input id="q" aria-label="search the chain" placeholder="Search a block, transaction, address or name.csd" autocomplete="off" enterkeyhint="search"/>
+      <span class="kbd" aria-hidden="true">/</span>
     </form>
     <div class="stats" id="stats" aria-live="polite"><span>connecting…</span></div>
   </div>
@@ -345,8 +389,16 @@ const MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov',
 /** The page's one date format, in UTC: "24 Oct 2026, 15:40:14 UTC". */
 const fmtDate = (secs)=>{ const d=new Date(Number(secs)*1000); if(Number.isNaN(d.getTime())) return '-'; const p=(x)=>String(x).padStart(2,'0');
   return `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}, ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())} UTC`; };
-/** A block hash, escaped, its leading zeros dimmed (colour only); `n` shortens it as short() does. */
-const hashHtml = (h,n)=>{ const s=n?short(h,n):esc(h), z=(/^0x0+/.exec(s)||[''])[0]; return z?`<span class="lz">${z}</span>${s.slice(z.length)}`:s; };
+/** A hash, escaped, its 0x and leading zeros dimmed (colour only); `n` shortens it as short() does. */
+const hashHtml = (h,n)=>{ const s=n?short(h,n):esc(h), z=(/^0x0*/.exec(s)||[''])[0]; return z?`<span class="lz">${z}</span>${s.slice(z.length)}`:s; };
+/** An address in groups of four (spacing only); `full` shows all of it, otherwise its first and last eight digits. */
+const addrGroups = (a,full)=>{ const s=String(a||''); if(!/^0x[0-9a-f]{40}$/i.test(s)) return esc(s);
+  const g=(x)=>x.match(/.{4}/g).map((p)=>`<span class="g4">${p}</span>`).join(''), b=s.slice(2);
+  return full ? `<span class="g4">0x${b.slice(0,4)}</span>${g(b.slice(4))}` : `<span class="g4">0x${b.slice(0,4)}</span>${g(b.slice(4,8))}<span class="gx">…</span>${g(b.slice(32))}`; };
+const ICON={ copy:'<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="13" height="13" rx="3"/><path d="M16 8V6a3 3 0 0 0-3-3H6a3 3 0 0 0-3 3v7a3 3 0 0 0 3 3h2"/></svg>',
+  check:'<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>' };
+/** A button that copies `value` (what: the accessible name's object, a constant word). */
+const copyBtn = (value,what)=>`<button type="button" class="copy" data-copy="${esc(value)}" aria-label="Copy ${what}" title="Copy ${what}">${ICON.copy}</button>`;
 const blockLink = (h,n)=>`<a class="mono" href="#/block/${esc(h)}">${hashHtml(h,n)}</a>`;
 /** The label in front of a record line naming its family (Token, Name, Market, Bridge, Record, CSD; a constant word). */
 const kind = (k)=>`<span class="kind">${k}</span> `;
@@ -376,6 +428,13 @@ async function verifyInclusion(txid,pos,branch,root){
 window.addEventListener('hashchange',route);
 // bind search here (NOT an inline onsubmit=) so it survives the nonce CSP on the proxied /explorer.
 document.getElementById('search-form').addEventListener('submit',doSearch);
+// "/" anywhere outside a field puts the cursor in the search
+document.addEventListener('keydown',(e)=>{ const t=e.target; if(e.key!=='/'||e.metaKey||e.ctrlKey||e.altKey||(t&&(t.isContentEditable||/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)))) return;
+  e.preventDefault(); $('#q').focus(); });
+// a copy button copies its data-copy value, never the grouped text on screen
+document.getElementById('view').addEventListener('click',(e)=>{ const b=e.target.closest&&e.target.closest('button.copy'); if(!b) return;
+  const done=(ok)=>{ b.classList.toggle('done',ok); b.title=ok?'Copied':'Copy failed: select the text instead'; setTimeout(()=>{ b.classList.remove('done'); b.title=b.getAttribute('aria-label'); },1600); };
+  if(navigator.clipboard&&navigator.clipboard.writeText) navigator.clipboard.writeText(b.dataset.copy).then(()=>done(true),()=>done(false)); else done(false); });
 // (no eager warmCx() here: `let DEC` is declared below, so an eager call would hit its
 // temporal dead zone and reject before its first await, doing nothing. Every render path awaits
 // warmCx()/warmVerdicts() itself, which is where the actual warming happens.)
@@ -398,8 +457,8 @@ async function route(){
     else if(h.startsWith('/proposal/')) await proposalPage(v,h.slice(10));
     else if(h.startsWith('/token/'))     await tokenPage(v,decodeURIComponent(h.slice(7)));
     else if(h.startsWith('/name/'))      await namePage(v,decodeURIComponent(h.slice(6)));
-    else v.innerHTML='<div class="panel"><h2>not found</h2><div class="muted">Nothing lives at this route. Search above for a .csd name, block height, txid or address, or go <a href="#/">home</a>.</div></div>';
-  }catch(e){v.innerHTML='<div class="panel"><h2 class="red">nothing found</h2><div class="muted">'+esc(e.message)+'</div><div class="muted" style="margin-top:6px">Check the value, or search above for a .csd name, block height, txid or 0x address. <a href="#/">← back to the explorer</a></div></div>';}
+    else v.innerHTML='<div class="panel"><h2>Not found</h2><div class="muted">Nothing lives at this route. Search above for a .csd name, block height, txid or address, or go <a href="#/">home</a>.</div></div>';
+  }catch(e){v.innerHTML='<div class="panel"><h2 class="red">Nothing found</h2><div class="muted">'+esc(e.message)+'</div><div class="muted" style="margin-top:6px">Check the value, or search above for a .csd name, block height, txid or 0x address. <a href="#/">← back to the explorer</a></div></div>';}
   paintNames(v);
 }
 
@@ -420,7 +479,7 @@ function doSearch(e){e.preventDefault();let q=$('#q').value.trim();if(!q)return 
 // href is built from validated hex / encodeURIComponent; label is escaped (it may be a free-form
 // chain string like a domain). Both go through esc to block attribute/markup breakout.
 const link=(href,label,cls='')=>`<a class="${esc(cls)}" href="#${esc(href)}">${esc(label)}</a>`;
-const txidLink=(t)=>link('/tx/'+t,short(t,10),'mono');
+const txidLink=(t)=>`<a class="mono" href="#/tx/${esc(t)}">${hashHtml(t,10)}</a>`;
 // addrLink renders short-hex by default; the `data-name-addr` marker lets paintNames() upgrade it
 // in place to the address's primary .csd name (reverse resolution) once resolved. The curated
 // operational LABELS chip (treasury/faucet/miner/…) is kept alongside any resolved name.
@@ -428,6 +487,12 @@ const addrLink=(a)=>{
   if(!a||a==='0x?') return '<span class="dim">-</span>';
   const lbl=labelOf(a);
   return `<a class="mono addrl" data-name-addr="${esc(a)}" href="#/address/${esc(a)}">${short(a,8)}</a>`+(lbl?`<span class="chip">${esc(lbl)}</span>`:'');
+};
+// the same link for a detail view: the address in groups of four
+const addrLinkG=(a)=>{
+  if(!a||a==='0x?') return '<span class="dim">-</span>';
+  const lbl=labelOf(a);
+  return `<a class="mono addrl" data-name-addr="${esc(a)}" href="#/address/${esc(a)}">${addrGroups(a)}</a>`+(lbl?`<span class="chip">${esc(lbl)}</span>`:'');
 };
 // ── reverse name resolution (DISPLAY ONLY; front-door only: needs the CairnX sibling proxy) ──
 // addr(lowercase) → primary .csd name | null, batched against /cairnx/primaries (cap 64/req) and
@@ -710,7 +775,7 @@ async function marketPanel(box){
 async function home(v){
   void charts();   // the chart module loads alongside the reads, so the hashrate tile usually has its window when drawn
   const health=await j('/health').catch(()=>null);
-  if(!health){ v.innerHTML='<div class="panel"><h2>indexer warming up</h2><div class="muted">The indexer is starting or catching up to the chain tip. This page populates as soon as it is ready.</div></div>'; return; }
+  if(!health){ v.innerHTML='<div class="panel"><h2>Indexer warming up</h2><div class="muted">The indexer is starting or catching up to the chain tip. This page populates as soon as it is ready.</div></div>'; return; }
   const [domains,supply,miners,rich,cxprops,series]=await Promise.all([
     j('/domains').catch(()=>[]),
     j('/analytics/supply').catch(()=>null),j('/analytics/miners?window=1d').catch(()=>null),
@@ -727,14 +792,49 @@ async function home(v){
   const hr=miners&&miners.network_hashrate>0?fmtHashrate(miners.network_hashrate):null;
   const hrSpan=miners&&Number.isFinite(miners.from_height)?`Δchainwork ÷ Δtime over blocks ${fmtInt(miners.from_height)} to ${fmtInt(miners.to_height)}, from the indexer`:'';
   v.appendChild(el(`<div class="pulse">
-    <div class="pu hot"><div class="l">block height</div><div class="n">${fmtInt(health.indexed_height)}</div></div>
+    <div class="pu hot"><div class="l">Height</div><div class="n">${fmtInt(health.indexed_height)}</div></div>
+    <div class="pu"><div class="l">Avg block time, 24h</div><div class="n">${miners?Math.round(miners.avg_interval_secs):'-'} <span class="u">s</span></div></div>
     <div class="pu" id="pu-hr" title="${esc(hrSpan)}"><div class="l">hashrate<span data-hrwin="tile"></span></div><div class="n">${hr?`${hr.val} <span class="u">${hr.unit}</span>`:'-'}</div></div>
-    <div class="pu"><div class="l">avg block time (24h)</div><div class="n">${miners?Math.round(miners.avg_interval_secs):'-'} <span class="u">s</span></div></div>
-    <div class="pu"><div class="l">miners (24h)</div><div class="n">${miners?fmtInt(miners.miner_count):'-'}</div></div>
-    <div class="pu"><div class="l">circulating (${supply?supply.pct_emitted.toFixed(2):'-'}% of max)</div><div class="n">${supply?fmtCSD(supply.emitted_supply).replace(' CSD',''):'-'} <span class="u">CSD</span></div></div>
-    <div class="pu"><div class="l">to first halving</div><div class="n">${halvDays!=null?'~'+Math.round(halvDays/365*10)/10+' <span class="u">yr</span>':'-'}</div></div>
+    <div class="pu"><div class="l">Circulating</div><div class="n">${supply?fmtCSD(supply.emitted_supply).replace(' CSD',''):'-'} <span class="u">CSD</span></div></div>
   </div>`));
   if(!paintHrWin(v,miners,series)) charts().then(()=>{ if(v.isConnected) paintHrWin(v,miners,series); });
+
+  // ── latest blocks and the recent CairnX activity, side by side ──
+  const cols=el(`<div class="ex-cols">
+    <div class="panel ex-col"><h2>Latest blocks <span class="pill" id="livepill"><span class="ui-dot ui-dot-live green"></span>live</span></h2>
+      <div class="scroll-x"><table><thead><tr><th>height</th><th>age</th><th>hash</th><th class="num">txs</th></tr></thead><tbody id="blkfeed" aria-live="polite"></tbody></table></div></div>
+    <div class="panel ex-col" id="actcol"><h2>Recent CairnX activity</h2></div>
+  </div>`);
+  v.appendChild(cols);
+  const tb=$('#blkfeed',cols);
+  recent.slice(0,12).forEach(b=>tb.appendChild(blockRow(b)));
+  subscribeBlocks(tb);
+
+  // decoded, with All / Names / DEX
+  const NAME_KINDS=new Set(['name','nset','nxfer','nrenew','ncommit']);
+  // /domain/:d/proposals is already newest-first (DESC by height); do NOT reverse
+  const acts=(cxprops||[]).map(p=>{ let rec=null; try{rec=JSON.parse(p.uri);}catch{ /* not JSON: no record kind, the row shows under all */ }
+      const html=describeDomainRecord('cairnx:v1',p.uri,VER&&VER[p.txid.toLowerCase()],p.height); return html?{p,html,name:!!(rec&&NAME_KINDS.has(rec.t))}:null; })
+    .filter(Boolean);
+  const act=$('#actcol',cols);
+  if(!acts.length) act.insertAdjacentHTML('beforeend','<div class="actrow"><div class="muted">No CairnX records in this indexer yet.</div></div>');
+  else {
+    // age from height distance (blocks target ~2min): honest "~" display, no per-row block fetch
+    const avgSecs=(miners&&miners.avg_interval_secs)||120, tipH=health.indexed_height||0;
+    const hAgo=(hh)=>{ if(!hh||!tipH||hh>tipH) return ''; const s=Math.round((tipH-hh)*avgSecs);
+      if(s<90)return 'just now'; if(s<3600)return '~'+Math.round(s/60)+'m ago'; if(s<86400)return '~'+Math.round(s/3600)+'h ago'; return '~'+Math.round(s/86400)+'d ago'; };
+    act.insertAdjacentHTML('beforeend',`<div class="tabs" role="group" aria-label="filter"><button class="tab on" data-f="all" aria-pressed="true">All</button><button class="tab" data-f="name" aria-pressed="false">Names</button><button class="tab" data-f="dex" aria-pressed="false">DEX</button></div>
+      <div id="actfeed"></div><div id="actmore"></div>`);
+    let shown=12, filt='all';
+    const render=()=>{ const all=acts.filter(a=>filt==='all'||(filt==='name'?a.name:!a.name)), list=all.slice(0,shown);
+      $('#actfeed',act).innerHTML=list.length?list.map(a=>`<div class="actrow"><div class="action">${a.html}</div>
+        <div class="meta">by ${addrLink(a.p.proposer)} · ${link('/block/'+a.p.height,hAgo(a.p.height)||('block '+fmtInt(a.p.height)),'dim')} · <a class="dim mono" href="#/tx/${esc(a.p.txid)}">${hashHtml(a.p.txid,6)}</a></div></div>`).join(''):'<div class="actrow"><div class="muted">nothing here yet</div></div>';
+      $('#actmore',act).innerHTML=all.length>shown?`<button class="ex-btn" id="actshowmore">Show ${Math.min(24,all.length-shown)} more</button>`:'';
+      const mb=$('#actshowmore',act); if(mb) mb.onclick=()=>{shown+=24;render();};
+      paintNames($('#actfeed',act)); };
+    act.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{act.querySelectorAll('.tab').forEach(x=>{x.classList.toggle('on',x===b);x.setAttribute('aria-pressed',String(x===b));});filt=b.dataset.f;shown=12;render();});
+    render();
+  }
 
   // ── Section: CSD, the native coin (+ emission-schedule chart) ──
   const csdPanel=el(`<div class="panel"><h2>CSD <span class="pill">the native coin</span></h2>
@@ -742,7 +842,8 @@ async function home(v){
       <span>circulating <b>${supply?fmtCSD(supply.emitted_supply):'-'}</b></span>
       <span>max supply <b>${supply?fmtCSD(supply.max_supply):'-'}</b></span>
       <span>block reward <b>${supply?fmtCSD(supply.block_reward):'-'}</b></span>
-      <span>emitted <b>${supply?supply.pct_emitted.toFixed(2)+'%':'-'}</b></span></div>
+      <span>emitted <b>${supply?supply.pct_emitted.toFixed(2)+'%':'-'}</b></span>
+      <span>first halving in <b>${halvDays!=null?'~'+Math.round(halvDays/365*10)/10+' yr':'-'}</b></span></div>
     <div class="bar"><i style="width:${supply?Math.max(1,supply.pct_emitted):0}%"></i></div>
     <div class="mkt" id="csd-mkt" hidden></div>
     <div class="muted">emission schedule: 50 CSD/block, halving every 1,051,200 blocks (~4 years), secured by SHA-NI proof-of-work</div>
@@ -759,7 +860,7 @@ async function home(v){
   })();
 
   // ── Section: tokens on CairnX (top 3 highlighted + searchable/collapsible full list) ──
-  const tokPanel=el(`<div class="panel"><h2>tokens on CairnX <span class="pill" id="tok-count"></span></h2>
+  const tokPanel=el(`<div class="panel"><h2>Tokens on CairnX <span class="pill" id="tok-count"></span></h2>
     <div id="tok-top" class="coins"></div>
     <button class="ex-btn" id="tok-toggle" style="display:none" aria-expanded="false"></button>
     <div id="tok-rest-wrap" style="display:none">
@@ -790,55 +891,23 @@ async function home(v){
   })();
 
   v.appendChild(el(`<div class="row">
-    <div class="panel"><h2>app activity (on-chain domains)</h2><div class="scroll-x"><table><thead><tr><th>domain</th><th class="num">proposals</th></tr></thead>
+    <div class="panel"><h2>App activity, on-chain domains</h2><div class="scroll-x"><table><thead><tr><th>domain</th><th class="num">proposals</th></tr></thead>
       <tbody>${domains.slice(0,8).map(d=>`<tr><td>${link('/domain/'+encodeURIComponent(d.domain),domainLabel(d.domain))}</td><td class="num">${fmtInt(d.proposals)}</td></tr>`).join('')||'<tr><td colspan="2" class="dim">no domain records yet</td></tr>'}</tbody></table></div></div>
-    <div class="panel"><h2>chain records</h2><div class="kv">
-      <div>blocks indexed</div><div class="v num-l">${fmtInt(health.blocks)}</div>
-      <div>transactions</div><div class="v num-l">${fmtInt(health.txs)}</div>
-      <div>proposals</div><div class="v num-l">${fmtInt(health.proposals)}</div>
-      <div>attestations</div><div class="v num-l">${fmtInt(health.attestations)}</div>
+    <div class="panel"><h2>Chain records</h2><div class="kv">
+      <div>blocks indexed</div><div class="v">${fmtInt(health.blocks)}</div>
+      <div>transactions</div><div class="v">${fmtInt(health.txs)}</div>
+      <div>proposals</div><div class="v">${fmtInt(health.proposals)}</div>
+      <div>attestations</div><div class="v">${fmtInt(health.attestations)}</div>
       <div>top miner (24h)</div><div class="v">${miners&&miners.miners&&miners.miners[0]?addrLink(miners.miners[0].addr)+' <span class="dim">('+Math.round((miners.concentration.top1)*100)+'% of blocks)</span>':'-'}</div>
     </div></div>
   </div>`));
-  const feed=el(`<div class="panel"><h2>latest blocks <span class="pill" id="livepill"><span class="ui-dot ui-dot-live green"></span> live</span></h2>
-    <div class="scroll-x"><table><thead><tr><th>height</th><th>hash</th><th class="num">txs</th><th class="num">age</th></tr></thead><tbody id="blkfeed" aria-live="polite"></tbody></table></div></div>`);
-  v.appendChild(feed);
-  const tb=$('#blkfeed',feed);
-  recent.slice(0,12).forEach(b=>tb.appendChild(blockRow(b)));
-  subscribeBlocks(tb);
-
-  // ── recent CairnX activity (names + DEX), decoded: All / Names / DEX ──
-  const NAME_KINDS=new Set(['name','nset','nxfer','nrenew','ncommit']);
-  // /domain/:d/proposals is already newest-first (DESC by height); do NOT reverse
-  const acts=(cxprops||[]).map(p=>{ let rec=null; try{rec=JSON.parse(p.uri);}catch{ /* not JSON: no record kind, the row shows under all */ }
-      const html=describeDomainRecord('cairnx:v1',p.uri,VER&&VER[p.txid.toLowerCase()],p.height); return html?{p,html,name:!!(rec&&NAME_KINDS.has(rec.t))}:null; })
-    .filter(Boolean);
-  if(acts.length){
-    // age from height distance (blocks target ~2min): honest "~" display, no per-row block fetch
-    const avgSecs=(miners&&miners.avg_interval_secs)||120, tipH=health.indexed_height||0;
-    const hAgo=(hh)=>{ if(!hh||!tipH||hh>tipH) return ''; const s=Math.round((tipH-hh)*avgSecs);
-      if(s<90)return 'just now'; if(s<3600)return '~'+Math.round(s/60)+'m ago'; if(s<86400)return '~'+Math.round(s/3600)+'h ago'; return '~'+Math.round(s/86400)+'d ago'; };
-    const act=el(`<div class="panel"><h2>recent CairnX activity</h2>
-      <div class="tabs" role="group" aria-label="filter"><button class="tab on" data-f="all" aria-pressed="true">All</button><button class="tab" data-f="name" aria-pressed="false">Names</button><button class="tab" data-f="dex" aria-pressed="false">DEX</button></div>
-      <div id="actfeed"></div><div id="actmore"></div></div>`);
-    v.appendChild(act);
-    let shown=18, filt='all';
-    const render=()=>{ const all=acts.filter(a=>filt==='all'||(filt==='name'?a.name:!a.name)), list=all.slice(0,shown);
-      $('#actfeed',act).innerHTML=list.length?list.map(a=>`<div class="actrow"><div class="action">${a.html}</div>
-        <div class="meta">by ${addrLink(a.p.proposer)} · ${link('/block/'+a.p.height,hAgo(a.p.height)||('block '+fmtInt(a.p.height)),'dim')} · <a class="dim mono" href="#/tx/${esc(a.p.txid)}">${short(a.p.txid,6)}</a></div></div>`).join(''):'<div class="muted">nothing here yet</div>';
-      $('#actmore',act).innerHTML=all.length>shown?`<button class="ex-btn" id="actshowmore">Show ${Math.min(24,all.length-shown)} more</button>`:'';
-      const mb=$('#actshowmore',act); if(mb) mb.onclick=()=>{shown+=24;render();};
-      paintNames($('#actfeed',act)); };
-    act.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{act.querySelectorAll('.tab').forEach(x=>{x.classList.toggle('on',x===b);x.setAttribute('aria-pressed',String(x===b));});filt=b.dataset.f;shown=18;render();});
-    render();
-  }
 
   // ── miners (24h) + top holders ──
   v.appendChild(el(`<div class="row">
-    <div class="panel"><h2>miners (24h)${miners&&miners.concentration?` <span class="pill" title="Herfindahl-Hirschman index of block share, lower = more decentralised">HHI ${Math.round(miners.concentration.hhi*10000)}</span>`:''}</h2>
+    <div class="panel"><h2>Miners, 24h${miners?` <span class="pill">${fmtInt(miners.miner_count)} ${miners.miner_count===1?'miner':'miners'}</span>`:''}${miners&&miners.concentration?` <span class="pill" title="Herfindahl-Hirschman index of block share, lower = more decentralised">HHI ${Math.round(miners.concentration.hhi*10000)}</span>`:''}</h2>
       <div class="scroll-x"><table><thead><tr><th class="num">#</th><th>miner</th><th class="num">blocks</th><th class="opt num">share</th></tr></thead><tbody>${
         ((miners&&miners.miners)||[]).slice(0,5).map((m,i)=>`<tr><td class="num dim">${i+1}</td><td>${addrLink(m.addr)}</td><td class="num">${fmtInt(m.blocks)}</td><td class="opt num dim">${(m.share*100).toFixed(1)}%</td></tr>`).join('')||'<tr><td colspan="4" class="dim">no recent miners</td></tr>'}</tbody></table></div></div>
-    <div class="panel"><h2>top holders</h2>
+    <div class="panel"><h2>Top holders</h2>
       <div class="scroll-x"><table><thead><tr><th class="num">#</th><th>address</th><th class="num">balance</th><th class="opt num">share</th></tr></thead><tbody>${
         ((rich&&rich.holders)||[]).slice(0,5).map(hh=>`<tr><td class="num dim">${hh.rank}</td><td>${addrLink(hh.addr)}</td><td class="num">${fmtCSD(hh.balance)}</td><td class="opt num dim">${(hh.pct_of_emitted).toFixed(2)}%</td></tr>`).join('')||'<tr><td colspan="4" class="dim">indexing…</td></tr>'}</tbody></table></div></div>
   </div>`));
@@ -854,9 +923,9 @@ async function home(v){
     const bt=[]; for(const x of iv) bt.push([bt.length&&x.t<=bt[bt.length-1][0]?bt[bt.length-1][0]+1:x.t,x.dt]);
     const avg=iv.length?Math.round(iv.reduce((a,b)=>a+b.dt,0)/iv.length):null;
     const row=el(`<div class="row">
-      <div class="panel"><h2>network hashrate <span class="pill" data-hrwin="pill" hidden></span></h2><div id="hrchart" class="xchart" hidden></div>
+      <div class="panel"><h2>Network hashrate <span class="pill" data-hrwin="pill" hidden></span></h2><div id="hrchart" class="xchart" hidden></div>
         <div class="muted">Δchainwork ÷ Δtime, ${hp.length} points · from this indexer</div></div>
-      <div class="panel"><h2>block times <span class="pill">last ${iv.length} blocks</span></h2><div id="btchart" class="xchart" hidden></div>
+      <div class="panel"><h2>Block times <span class="pill">last ${iv.length} blocks</span></h2><div id="btchart" class="xchart" hidden></div>
         <div class="muted">seconds between consecutive blocks · target ~120s${avg!=null?` · avg <b>${avg}s</b>`:''} <span id="btpick"></span></div></div>
     </div>`);
     v.appendChild(row);
@@ -871,7 +940,7 @@ async function home(v){
 // ── token page: one CairnX coin, humanly ──
 async function tokenPage(v,ticker){
   const t=await jx(SIB.cairnx,'/token/'+encodeURIComponent(ticker));
-  if(!t){v.innerHTML='<div class="panel"><h2>token</h2><div class="muted">Token data needs the cairn front door (cairn-substrate.com/explorer).</div></div>';return;}
+  if(!t){v.innerHTML='<div class="panel"><h2>Token</h2><div class="muted">Token data needs the cairn front door (cairn-substrate.com/explorer).</div></div>';return;}
   const holders=Object.entries(t.holders||{}).map(([a,b])=>({a,av:BigInt(b.available),lk:BigInt(b.locked)}))
     .sort((x,y)=>(y.av+y.lk)>(x.av+x.lk)?1:-1);
   const total=holders.reduce((s,h)=>s+h.av+h.lk,0n)||1n;
@@ -882,12 +951,12 @@ async function tokenPage(v,ticker){
       <div>kind</div><div class="v">${t.mint==='issuer'?'fixed supply: only the issuer could mint (no dilution)':'open mint (up to '+fmtAmt(t.mintLimit||'0',t.decimals)+' per mint)'}</div>
       <div>minted / max</div><div class="v"><b>${fmtAmt(t.minted,t.decimals)}</b> / ${fmtAmt(t.supply,t.decimals)} <span class="dim">(${pct.toFixed(1)}%)</span></div>
       <div>decimals</div><div class="v">${esc(t.decimals)}</div>
-      <div>deployed</div><div class="v">block ${link('/block/'+t.height,fmtInt(t.height))} by ${addrLink(t.deployer)} <span class="dim">· tx ${txidLink(t.deployId)}</span></div>
+      <div>deployed</div><div class="v">block ${link('/block/'+t.height,fmtInt(t.height))} by ${addrLinkG(t.deployer)} <span class="dim">· tx ${txidLink(t.deployId)}</span></div>
       ${t.tmeta?`<div>metadata</div><div class="v mono dim">${esc(t.tmeta)} <span class="dim">(the sha256 of the issuer's metadata document; this page does not fetch it)</span></div>`:''}
       <div>holders</div><div class="v">${fmtInt(holders.length)}</div>
       <div>trade</div><div class="v"><a href="https://cairn-substrate.com/trade" target="_blank">cairn-substrate.com/trade ↗</a></div>
     </div></div>`));
-  v.appendChild(el(`<div class="panel"><h2>holders</h2><div class="scroll-x"><table><thead><tr><th class="num">#</th><th>address</th><th class="num">balance</th><th class="opt num">locked in offers</th><th class="opt num">share</th></tr></thead>
+  v.appendChild(el(`<div class="panel"><h2>Holders</h2><div class="scroll-x"><table><thead><tr><th class="num">#</th><th>address</th><th class="num">balance</th><th class="opt num">locked in offers</th><th class="opt num">share</th></tr></thead>
     <tbody>${holders.slice(0,50).map((h,i)=>`<tr><td class="num dim">${i+1}</td><td>${addrLink(h.a)}</td><td class="num">${fmtAmt(h.av.toString(),t.decimals)}</td>
       <td class="opt num dim">${h.lk?fmtAmt(h.lk.toString(),t.decimals):''}</td>
       <td class="opt num dim">${(Number((h.av+h.lk)*1000n/total)/10).toFixed(1)}%</td></tr>`).join('')||'<tr><td colspan="5" class="dim">no holders</td></tr>'}</tbody></table></div></div>`));
@@ -895,7 +964,7 @@ async function tokenPage(v,ticker){
 function blockRow(b,live){
   if(b.time) TIP_TIME=Math.max(TIP_TIME,b.time);   // keep the age reference current with the chain tip
   return el(`<tr class="${live?'feed-row':''}" data-h="${b.height}" data-hash="${b.hash}"><td class="mono">${link('/block/'+b.height,fmtInt(b.height))}</td>
-    <td>${blockLink(b.hash,12)}</td><td class="num">${fmtInt(b.tx_count)}</td><td class="num dim" data-ts="${b.time||''}" title="${b.time?fmtDate(b.time):''}">${b.time?ago(b.time):''}</td></tr>`);
+    <td class="dim" data-ts="${b.time||''}" title="${b.time?fmtDate(b.time):''}">${b.time?ago(b.time):''}</td><td>${blockLink(b.hash,10)}</td><td class="num">${fmtInt(b.tx_count)}</td></tr>`);
 }
 async function recentBlocks(){
   // one round-trip (newest-first); 31 blocks feed the block list (12 shown), the emission chart's
@@ -936,27 +1005,34 @@ function subscribeBlocks(tb){
 
 async function blockPage(v,id){
   const b = /^[0-9]+$/.test(id) ? await j('/block/'+await j('/block-height/'+id)) : await j('/block/'+id);
-  const txids=await j('/block/'+b.hash+'/txids');
+  const [txids,health]=await Promise.all([j('/block/'+b.hash+'/txids'),j('/health').catch(()=>null)]);
+  // confirmations from the indexer's own tip; the badge turns to "up" at the indexer's final depth
+  const confs=health&&Number.isFinite(health.indexed_height)&&health.indexed_height>=b.height?health.indexed_height-b.height+1:null;
+  const final=confs!=null&&Number.isFinite(health.final_depth)&&confs>=health.final_depth;
   v.innerHTML='';
-  v.appendChild(el(`<div class="panel"><h2 class="ex-title">Block ${fmtInt(b.height)}</h2><div class="kv">
-    <div>hash</div><div class="v mono">${hashHtml(b.hash)}</div>
-    <div>prev</div><div class="v">${b.prev?blockLink(b.prev):'-'}</div>
-    <div>merkle root</div><div class="v mono">${esc(b.merkle)}</div>
-    <div>time</div><div class="v">${fmtDate(b.time)} <span class="dim">(${ago(b.time)})</span></div>
-    <div>difficulty</div><div class="v">${compactNum(difficultyOf(b.bits))} <span class="dim">· bits 0x${(b.bits>>>0).toString(16)}</span></div>
-    <div>nonce</div><div class="v num-l">${esc(b.nonce)}</div>
-    <div>transactions</div><div class="v num-l">${fmtInt(b.tx_count)}</div>
-    <div>miner</div><div class="v" id="blkminer"><span class="dim">…</span></div>
-    <div>chainwork</div><div class="v">${compactNum(b.chainwork)}H <span class="dim">cumulative work</span></div>
-  </div></div>`));
+  v.appendChild(el(`<div class="panel"><h2 class="ex-title">Block ${fmtInt(b.height)}${confs!=null?` <span class="badge${final?' ok':''}" id="blkconfs">${final?ICON.check:''}${fmtInt(confs)} ${confs===1?'confirmation':'confirmations'}</span>`:''}</h2>
+    <div class="ex-detail"><div class="kv">
+      <div>hash</div><div class="v mono">${hashHtml(b.hash)}${copyBtn(b.hash,'hash')}</div>
+      <div>prev</div><div class="v">${b.prev?blockLink(b.prev):'-'}</div>
+      <div>merkle root</div><div class="v mono">${esc(b.merkle)}</div>
+      <div>time</div><div class="v">${fmtDate(b.time)} <span class="dim">· ${ago(b.time)}</span></div>
+      <div>miner</div><div class="v mono" id="blkminer"><span class="dim">…</span></div>
+    </div><div class="kv">
+      <div>transactions</div><div class="v">${fmtInt(b.tx_count)}</div>
+      <div>reward</div><div class="v" id="blkreward"><span class="dim">…</span></div>
+      <div>difficulty</div><div class="v">${compactNum(difficultyOf(b.bits))} <span class="dim">· bits 0x${(b.bits>>>0).toString(16)}</span></div>
+      <div>nonce</div><div class="v">${esc(b.nonce)}</div>
+      <div>chainwork</div><div class="v">${compactNum(b.chainwork)}H <span class="dim">cumulative work</span></div>
+    </div></div></div>`));
   // who mined it + what it paid (coinbase = first tx; display only)
-  (async()=>{ const m=$('#blkminer'); if(!m||!txids.length) return;
-    const cb=await j('/tx/'+txids[0]).catch(()=>null);
-    if(!cb||!cb.coinbase){ m.innerHTML='<span class="dim">-</span>'; return; }
-    const reward=(cb.outputs||[]).reduce((s,o)=>s+o.value,0);
-    m.innerHTML=`${addrLink(cb.outputs&&cb.outputs[0]&&cb.outputs[0].addr)} <span class="dim">· reward ${fmtCSD(reward)}</span>`;
+  (async()=>{ const m=$('#blkminer'), rw=$('#blkreward'); if(!m||!rw) return;
+    const cb=txids.length?await j('/tx/'+txids[0]).catch(()=>null):null;
+    if(!cb||!cb.coinbase){ m.innerHTML=rw.innerHTML='<span class="dim">-</span>'; return; }
+    const addr=cb.outputs&&cb.outputs[0]&&cb.outputs[0].addr;
+    m.innerHTML=addrLinkG(addr)+(addr?copyBtn(addr,'address'):'');
+    rw.textContent=fmtCSD((cb.outputs||[]).reduce((s,o)=>s+o.value,0));
     paintNames(m); })();
-  v.appendChild(el(`<div class="panel"><h2>transactions (${fmtInt(txids.length)})</h2><div class="scroll-x"><table><thead><tr><th class="num">#</th><th>txid</th></tr></thead>
+  v.appendChild(el(`<div class="panel"><h2>Transactions (${fmtInt(txids.length)})</h2><div class="scroll-x"><table><thead><tr><th class="num">#</th><th>txid</th></tr></thead>
     <tbody>${txids.map((t,i)=>`<tr><td class="num dim">${i}</td><td>${txidLink(t)}</td></tr>`).join('')||'<tr><td colspan="2" class="dim">no transactions</td></tr>'}</tbody></table></div></div>`));
 }
 
@@ -967,7 +1043,7 @@ async function txPage(v,id){
   const typeBadge = tx.app_type==='Propose'?'<span class="pill">Propose</span>':tx.app_type==='Attest'?'<span class="pill">Attest</span>':tx.coinbase?'<span class="pill">coinbase</span>':'<span class="pill">transfer</span>';
 
   // ── what happened, in human terms ──
-  const human=el(`<div class="panel"><h2>what happened</h2><div class="action" id="txaction"><span class="dim">decoding…</span></div>${flowHtml(tx)}</div>`);
+  const human=el(`<div class="panel"><h2>What happened</h2><div class="action" id="txaction"><span class="dim">decoding…</span></div>${flowHtml(tx)}</div>`);
   v.appendChild(human);
   (async()=>{
     const slot=$('#txaction',human);
@@ -1004,29 +1080,29 @@ async function txPage(v,id){
     paintNames(human);
   })();
 
-  v.appendChild(el(`<div class="panel"><h2>transaction ${typeBadge} <span id="inclbadge" class="badge pend">verifying inclusion…</span></h2>
+  v.appendChild(el(`<div class="panel"><h2>Transaction ${typeBadge} <span id="inclbadge" class="badge pend">verifying inclusion…</span></h2>
     <div class="kv">
-      <div>txid</div><div class="v mono">${esc(tx.txid)}</div>
+      <div>txid</div><div class="v mono">${hashHtml(tx.txid)}${copyBtn(tx.txid,'transaction id')}</div>
       <div>block</div><div class="v">${link('/block/'+tx.height,fmtInt(tx.height))} ${status?`· ${fmtInt(status.confirmations)} confs ${status.final?'<span class="badge ok">final</span>':'<span class="badge pend">maturing</span>'}`:''}</div>
       <div>time</div><div class="v" id="txtime"><span class="dim">…</span></div>
-      <div>position</div><div class="v num-l">${esc(tx.pos)}</div>
-      <div>signer</div><div class="v">${addrLink(tx.signer)}</div>
-      <div>fee</div><div class="v num-l">${fmtCSD(tx.fee)}</div>
-      <div>inputs / outputs</div><div class="v num-l">${esc(tx.n_in)} / ${esc(tx.n_out)}</div>
+      <div>position</div><div class="v">${esc(tx.pos)}</div>
+      <div>signer</div><div class="v">${addrLinkG(tx.signer)}</div>
+      <div>fee</div><div class="v">${fmtCSD(tx.fee)}</div>
+      <div>inputs / outputs</div><div class="v">${esc(tx.n_in)} / ${esc(tx.n_out)}</div>
     </div></div>`));
   // when the tx was mined (one block-header lookup, display only)
   (async()=>{ const t=$('#txtime'); if(!t) return;
     const blk=await j('/block/'+await j('/block-height/'+tx.height).catch(()=>null)).catch(()=>null);
-    t.innerHTML=blk&&blk.time?`${fmtDate(blk.time)} <span class="dim">(${ago(blk.time)})</span>`:'<span class="dim">-</span>'; })();
-  v.appendChild(el(`<div class="panel"><h2>outputs</h2><div class="scroll-x"><table><thead><tr><th class="num">#</th><th>address</th><th class="num">value</th><th class="opt">status</th></tr></thead>
+    t.innerHTML=blk&&blk.time?`${fmtDate(blk.time)} <span class="dim">· ${ago(blk.time)}</span>`:'<span class="dim">-</span>'; })();
+  v.appendChild(el(`<div class="panel"><h2>Outputs</h2><div class="scroll-x"><table><thead><tr><th class="num">#</th><th>address</th><th class="num">value</th><th class="opt">status</th></tr></thead>
     <tbody>${(tx.outputs||[]).map(o=>`<tr><td class="num dim">${esc(o.vout)}</td><td>${addrLink(o.addr)}</td><td class="num">${fmtCSD(o.value)}</td>
       <td class="opt">${o.spent_txid?`<span class="dim">spent by ${txidLink(o.spent_txid)}</span>`:'<span class="badge ok">unspent</span>'}</td></tr>`).join('')}</tbody></table></div></div>`));
   if(proof){
-    v.appendChild(el(`<div class="panel"><h2>merkle inclusion proof</h2>
+    v.appendChild(el(`<div class="panel"><h2>Merkle inclusion proof</h2>
       <div class="muted">This proof is served by an <i>untrusted</i> indexer, and so is the block header below. Your browser folds the branch and checks it equals the indexer's stated merkle root: a <b>consistency check</b> that the proof matches the header this same indexer reports. It is <b>NOT</b> a PoW/consensus proof: nothing here verifies the header's proof-of-work or that it is on the canonical chain. For a trustless inclusion proof, fold against a header obtained from the L0 light client (which checks PoW + checkpoints).</div>
       <div class="kv">
-        <div>block height</div><div class="v num-l">${fmtInt(proof.block_height)}</div>
-        <div>position</div><div class="v num-l">${esc(proof.pos)}</div>
+        <div>block height</div><div class="v">${fmtInt(proof.block_height)}</div>
+        <div>position</div><div class="v">${esc(proof.pos)}</div>
         <div>merkle root</div><div class="v mono">${esc(proof.merkle_root)}</div>
         <div>branch (${proof.merkle.length})</div><div class="v mono">${proof.merkle.map((x)=>short(x)).join(' · ')||'<i>single-tx block</i>'}</div>
       </div></div>`));
@@ -1048,12 +1124,12 @@ async function addrPage(v,a){
   v.innerHTML='';
   const lbl=labelOf(a);
   v.appendChild(el(`<div class="panel"><h2 class="ex-title">Address${lbl?` <span class="chip">${esc(lbl)}</span>`:''}</h2><div class="kv">
-    <div>address</div><div class="v mono">${esc(a)}</div>
-    <div>balance</div><div class="v num-l"><b>${fmtCSD(s.balance)}</b></div>
-    <div>received</div><div class="v num-l">${fmtCSD(s.funded)}</div>
-    <div>spent</div><div class="v num-l">${fmtCSD(s.spent)}</div>
-    <div>tx count</div><div class="v num-l">${fmtInt(s.tx_count)}</div>
-    <div>UTXOs</div><div class="v num-l">${fmtInt(utxos.length)}</div>
+    <div>address</div><div class="v mono">${addrGroups(a,true)}${copyBtn(a,'address')}</div>
+    <div>balance</div><div class="v"><b>${fmtCSD(s.balance)}</b></div>
+    <div>received</div><div class="v">${fmtCSD(s.funded)}</div>
+    <div>spent</div><div class="v">${fmtCSD(s.spent)}</div>
+    <div>tx count</div><div class="v">${fmtInt(s.tx_count)}</div>
+    <div>UTXOs</div><div class="v">${fmtInt(utxos.length)}</div>
   </div><div id="cxpanel"></div></div>`));
 
   // ── CairnX holdings (token balances + .csd names), cairn front door only ──
@@ -1075,7 +1151,7 @@ async function addrPage(v,a){
   // capped at its latest 25 txs.
   const me=a.toLowerCase();
   const PAGE=25;
-  v.appendChild(el(`<div class="panel"><h2>transactions (${fmtInt(s.tx_count)})</h2><div class="scroll-x"><table class="stack"><thead><tr><th>txid</th><th class="act">action</th><th class="opt num">block</th><th class="num">Δ for this address</th></tr></thead>
+  v.appendChild(el(`<div class="panel"><h2>Transactions (${fmtInt(s.tx_count)})</h2><div class="scroll-x"><table class="stack"><thead><tr><th>txid</th><th class="act">action</th><th class="opt num">block</th><th class="num">Δ for this address</th></tr></thead>
     <tbody id="txrows"></tbody></table></div><div id="txmore"></div></div>`));
   let loaded=0, lastTxid=null;
   const appendTxPage=async(page,later=true)=>{
@@ -1129,7 +1205,7 @@ async function addrPage(v,a){
 // ── .csd name profile page (the name-service centerpiece), front-door only ──
 async function namePage(v,label){
   label=String(label||'').toLowerCase().replace(/\.csd$/,'');
-  if(!SIB.cairnx){ v.innerHTML='<div class="panel"><h2>name</h2><div class="muted">.csd name pages need the cairn front door (cairn-substrate.com/explorer). This standalone view has no name resolver.</div></div>'; return; }
+  if(!SIB.cairnx){ v.innerHTML='<div class="panel"><h2>Name</h2><div class="muted">.csd name pages need the cairn front door (cairn-substrate.com/explorer). This standalone view has no name resolver.</div></div>'; return; }
   const n=await jx(SIB.cairnx,'/name/'+encodeURIComponent(label));
   v.innerHTML='';
   if(!n||n.ok===false){
@@ -1152,21 +1228,21 @@ async function namePage(v,label){
   v.appendChild(el(`<div class="panel namehdr"><div>${nameAvatar(label)}</div>
     <div><h2 class="ex-title">${esc(label)}<span class="dim">.csd</span>${isPrimary?' <span class="badge ok">★ primary</span>':''}</h2>
       <div class="muted">${n.locked?'<span class="amber">locked in an open offer</span>':'a .csd name on Compute Substrate'}${n.viaFill?' · acquired via a marketplace fill':''}</div></div></div>`));
-  v.appendChild(el(`<div class="panel"><h2>record</h2><div class="kv">
-    <div>owner</div><div class="v">${addrLink(owner)}</div>
-    <div>resolves to</div><div class="v">${addrLink(target)} <span class="dim">(${via})</span></div>
+  v.appendChild(el(`<div class="panel"><h2>Record</h2><div class="kv">
+    <div>owner</div><div class="v">${addrLinkG(owner)}</div>
+    <div>resolves to</div><div class="v">${addrLinkG(target)} <span class="dim">(${via})</span></div>
     <div>lease</div><div class="v">${leaseLine}</div>
     <div>claimed</div><div class="v">block ${link('/block/'+n.height,fmtInt(n.height))} <span class="dim">· effective at block ${fmtInt(n.effectiveHeight)}</span></div>
   </div></div>`));
   const prof=n.profile||{}, pk=Object.keys(prof).filter(k=>prof[k]);
-  if(pk.length) v.appendChild(el(`<div class="panel"><h2>profile</h2><div class="kv">${pk.map(k=>`<div>${esc(k)}</div><div class="v">${esc(String(prof[k]))}</div>`).join('')}</div></div>`));
+  if(pk.length) v.appendChild(el(`<div class="panel"><h2>Profile</h2><div class="kv">${pk.map(k=>`<div>${esc(k)}</div><div class="v">${esc(String(prof[k]))}</div>`).join('')}</div></div>`));
   if(n.offer){ const o=n.offer, price=o.want&&o.want.value!=null?fmtCSD(o.want.value):(o.want?`${amt(o.want.amount,o.want.ticker)} ${esc(o.want.ticker)}`:null);
-    v.appendChild(el(`<div class="panel"><h2>for sale</h2><div class="action">${kind('Market')}<span class="what">Listed ${price?`for <b>${price}</b>`:'for sale'}</span>${o.taker?' · reserved (RFQ)':' · open offer'}</div>
+    v.appendChild(el(`<div class="panel"><h2>For sale</h2><div class="action">${kind('Market')}<span class="what">Listed ${price?`for <b>${price}</b>`:'for sale'}</span>${o.taker?' · reserved (RFQ)':' · open offer'}</div>
       <div class="muted">Buy at <a href="https://cairn-substrate.com/names" target="_blank" rel="noopener">/names ↗</a></div></div>`));
   }
   const evs=((hist&&hist.events)||[]).slice().reverse();
   await warmVerdicts(evs.slice(0,40).map((ev)=>ev.txid));
-  if(evs.length) v.appendChild(el(`<div class="panel"><h2>history (${fmtInt(evs.length)})</h2><div class="scroll-x"><table><thead><tr><th>action</th><th>tx</th><th class="opt num">block</th></tr></thead>
+  if(evs.length) v.appendChild(el(`<div class="panel"><h2>History (${fmtInt(evs.length)})</h2><div class="scroll-x"><table><thead><tr><th>action</th><th>tx</th><th class="opt num">block</th></tr></thead>
     <tbody>${evs.slice(0,40).map(ev=>`<tr><td class="act">${cxVerdict(kindLabel(ev.kind),VER[String(ev.txid).toLowerCase()])}</td><td>${txidLink(ev.txid)}</td><td class="opt num">${ev.height?link('/block/'+ev.height,fmtInt(ev.height)):''}</td></tr>`).join('')}</tbody></table></div></div>`));
   paintNames(v);
 }
@@ -1186,18 +1262,18 @@ async function proposalPage(v,id){
   v.innerHTML='';
   const vr=await jx(SIB.cairnx,'/record/'+id).catch(()=>null);
   const human=describeDomainRecord(p.domain,p.uri,vr&&typeof vr.applied==='boolean'?vr:null,p.height);
-  if(human) v.appendChild(el(`<div class="panel"><h2>what happened</h2><div class="action">${human}</div></div>`));
-  v.appendChild(el(`<div class="panel"><h2>proposal <span id="cibadge" class="badge pend">checking content…</span></h2><div class="kv">
-    <div>txid</div><div class="v mono">${esc(p.txid)}</div>
+  if(human) v.appendChild(el(`<div class="panel"><h2>What happened</h2><div class="action">${human}</div></div>`));
+  v.appendChild(el(`<div class="panel"><h2>Proposal <span id="cibadge" class="badge pend">checking content…</span></h2><div class="kv">
+    <div>txid</div><div class="v mono">${hashHtml(p.txid)}${copyBtn(p.txid,'transaction id')}</div>
     <div>domain</div><div class="v">${link('/domain/'+encodeURIComponent(p.domain),p.domain)}</div>
     <div>payload hash</div><div class="v mono">${esc(p.payload_hash)}</div>
     <div>uri</div><div class="v mono">${p.uri?esc(p.uri):'-'}</div>
-    <div>proposer</div><div class="v">${addrLink(p.proposer)}</div>
-    <div>fee</div><div class="v num-l">${fmtCSD(p.fee)}</div>
+    <div>proposer</div><div class="v">${addrLinkG(p.proposer)}</div>
+    <div>fee</div><div class="v">${fmtCSD(p.fee)}</div>
     <div>expires</div><div class="v">epoch ${esc(p.expires_epoch)} <span class="dim">(~block ${fmtInt(Number(p.expires_epoch)*30)})</span></div>
-    <div>attestations</div><div class="v num-l">${fmtInt(p.attestation_count)}</div>
+    <div>attestations</div><div class="v">${fmtInt(p.attestation_count)}</div>
   </div></div>`));
-  v.appendChild(el(`<div class="panel"><h2>attestations (${(p.attestations||[]).length}) <span class="pill">per-attester, not on-chain aggregate</span></h2>
+  v.appendChild(el(`<div class="panel"><h2>Attestations (${(p.attestations||[]).length}) <span class="pill">per-attester, not on-chain aggregate</span></h2>
     <div class="scroll-x"><table><thead><tr><th>attester</th><th class="num">score</th><th class="num">confidence</th><th class="num">fee</th><th>tx</th></tr></thead>
     <tbody>${(p.attestations||[]).map(a=>`<tr><td>${addrLink(a.attester)}</td><td class="num">${fmtInt(a.score)}</td><td class="num">${fmtInt(a.confidence)}</td><td class="num">${fmtCSD(a.fee)}</td><td>${txidLink(a.txid)}</td></tr>`).join('')||'<tr><td colspan=5 class="dim">none yet</td></tr>'}</tbody></table></div></div>`));
   await contentBadge($('#cibadge'),p.payload_hash);
