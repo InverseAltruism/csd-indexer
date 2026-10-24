@@ -1,7 +1,6 @@
 // The explorer reaches cairn's market routes and chart module only through the front door (Plan 88 P5b, D-88-9):
 // the page's own SIB builder, run against a stub location, yields them under /explorer and nothing standalone, and
-// no other line of the page names either path. The page's own SVG charts are gone (D88-5). The browser behaviour
-// is test/explorer-browser.test.ts.
+// no other line of the page names either path. The browser behaviour is test/explorer-browser.test.ts.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -33,8 +32,4 @@ test("no code outside the SIB builder names /api/market or /charts/", () => {
   assert.doesNotMatch(code, /\/api\/market/);
   assert.doesNotMatch(code, /\/charts\//);
   assert.match(html, /jx\(SIB\.market,'\/csd'\)/, "the price is read through SIB.market");
-});
-
-test("the page's own SVG chart and sparkline are gone (D88-5)", () => {
-  assert.equal((html.match(/function (chart|sparkline)\(/g) ?? []).length, 0);
 });

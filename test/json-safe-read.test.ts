@@ -20,6 +20,7 @@ const SENTINEL = 2n ** 53n;   // safeEpoch's sentinel for an expires_epoch past 
 const BIG_FEE = 2n ** 60n;
 const DOMAIN = "probe:dom";
 const PROP = txid(1);
+const HOLDER = "0x" + "c3".repeat(20);
 
 await resetStoreForTests();
 await store().tx(async (d) => {
@@ -29,6 +30,10 @@ await store().tx(async (d) => {
     txid(3), DOMAIN, txid(4), "u", 99, "0x" + "a1".repeat(20), 1000, 11, 1700000000);
   await d.run("INSERT INTO attestations(txid,proposal_id,attester,score,confidence,fee,height,time) VALUES(?,?,?,?,?,?,?,?)",
     txid(5), PROP, "0x" + "b2".repeat(20), 100, 100, BIG_FEE, 12, 1700000000);
+  await d.run("INSERT INTO outputs(txid,vout,addr,value,height,spent_txid,spent_height) VALUES(?,?,?,?,?,?,?)",
+    txid(6), 0, HOLDER, BIG_FEE, 13, null, null);
+  await d.run("INSERT INTO outputs(txid,vout,addr,value,height,spent_txid,spent_height) VALUES(?,?,?,?,?,?,?)",
+    txid(7), 0, HOLDER, BIG_FEE, 13, txid(8), 14);
 });
 
 const srv = buildApp().listen(0, "127.0.0.1");
@@ -62,6 +67,21 @@ test("/proposal/:id: 200, both big values as strings", async () => {
   assert.equal(r.status, 200);
   assert.equal(r.body.expires_epoch, SENTINEL.toString());
   assert.equal(r.body.attestations[0].fee, BIG_FEE.toString());
+});
+
+// The explorer's address page and domain list: the balance is computed as a bigint and must leave as a string.
+test("/address/:a: 200, funded, spent and balance past 2^53 as decimal strings", async () => {
+  const r = await get(`/address/${HOLDER}`);
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.body.chain_stats, {
+    funded: (2n * BIG_FEE).toString(), spent: BIG_FEE.toString(), balance: BIG_FEE.toString(), tx_count: 0,
+  });
+});
+
+test("/domains: 200, the seeded domain with its proposal count as a number", async () => {
+  const r = await get("/domains");
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.body, [{ domain: DOMAIN, proposals: 2 }]);
 });
 
 test.after(async () => { srv.close(); await closeDb(); });
