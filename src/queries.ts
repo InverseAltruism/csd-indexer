@@ -191,3 +191,65 @@ export async function counts(): Promise<{ blocks: number; txs: number; proposals
   const c = async (t: string, w = "") => Number((await store().get<{ n: number }>(`SELECT COUNT(*) n FROM ${t} ${w}`))?.n ?? 0);
   return { blocks: await c("blocks"), txs: await c("txs"), proposals: await c("proposals"), attestations: await c("attestations") };
 }
+
+// ── chain-order feeds (the reads that replace cairn's chain.db scanner) ──
+// The lowest-height block whose time is at or after `time`, with the tip in the same statement so a
+// caller's depth rule (cutoff at least N below the tip) reads one consistent view. Block times are not
+// monotonic, so this is a MIN over heights, not the block after the last one at or before `time`. The unary
+// plus keeps sqlite from answering MIN by walking the height key from genesis; the time index is read instead
+// (test/schema-indexes.test.ts).
+export const BLOCK_AT_OR_AFTER_SQL =
+  "SELECT b.height, b.hash, b.time, (SELECT MAX(height) FROM blocks) AS tip_height FROM blocks b " +
+  "WHERE b.height = (SELECT MIN(+height) FROM blocks WHERE time >= ?)";
+export async function blockAtOrAfter(time: number): Promise<{ height: number; hash: string; time: number; tip_height: number } | null> {
+  if (!heightOk(time)) return null;
+  return jsonSafe((await store().get(BLOCK_AT_OR_AFTER_SQL, time)) as never) ?? null;
+}
+
+export const FEED_LIMIT_MAX = 1000;
+export type FeedKind = "proposals" | "attestations";
+export interface FeedAt { height: number; hash: string }
+export interface FeedCursor { height: number; pos: number }
+export type FeedPage =
+  | { ok: true; at: FeedAt; rows: Record<string, unknown>[] }
+  | { ok: false; reason: "empty-index" | "snapshot-gone" };
+
+const FEED_SOURCE: Record<FeedKind, (domain: boolean) => string> = {
+  proposals: (domain) =>
+    "SELECT p.txid, p.domain, p.payload_hash, p.uri, p.expires_epoch, p.proposer, p.fee, p.height, p.time, t.pos " +
+    `FROM proposals p JOIN txs t ON t.txid = p.txid${domain ? " WHERE p.domain = ?" : ""}`,
+  attestations: (domain) =>
+    "SELECT a.txid, a.proposal_id, a.attester, a.score, a.confidence, a.fee, a.height, a.time, t.pos " +
+    `FROM attestations a JOIN txs t ON t.txid = a.txid${domain ? " JOIN proposals p ON p.txid = a.proposal_id WHERE p.domain = ?" : ""}`,
+};
+
+/**
+ * One page of proposals or attestations (optionally only those of one domain's proposals) in chain order,
+ * (height, position in block), limited to rows at or below a snapshot block. The snapshot is the tip when
+ * `at` is null, else the block at `at.height`, which must still carry `at.hash`: every row at or below it
+ * then comes from the chain that hash commits to, so a keyset walk under one snapshot neither skips nor
+ * repeats, and a reorg at or below the snapshot answers snapshot-gone instead of a mixed list. The snapshot
+ * check and the rows are one statement (one view on both backends); the LEFT JOIN keeps the snapshot row
+ * when no record matches, so an empty page and a missing snapshot block stay distinguishable.
+ */
+export async function feedPage(
+  kind: FeedKind, o: { domain: string | null; at: { height: number; hash: string | null } | null; after: FeedCursor | null; limit: number },
+): Promise<FeedPage> {
+  const after = o.after ?? { height: -1, pos: -1 };
+  const snap = o.at ? "?" : "(SELECT MAX(height) FROM blocks)";
+  const sql =
+    `SELECT s.height AS at_height, s.hash AS at_hash, r.* FROM blocks s LEFT JOIN (${FEED_SOURCE[kind](o.domain !== null)}) r ` +
+    `ON r.height <= s.height AND (r.height > ? OR (r.height = ? AND r.pos > ?)) WHERE s.height = ${snap} ORDER BY r.height, r.pos LIMIT ?`;
+  const params: unknown[] = [];
+  if (o.domain !== null) params.push(o.domain);
+  params.push(after.height, after.height, after.pos);
+  if (o.at) params.push(o.at.height);
+  params.push(o.limit);
+  const raw = await store().all<Record<string, unknown>>(sql, ...params);
+  const first = raw[0];
+  if (!first) return { ok: false, reason: o.at ? "snapshot-gone" : "empty-index" };
+  const at = { height: Number(first.at_height), hash: String(first.at_hash) };
+  if (o.at?.hash != null && at.hash !== o.at.hash.toLowerCase()) return { ok: false, reason: "snapshot-gone" };
+  const rows = raw.filter((r) => r.txid != null).map(({ at_height: _h, at_hash: _x, ...r }) => jsonSafe(r));
+  return { ok: true, at, rows };
+}

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.2
+
+- `GET /blocks/at-or-after/:time`: the lowest-height block whose time is at or after `time`, with the tip height,
+  over a new `blocks(time, height)` index (created at start on both backends).
+- `GET /proposals` and `GET /attestations`: every proposal or attestation, or those of one domain, in chain order
+  (height, then position in the block), paged under a snapshot block with a keyset cursor; a reorg at or below the
+  snapshot answers 409. These are the reads cairn's chain scanner served (its Uplink tally and publisher, network
+  figures and legacy projection).
+
 ## 0.3.1
 
 - `@inversealtruism/csd-light` 0.1.21 to 0.1.24, `@inversealtruism/csd-crypto` 0.1.16 to 0.1.19 and

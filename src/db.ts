@@ -106,6 +106,8 @@ const DDL = `
   -- without these, making the from-genesis DR replay effectively quadratic. Additive + idempotent,
   -- applied at boot on both backends like every index above.
   CREATE INDEX IF NOT EXISTS idx_blocks_hash      ON blocks(hash);
+  -- /blocks/at-or-after/:time reads MIN(height) over time >= t from this index alone.
+  CREATE INDEX IF NOT EXISTS idx_blocks_time      ON blocks(time, height);
   CREATE INDEX IF NOT EXISTS idx_out_height       ON outputs(height);
   CREATE INDEX IF NOT EXISTS idx_out_spent_height ON outputs(spent_height);
   CREATE INDEX IF NOT EXISTS idx_addrhist_height  ON address_history(height);

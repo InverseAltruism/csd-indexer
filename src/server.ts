@@ -220,6 +220,39 @@ export function buildApp() {
       afterTxid: req.query.after_txid !== undefined ? String(req.query.after_txid) : undefined,
     }));
   }));
+  // Chain-order feeds for a consumer that replays records as a block scanner would (README "The API").
+  app.get("/blocks/at-or-after/:time", h(async (req, res) => {
+    if (!/^\d+$/.test(req.params.time!)) return bad(res, "want /blocks/at-or-after/<unix seconds>");
+    const b = await q.blockAtOrAfter(Number(req.params.time!));
+    return b ? res.json(b) : nf(res, "no block at or after that time");
+  }));
+  const feed = (kind: q.FeedKind) => h(async (req, res) => {
+    const { domain, at, after, limit } = req.query as Record<string, unknown>;
+    if (domain !== undefined && typeof domain !== "string") return bad(res, "want one domain");
+    const atM = at === undefined ? null : /^(\d+)(?::(0x[0-9a-fA-F]{64}))?$/.exec(String(at));
+    if (at !== undefined && (!atM || !Number.isSafeInteger(Number(atM[1])))) return bad(res, "want at=<height> or at=<height>:<block hash>");
+    const afterM = after === undefined ? null : /^(\d+):(\d+)$/.exec(String(after));
+    if (after !== undefined && (!afterM || !Number.isSafeInteger(Number(afterM[1])) || !Number.isSafeInteger(Number(afterM[2])))) {
+      return bad(res, "want after=<height>:<position in block>");
+    }
+    const n = Math.floor(Number(limit));
+    const lim = Number.isFinite(n) && n >= 1 ? Math.min(n, q.FEED_LIMIT_MAX) : q.FEED_LIMIT_MAX;
+    const page = await q.feedPage(kind, {
+      domain: domain ?? null,
+      at: atM ? { height: Number(atM[1]), hash: atM[2] ?? null } : null,
+      after: afterM ? { height: Number(afterM[1]), pos: Number(afterM[2]) } : null,
+      limit: lim,
+    });
+    if (!page.ok) {
+      return page.reason === "empty-index"
+        ? res.status(503).json({ error: "index not ready" })
+        : res.status(409).json({ error: "the snapshot block is no longer on the indexed chain; start again without after" });
+    }
+    const last = page.rows[page.rows.length - 1];
+    res.json({ at: page.at, rows: page.rows, next: page.rows.length === lim && last ? `${last.height}:${last.pos}` : null });
+  });
+  app.get("/proposals", feed("proposals"));
+  app.get("/attestations", feed("attestations"));
   // Aggregates over the newest REPUTATION_WINDOW attestations; one extra row tells whether older ones exist,
   // and then `truncated` is true and `note` names the window, so the figures are not read as lifetime totals.
   app.get("/address/:a/reputation", h(async (req, res) => {
