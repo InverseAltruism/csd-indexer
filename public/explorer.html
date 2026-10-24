@@ -430,7 +430,7 @@ function describeCairnx(rec,height){
       case 'transfer': return `→ <span class="what">Transferred <b>${amt(rec.amount,rec.ticker)}</b> <b class="amber">${esc(rec.ticker)}</b></span> to ${addrLink(rec.to)}`;
       case 'offer': {
         const what = giveName?`name <b class="green">${esc(giveName)}.csd</b>`:`<b>${amt(rec.give.amount,giveTok)}</b> <b class="amber">${esc(giveTok)}</b>`;
-        const price = rec.want.value!=null?`${fmtCSD(rec.want.value)}`:`${esc(rec.want.amount)} ${esc(rec.want.ticker)}`;
+        const price = rec.want.value!=null?`${fmtCSD(rec.want.value)}`:`${amt(rec.want.amount,rec.want.ticker)} ${esc(rec.want.ticker)}`;
         return `🏷 <span class="what">Listed ${what} for <b>${price}</b></span>${rec.taker?`, reserved for ${addrLink(rec.taker)} (RFQ)`:', open offer'}${rec.min?` · partial fills ≥ ${fmtCSD(rec.min)}`:''}${rec.bid?' · answers a bid':''}`;
       }
       case 'bid': {
@@ -461,6 +461,31 @@ function describeDomainRecord(domain,uri,verdict,height){
   if(domain==='csd:anchor:base'){ try{ const a=JSON.parse(uri); return `⚓ <span class="what">Anchored Base block <b>${Number(a.height??a.number??0).toLocaleString()}</b></span> into CSD (cross-chain checkpoint)`; }catch{ return null; } }
   if(domain==='csd:bridge:deploy'){ return `📜 <span class="what">Bridge deployment registry record</span>: the canonical contract addresses, verifiable against any node`; }
   return null;
+}
+// The proposal id an Attest names, as 0x hex (the node serves it as hex or as a byte array).
+const pidHexOf=(pid)=>typeof pid==='string'?pid:'0x'+Array.from(pid).map(x=>x.toString(16).padStart(2,'0')).join('');
+// An Attest on a CairnX offer or bid in plain words. The node mines a paid fill whose delivery CairnX refuses, so the
+// words for an effect (bought, cancelled, reserved) need the resolver's applied verdict; without it the line names
+// the request.
+function describeOfferAttest(tx,app,pidHex,rec,verdict){
+  const off=link('/proposal/'+pidHex,short(pidHex,10),'mono'), done=!!verdict&&verdict.applied===true, offer=!!rec&&rec.t==='offer';
+  const score=app.score;
+  if(score!==0&&!(app.confidence===1000000&&rec)&&!(offer&&(score===50||score===100)))
+    return `⭐ <span class="what">Attested</span> score ${esc(score)} on ${off}`;
+  const me=(tx.signer||'').toLowerCase();
+  const paid=(tx.outputs||[]).filter(o=>(o.addr||'').toLowerCase()!==me).reduce((s,o)=>s+o.value,0);
+  const what=offer?(rec.give&&rec.give.name?`name <b class="green">${esc(rec.give.name)}.csd</b>`:`<b class="amber">${esc(rec.give&&rec.give.ticker)}</b>`):'';
+  let body;
+  if(score===0){ const of=rec&&rec.t==='bid'?'a bid':'an offer';
+    body=done?`✕ <span class="what">Cancelled</span> ${of}: ${off}`:`✕ <span class="what">Cancel request</span> on ${of}: ${off}`; }
+  else if(app.confidence===1000000){
+    const terms=`(${amt(rec.give&&rec.give.amount,rec.give&&rec.give.ticker)} ${esc(rec.give&&rec.give.ticker)} for ${amt(rec.want&&rec.want.amount,rec.want&&rec.want.ticker)} ${esc(rec.want&&rec.want.ticker)}, paid in tokens; no CSD moves)`;
+    body=done?`⇄ <span class="what">Token swap fill</span>: took the offer ${off} ${terms}`:`⇄ <span class="what">Token swap fill request</span> on the offer ${off} ${terms}`; }
+  else if(score===50) body=done?`📌 <span class="what">Reserved ${what}</span> <span class="muted">(open offer, claimed; the purchase completes after a short reorg-safe wait)</span>, offer ${off}`
+    :`📌 <span class="what">Claim request on ${what}</span>, offer ${off}`;
+  else body=done?`🤝 <span class="what">Bought ${what}</span> for <b>${fmtCSD(paid)}</b>, offer ${off}`
+    :`🤝 <span class="what">Fill request on ${what}</span>: paid <b>${fmtCSD(paid)}</b>, offer ${off}`;
+  return cxVerdict(body,verdict);
 }
 // payment flow of a tx, from the signer's perspective (single-signer chain: signer pays all inputs)
 function flowHtml(tx){
@@ -616,7 +641,7 @@ async function home(v){
         $('#tok-rest',tokPanel).innerHTML=`<table><thead><tr><th>token</th><th>name</th><th class="opt">minted</th></tr></thead><tbody>${f.slice(0,300).map(t=>`<tr><td>${link('/token/'+encodeURIComponent(t.ticker),t.ticker,'amber')}</td><td class="dim">${esc(t.name||'')}</td><td class="opt">${fmtAmt(t.minted,t.decimals)}</td></tr>`).join('')||'<tr><td colspan="3" class="dim">no matches</td></tr>'}</tbody></table>`;};
       renderRest(''); $('#tok-search',tokPanel).addEventListener('input',(e)=>renderRest(e.target.value.trim().toLowerCase()));
     }
-    $('#tok-note',tokPanel).innerHTML=`Every token is <b>CairnX</b>: records carried inside ordinary chain transactions (the Ordinals/Runes class, with atomic delivery-versus-payment built into consensus). ${names?`<b>${names.length}</b> <span class="green">.csd</span> names registered. `:''}Trade at <a href="https://cairn-substrate.com/trade" target="_blank">/trade</a> · <a href="https://cairn-substrate.com/docs" target="_blank">docs</a>.`;
+    $('#tok-note',tokPanel).innerHTML=`Every token is <b>CairnX</b>: records carried inside ordinary chain transactions (the Ordinals/Runes class). The chain carries a fill's payment and the CairnX resolver decides its delivery, so a paid fill can be refused (shown here as no effect). ${names?`<b>${names.length}</b> <span class="green">.csd</span> names registered. `:''}Trade at <a href="https://cairn-substrate.com/trade" target="_blank">/trade</a> · <a href="https://cairn-substrate.com/docs" target="_blank">docs</a>.`;
   })();
 
   v.appendChild(el(`<div class="row">
@@ -813,24 +838,15 @@ async function txPage(v,id){
         || `📌 <span class="what">Anchored a proposal</span> in ${link('/domain/'+encodeURIComponent(prop.domain),prop.domain)}`;
     } else if(tx.app_type==='Attest'){
       // the attested proposal id lives in the tx app payload; ask the node (cairn front door only)
-      const full=await jx(SIB.node,'/tx/'+tx.txid);
+      const [full,vr]=await Promise.all([jx(SIB.node,'/tx/'+tx.txid),jx(SIB.cairnx,'/record/'+tx.txid)]);
       const pid=full&&full.tx&&full.tx.app&&full.tx.app.proposal_id;
       if(pid){
-        const pidHex=typeof pid==='string'?pid:'0x'+Array.from(pid).map(x=>x.toString(16).padStart(2,'0')).join('');
+        const pidHex=pidHexOf(pid);
         const prop=await j('/proposal/'+pidHex).catch(()=>null);
-        const score=full.tx.app.score, conf=full.tx.app.confidence;
+        const score=full.tx.app.score;
         if(prop&&prop.domain==='cairnx:v1'){
-          let rec=null; try{rec=JSON.parse(prop.uri);}catch{ /* not JSON: rec stays null, which the lines below handle */ }
-          const me=(tx.signer||'').toLowerCase();
-          const paid=(tx.outputs||[]).filter(o=>(o.addr||'').toLowerCase()!==me).reduce((s,o)=>s+o.value,0);
-          const what=(rec&&rec.t==='offer')?(rec.give.name?`name <b class="green">${esc(rec.give.name)}.csd</b>`:`<b class="amber">${esc(rec.give.ticker)}</b>`):'';
-          if(score===0) line=`✕ <span class="what">Cancelled</span> ${rec&&rec.t==='bid'?'a bid':'an offer'}: ${link('/proposal/'+pidHex,short(pidHex,10),'mono')}`;
-          else if(conf===1000000&&rec) line=`⇄ <span class="what">Token swap fill</span>: took the offer ${link('/proposal/'+pidHex,short(pidHex,10),'mono')} (${amt(rec.give&&rec.give.amount,rec.give&&rec.give.ticker)} ${esc(rec.give&&rec.give.ticker)} for ${amt(rec.want&&rec.want.amount,rec.want&&rec.want.ticker)} ${esc(rec.want&&rec.want.ticker)}, paid in tokens; no CSD moves)`;
-          /* v1.7 open-lane CLAIM (Attest score=SCORE_CLAIM=50, no payment): a free reservation, NOT a purchase.
-             Must NOT read as "Bought … for 0 CSD": the fill (score=100) comes later. */
-          else if(rec&&rec.t==='offer'&&score===50) line=`📌 <span class="what">Reserved ${what}</span> <span class="muted">(open offer, claimed; the purchase completes after a short reorg-safe wait)</span>, offer ${link('/proposal/'+pidHex,short(pidHex,10),'mono')}`;
-          else if(rec&&rec.t==='offer'&&score===100) line=`🤝 <span class="what">Bought ${what}</span> for <b>${fmtCSD(paid)}</b> (payment + fill in ONE atomic tx), offer ${link('/proposal/'+pidHex,short(pidHex,10),'mono')}`;
-          else line=`⭐ <span class="what">Attested</span> score ${score} on ${link('/proposal/'+pidHex,short(pidHex,10),'mono')}`;
+          let rec=null; try{rec=JSON.parse(prop.uri);}catch{ /* not JSON: rec stays null, which describeOfferAttest handles */ }
+          line=describeOfferAttest(tx,full.tx.app,pidHex,rec,vr&&typeof vr.applied==='boolean'?vr:null);
         } else if(prop){
           line=`⭐ <span class="what">Attested</span> score ${score} on ${link('/proposal/'+pidHex,short(pidHex,10),'mono')} in ${link('/domain/'+encodeURIComponent(prop.domain),prop.domain)}`;
         }
@@ -921,7 +937,7 @@ async function addrPage(v,a){
   let loaded=0, lastTxid=null;
   const appendTxPage=async(page,later=true)=>{
     if(!Array.isArray(page)||!page.length){const m=$('#txmore'); if(m) m.innerHTML=''; return;}
-    await warmVerdicts(page.filter((t)=>t.app_type==='Propose').map((t)=>t.txid),later);
+    await warmVerdicts(page.filter((t)=>t.app_type==='Propose'||t.app_type==='Attest').map((t)=>t.txid),later);
     const start=loaded;
     $('#txrows').insertAdjacentHTML('beforeend',page.map((t,k)=>{const i=start+k;return `<tr><td>${txidLink(t.txid)}</td><td class="act" id="act-${i}"><span class="dim">${esc(t.app_type)}</span></td><td class="opt">${link('/block/'+t.height,t.height)}</td><td id="dir-${i}" class="dim">…</td></tr>`;}).join(''));
     loaded+=page.length; lastTxid=page[page.length-1].txid;
@@ -953,10 +969,10 @@ async function addrPage(v,a){
       } else if(full.app_type==='Attest'&&SIB.node){
         const nf=await jx(SIB.node,'/tx/'+t.txid);
         const pid=nf&&nf.tx&&nf.tx.app&&nf.tx.app.proposal_id;
-        if(pid){const prop=await j('/proposal/'+pid).catch(()=>null);
-          if(prop&&prop.domain==='cairnx:v1'){let rec=null;try{rec=JSON.parse(prop.uri);}catch{ /* not JSON: rec stays null, which the labels below handle */ }
+        if(pid){const pidHex=pidHexOf(pid), prop=await j('/proposal/'+pidHex).catch(()=>null);
+          if(prop&&prop.domain==='cairnx:v1'){let rec=null;try{rec=JSON.parse(prop.uri);}catch{ /* not JSON: rec stays null, which describeOfferAttest handles */ }
             const slot=$('#act-'+i);
-            if(slot){ const sc=nf.tx.app.score, wn=rec&&rec.give?(rec.give.name?esc(rec.give.name)+'.csd':esc(rec.give.ticker)):''; slot.innerHTML = sc===0?'✕ cancelled an offer/bid':(rec&&rec.t==='offer'&&sc===50?`📌 reserved ${wn}`:(rec&&rec.t==='offer'&&sc===100?`🤝 bought ${wn}`:(rec&&rec.t==='offer'?`🤝 fill: ${wn}`:'⭐ attested'))); }
+            if(slot) slot.innerHTML=describeOfferAttest(full,nf.tx.app,pidHex,rec,VER&&VER[t.txid.toLowerCase()]);
           }}
       } else if(full.coinbase){const slot=$('#act-'+i); if(slot) slot.innerHTML='⛏ block reward';}
       else if(full.app_type==='Transfer'||full.app_type==='None'){const slot=$('#act-'+i); if(slot) slot.innerHTML='💸 CSD transfer';}
@@ -980,7 +996,11 @@ async function namePage(v,label){
     return;
   }
   const owner=n.owner, target=n.addr||n.owner, via=n.addr?'address record (nset)':'owner (no record set)';
-  const isPrimary=n.addr&&owner&&n.addr.toLowerCase()===owner.toLowerCase();
+  // the badge is the resolver's own primary pick for the owner (lapsed, locked and several self-pointing names
+  // included), read per view
+  const [pri,hist]=await Promise.all([owner?jx(SIB.cairnx,'/primary/'+encodeURIComponent(owner)):null,
+    jx(SIB.cairnx,'/name-history/'+encodeURIComponent(label)),warmCx()]);
+  const isPrimary=!!pri&&pri.name===label;
   const L=n.lease||{};
   const leaseLine = !L.leased ? '<span class="dim">no lease (legacy registration)</span>'
     : L.lapsed ? '<span class="red">lapsed</span> · in recapture window'
@@ -997,14 +1017,14 @@ async function namePage(v,label){
   </div></div>`));
   const prof=n.profile||{}, pk=Object.keys(prof).filter(k=>prof[k]);
   if(pk.length) v.appendChild(el(`<div class="panel"><h2>profile</h2><div class="kv">${pk.map(k=>`<div>${esc(k)}</div><div class="v">${esc(String(prof[k]))}</div>`).join('')}</div></div>`));
-  if(n.offer){ const o=n.offer, price=o.want&&o.want.value!=null?fmtCSD(o.want.value):(o.want?`${esc(o.want.amount)} ${esc(o.want.ticker)}`:null);
+  if(n.offer){ const o=n.offer, price=o.want&&o.want.value!=null?fmtCSD(o.want.value):(o.want?`${amt(o.want.amount,o.want.ticker)} ${esc(o.want.ticker)}`:null);
     v.appendChild(el(`<div class="panel"><h2>for sale</h2><div class="action">🏷 <span class="what">Listed ${price?`for <b>${price}</b>`:'for sale'}</span>${o.taker?' · reserved (RFQ)':' · open offer'}</div>
       <div class="muted">Buy at <a href="https://cairn-substrate.com/names" target="_blank" rel="noopener">/names ↗</a></div></div>`));
   }
-  const hist=await jx(SIB.cairnx,'/name-history/'+encodeURIComponent(label));
   const evs=((hist&&hist.events)||[]).slice().reverse();
+  await warmVerdicts(evs.slice(0,40).map((ev)=>ev.txid));
   if(evs.length) v.appendChild(el(`<div class="panel"><h2>history (${evs.length})</h2><div class="scroll-x"><table><thead><tr><th>action</th><th>tx</th><th class="opt">block</th></tr></thead>
-    <tbody>${evs.slice(0,40).map(ev=>`<tr><td>${kindLabel(ev.kind)}</td><td>${txidLink(ev.txid)}</td><td class="opt">${ev.height?link('/block/'+ev.height,ev.height):''}</td></tr>`).join('')}</tbody></table></div></div>`));
+    <tbody>${evs.slice(0,40).map(ev=>`<tr><td>${cxVerdict(kindLabel(ev.kind),VER[String(ev.txid).toLowerCase()])}</td><td>${txidLink(ev.txid)}</td><td class="opt">${ev.height?link('/block/'+ev.height,ev.height):''}</td></tr>`).join('')}</tbody></table></div></div>`));
   paintNames(v);
 }
 async function domainPage(v,d){
