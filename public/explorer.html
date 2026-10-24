@@ -421,30 +421,33 @@ function cxVerdict(body,verdict){
     return `<span class="cx-void">${body}</span> <span class="cx-noeffect" title="The CairnX resolver REJECTED this record. It has no effect on token state, and anyone re-running the open resolver gets the same result. The transaction is real and paid its anchor fee; only the CairnX action was a no-op.">✕ no effect${verdict.note?`: ${esc(verdict.note)}`:''}</span>`;
   return body;
 }
-function describeCairnx(rec,height){
+// An effect word (Minted, Finalized name...) needs the resolver's applied verdict; without one the line is the request
+// the record makes, as describeOfferAttest words an Attest.
+function describeCairnx(rec,height,verdict){
   try{
+    const done=!!verdict&&verdict.applied===true, say=(applied,request)=>done?applied:request;
     const giveTok = rec.give&&rec.give.ticker, giveName = rec.give&&rec.give.name;
     switch(rec.t){
-      case 'deploy': return `🪙 <span class="what">Deployed token <b class="amber">${esc(rec.ticker)}</b></span>: supply ${fmtAmt(rec.supply,rec.decimals)}, ${rec.mint==='issuer'?'issuer-mint (fixed)':'open mint'}${rec.name?` · “${esc(rec.name)}”`:''}`;
-      case 'mint': return `⛏ <span class="what">Minted <b class="amber">${esc(rec.ticker)}</b></span>${rec.amount?`: ${amt(rec.amount,rec.ticker)}`:''}`;
-      case 'transfer': return `→ <span class="what">Transferred <b>${amt(rec.amount,rec.ticker)}</b> <b class="amber">${esc(rec.ticker)}</b></span> to ${addrLink(rec.to)}`;
+      case 'deploy': return `🪙 <span class="what">${say('Deployed token','Deploy request for token')} <b class="amber">${esc(rec.ticker)}</b></span>: supply ${fmtAmt(rec.supply,rec.decimals)}, ${rec.mint==='issuer'?'issuer-mint (fixed)':'open mint'}${rec.name?` · “${esc(rec.name)}”`:''}`;
+      case 'mint': return `⛏ <span class="what">${say('Minted','Mint request for')} <b class="amber">${esc(rec.ticker)}</b></span>${rec.amount?`: ${amt(rec.amount,rec.ticker)}`:''}`;
+      case 'transfer': return `→ <span class="what">${say('Transferred','Transfer request for')} <b>${amt(rec.amount,rec.ticker)}</b> <b class="amber">${esc(rec.ticker)}</b></span> to ${addrLink(rec.to)}`;
       case 'offer': {
         const what = giveName?`name <b class="green">${esc(giveName)}.csd</b>`:`<b>${amt(rec.give.amount,giveTok)}</b> <b class="amber">${esc(giveTok)}</b>`;
         const price = rec.want.value!=null?`${fmtCSD(rec.want.value)}`:`${amt(rec.want.amount,rec.want.ticker)} ${esc(rec.want.ticker)}`;
-        return `🏷 <span class="what">Listed ${what} for <b>${price}</b></span>${rec.taker?`, reserved for ${addrLink(rec.taker)} (RFQ)`:', open offer'}${rec.min?` · partial fills ≥ ${fmtCSD(rec.min)}`:''}${rec.bid?' · answers a bid':''}`;
+        return `🏷 <span class="what">${say('Listed','Listing request:')} ${what} for <b>${price}</b></span>${rec.taker?`, reserved for ${addrLink(rec.taker)} (RFQ)`:', open offer'}${rec.min?` · partial fills ≥ ${fmtCSD(rec.min)}`:''}${rec.bid?' · answers a bid':''}`;
       }
       case 'bid': {
         const want = rec.want.name?`name <b class="green">${esc(rec.want.name)}.csd</b>`:`<b>${amt(rec.want.amount,rec.want.ticker)}</b> <b class="amber">${esc(rec.want.ticker)}</b>`;
-        return `🙋 <span class="what">Bid <b>${fmtCSD(rec.give.value)}</b> for ${want}</span>: non-binding; a seller answers with a reserved offer`;
+        return `🙋 <span class="what">${say('Bid','Bid request:')} <b>${fmtCSD(rec.give.value)}</b> for ${want}</span>: non-binding; a seller answers with a reserved offer`;
       }
-      case 'ocancel': return `✕ <span class="what">Cancelled all open offers</span>${rec.ticker?` in <b class="amber">${esc(rec.ticker)}</b>`:rec.name?` on <b class="green">${esc(rec.name)}.csd</b>`:''}`;
-      case 'ncommit': return `🔒 <span class="what">Sealed a name commitment</span>: the name is revealed later (front-run defense)`;
-      case 'name': return `📛 <span class="what">${rec.salt?revealKind(height):'Claimed'} name <b class="green">${esc(rec.name)}.csd</b></span>`;
-      case 'nfinalize': return `📛 <span class="what">Finalized name <b class="green">${esc(rec.name)}.csd</b></span>: registration paid, the lease starts`;
-      case 'nxfer': return `🎁 <span class="what">Transferred name <b class="green">${esc(rec.name)}.csd</b></span> to ${addrLink(rec.to)}`;
-      case 'nset': return `📍 <span class="what">Pointed <b class="green">${esc(rec.name)}.csd</b></span> at ${addrLink(rec.addr)}`;
-      case 'nrenew': return `♻️ <span class="what">Renewed the lease on <b class="green">${esc(rec.name)}.csd</b></span> for one more year`;
-      case 'tmeta': return `🖼 <span class="what">Updated <b class="amber">${esc(rec.ticker)}</b> metadata</span> (content-addressed)`;
+      case 'ocancel': return `✕ <span class="what">${say('Cancelled all open offers','Request to cancel all open offers')}</span>${rec.ticker?` in <b class="amber">${esc(rec.ticker)}</b>`:rec.name?` on <b class="green">${esc(rec.name)}.csd</b>`:''}`;
+      case 'ncommit': return `🔒 <span class="what">${say('Sealed a name commitment','Name commitment request')}</span>: the name is revealed later (front-run defense)`;
+      case 'name': return `📛 <span class="what">${done?(rec.salt?revealKind(height):'Claimed'):(rec.salt?'Reveal request for':'Claim request for')} name <b class="green">${esc(rec.name)}.csd</b></span>`;
+      case 'nfinalize': return `📛 <span class="what">${say('Finalized name','Finalize request for name')} <b class="green">${esc(rec.name)}.csd</b></span>${done?': registration paid, the lease starts':''}`;
+      case 'nxfer': return `🎁 <span class="what">${say('Transferred name','Transfer request for name')} <b class="green">${esc(rec.name)}.csd</b></span> to ${addrLink(rec.to)}`;
+      case 'nset': return `📍 <span class="what">${say('Pointed','Point request for')} <b class="green">${esc(rec.name)}.csd</b></span> at ${addrLink(rec.addr)}`;
+      case 'nrenew': return `♻️ <span class="what">${say('Renewed the lease on','Renewal request for the lease on')} <b class="green">${esc(rec.name)}.csd</b></span> for one more year`;
+      case 'tmeta': return `🖼 <span class="what">${say('Updated','Update request for')} <b class="amber">${esc(rec.ticker)}</b> metadata</span> (content-addressed)`;
       default: return null;
     }
   }catch{return null;}
@@ -457,7 +460,7 @@ function revealKind(height){
   return h>=v25?'Reserved':'Claimed';
 }
 function describeDomainRecord(domain,uri,verdict,height){
-  if(domain==='cairnx:v1'){ try{ return cxVerdict(describeCairnx(JSON.parse(uri),height),verdict); }catch{ return null; } }
+  if(domain==='cairnx:v1'){ try{ return cxVerdict(describeCairnx(JSON.parse(uri),height,verdict),verdict); }catch{ return null; } }
   if(domain==='csd:anchor:base'){ try{ const a=JSON.parse(uri); return `⚓ <span class="what">Anchored Base block <b>${Number(a.height??a.number??0).toLocaleString()}</b></span> into CSD (cross-chain checkpoint)`; }catch{ return null; } }
   if(domain==='csd:bridge:deploy'){ return `📜 <span class="what">Bridge deployment registry record</span>: the canonical contract addresses, verifiable against any node`; }
   return null;

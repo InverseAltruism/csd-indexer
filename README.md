@@ -92,7 +92,8 @@ The extras:
   nothing, for the tip) on the first page, then `at=<height>:<hash>` from the answer and `after=` set
   to `next` until `next` is null. A reorg above the snapshot leaves the walk unchanged; one at or
   below it makes the next page answer 409, and the walk starts again. A malformed `at` or `after` is
-  400; an empty index is 503.
+  400, and so is `after` without `at=<height>:<hash>` (a height-only snapshot cannot detect a reorg);
+  an empty index is 503.
 - `GET /address/:a/reputation`: aggregates over the address's newest 200 attestations; past that the
   answer says `truncated: true` and names the window.
 - `GET /analytics/miners?window=`, `/analytics/richlist?limit=`, `/analytics/supply`,
@@ -118,6 +119,8 @@ On a proposal page served through the front door it fetches the content from the
 on-chain payload hash.
 Through the front door a CairnX record, a fill or a cancel among them, reads by the CairnX resolver's verdict:
 the chain mines a paid fill whose delivery CairnX refuses, and the explorer shows that one as having no effect.
+A record names its effect ("Minted", "Finalized name", "Bought") only when the resolver applied it; a standalone page, or
+one whose verdict read failed, words it as the request it is ("Mint request for", "Fill request on").
 
 Served through the cairn front door (https://cairn-substrate.com/explorer) it also shows the CSD price in USD
 with the venue and time beside every figure, and charts of the emission schedule, the CSD/USD price, the network

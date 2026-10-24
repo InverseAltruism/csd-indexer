@@ -82,13 +82,15 @@ const day0 = NOW - (NOW % 86_400);
 const csdSeries = (q: URLSearchParams) => ({ ok: true, pair: "csd-usd", period: q.get("period"), range: q.get("range"), source: "coinpaprika",
   points: Array.from({ length: 30 }, (_, i) => { const c = 0.045 + 0.01 * Math.sin(i / 4); return [day0 - (29 - i) * 86_400, c, c * 1.04, c * 0.96, c, 9000]; }) });
 
-const S = { market: "fresh" as "fresh" | "stale" | "off", thin: false, partial: false, series: true, records: "on" as "on" | "404" | "400", gates: true };
+const S = { market: "fresh" as "fresh" | "stale" | "off", thin: false, partial: false, series: true, records: "on" as "on" | "404" | "400" | "500", gates: true };
 // CairnX proposals in the shapes of /domain/:d/proposals, and the resolver's verdicts for them: one refused mint
 const cxProp = (n: number, uri: object) => ({ txid: "0x" + n.toString(16).padStart(64, "0"), height: TIP - n, proposer: MINER, fee: 25000000, domain: "cairnx:v1", uri: JSON.stringify(uri) });
 const PROPS = Array.from({ length: 130 }, (_, i) => cxProp(i + 1, { v: 1, t: "mint", ticker: "CAIRN", amount: "100" }));
 const REFUSED = PROPS[0]!.txid;
 const VERDICTS: Record<string, { kind: string; applied: boolean; note: string; height: number }> = Object.fromEntries(PROPS.map((p, i) =>
   [p.txid, { kind: "mint", applied: i !== 0, note: i === 0 ? "mint past supply" : "", height: p.height }]));
+/** The resolver's applied verdicts for these records (the domain page's word-for-effect needs one). */
+const applied = (...ps: { txid: string; height: number }[]) => { for (const p of ps) VERDICTS[p.txid] = { kind: "x", applied: true, note: "", height: p.height }; };
 const RECORD_READS: number[] = [];
 // The resolver's V25 gate height in /cairnx/health's `gates`, placed between the fixture records' heights.
 const V25_AT = TIP - 950;
@@ -205,6 +207,7 @@ const server = createServer(async (req, res) => {
     if (k === "/records") {
       if (S.records === "404") return json(res, 404, { ok: false, error: "not a cairnx read endpoint" });
       if (S.records === "400") return json(res, 400, { ok: false, error: "at most 100 txids per request, got 130" });
+      if (S.records === "500") return json(res, 500, { ok: false, error: "resolver down" });
       const ids = (url.searchParams.get("ids") ?? "").split(",");
       RECORD_READS.push(ids.length);
       return json(res, 200, { ok: true, tipHeight: TIP, records: Object.fromEntries(ids.filter((id) => id in VERDICTS).map((id) => [id, VERDICTS[id]])) });
@@ -213,6 +216,7 @@ const server = createServer(async (req, res) => {
     if (k === "/token/ZED") return json(res, 200, { ticker: "ZED", name: "Zed", decimals: 0, supply: "1000", minted: "10", mint: "issuer", height: TIP - 5,
       deployer: MINER, deployId: "0x" + "de".repeat(32), tmeta: "0x" + "4d".repeat(32), holders: {} });
     if (k === "/name/onsale") return json(res, 200, { ok: true, owner: MINER, height: TIP - 9, effectiveHeight: TIP - 9, lease: {}, offer: { give: { name: "onsale" }, want: null } });
+    if (k === "/log" && S.records === "500") return json(res, 500, { ok: false, error: "resolver down" });
     if (k === "/log") return json(res, 200, Object.entries(VERDICTS).map(([id, v]) => ({ id, ok: v.applied, note: v.note, height: v.height })));
     return json(res, 200, k === "/primaries" ? { ok: true, primaries: {} } : []);
   }
@@ -614,6 +618,7 @@ for (const gates of [true, false]) {
       cxProp(903, { v: 1, t: "nfinalize", name: "alpha", salt }),
       cxProp(960, { v: 1, t: "name", name: "gamma", salt }),     // height TIP - 960, below the gate
     ];
+    applied(...INDEXER["/domain/cairnx:v1/proposals"] as any[]);
     try {
       const v = await open("/explorer#/domain/cairnx%3Av1", 1280, () => /proposal\(s\)/.test(document.body.innerText));
       try {
@@ -669,6 +674,7 @@ test("domain page: record lines separate their parts with a colon or comma, neve
     cxProp(917, { v: 1, t: "offer", give: { name: "zed" }, want: { ticker: "QTOK", amount: "12345" } }),
     cxProp(918, { v: 1, t: "offer", give: { name: "zed" }, want: { ticker: "ZED", amount: "500" } }),
   ];
+  applied(...INDEXER["/domain/cairnx:v1/proposals"] as any[]);
   try {
     const v = await open("/explorer#/domain/cairnx%3Av1", 1280, () => /proposal\(s\)/.test(document.body.innerText));
     try {
@@ -687,6 +693,54 @@ test("domain page: record lines separate their parts with a colon or comma, neve
       assert.equal(acts.filter((a) => / - /.test(a)).length, 0);
     } finally { await v.close(); }
   } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; }
+});
+
+// A Propose line names an effect (Minted, Finalized name, Pointed...) only when the resolver applied the record. With
+// the page standalone, or the verdict read failing, it reads as the request it is, as an Attest on an offer does.
+test("domain page: a Propose reads as a request unless the resolver applied it", { skip: why || false }, async () => {
+  const props = [
+    cxProp(921, { v: 1, t: "mint", ticker: "ZED", amount: "5" }),
+    cxProp(922, { v: 1, t: "nfinalize", name: "alpha" }),
+    cxProp(923, { v: 1, t: "nset", name: "alpha", addr: MINER }),
+    cxProp(924, { v: 1, t: "transfer", ticker: "ZED", amount: "5", to: MINER }),
+    cxProp(925, { v: 1, t: "name", name: "gamma", salt: "0x" + "5a".repeat(16) }),
+  ];
+  const EFFECT = /Minted|Finalized|Pointed|Transferred|Reserved|Claimed|Revealed/;
+  const REQUEST = ["Mint request for ZED", "Finalize request for name alpha.csd", "Point request", "Transfer request", "Reveal request for name gamma.csd"];
+  const read = async (path: string, ready: () => boolean) => {
+    const v = await open(path, 1280, ready);
+    try {
+      assert.deepEqual(v.errors, []);
+      return { acts: await v.page.evaluate(() => [...document.querySelectorAll("td.act")].map((c: any) => c.textContent)) as string[],
+        struck: await v.page.locator(".cx-void").count() };
+    } finally { await v.close(); }
+  };
+  const loaded = () => /proposal\(s\)/.test(document.body.innerText);
+  INDEXER["/domain/cairnx:v1/proposals"] = props;
+  try {
+    Object.assign(S, { market: "off", series: true, gates: true, records: "on" });
+    // standalone: there is no resolver to ask
+    const alone = await read("/#/domain/cairnx%3Av1", loaded);
+    assert.equal(alone.acts.length, 5);
+    for (const [i, want] of REQUEST.entries()) assert.ok(alone.acts[i]!.includes(want), `standalone: ${alone.acts[i]}`);
+    for (const a of alone.acts) assert.doesNotMatch(a, EFFECT);
+    // the front door with the resolver failing both reads
+    S.records = "500";
+    const down = await read("/explorer#/domain/cairnx%3Av1", loaded);
+    assert.deepEqual(down.acts, alone.acts);
+    // the resolver applied them: the effect words stand
+    S.records = "on";
+    applied(...props);
+    const done = await read("/explorer#/domain/cairnx%3Av1", loaded);
+    assert.deepEqual(done.acts.map((a) => a.match(EFFECT)?.[0]), ["Minted", "Finalized", "Pointed", "Transferred", "Reserved"]);
+    assert.equal(done.struck, 0);
+    // one of them refused: struck, with the request wording
+    VERDICTS[props[0]!.txid] = { kind: "mint", applied: false, note: "mint past supply", height: props[0]!.height };
+    const refused = await read("/explorer#/domain/cairnx%3Av1", loaded);
+    assert.ok(refused.acts[0]!.includes("Mint request for ZED") && /no effect.*mint past supply/s.test(refused.acts[0]!), refused.acts[0]);
+    assert.deepEqual(refused.acts.slice(1), done.acts.slice(1));
+    assert.equal(refused.struck, 1);
+  } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; S.records = "on"; for (const p of props) delete VERDICTS[p.txid]; }
 });
 
 test("token page: the metadata hash is described as what it is, with no claim about a content swarm", { skip: why || false }, async () => {
