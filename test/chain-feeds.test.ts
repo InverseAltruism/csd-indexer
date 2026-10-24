@@ -188,3 +188,21 @@ test("a malformed cursor or snapshot is refused rather than read as the first pa
   }
   assert.equal((await get("/attestations?at=99")).status, 409, "a snapshot above the indexed tip");
 });
+
+test("a cursor without a hashed snapshot is refused; with one it pages", async () => {
+  await resetStoreForTests();
+  const blocks = chain("m", MAIN);
+  await load(blocks);
+  const q = `domain=${encodeURIComponent(U)}`, hash = hashOf(blocks[6]!);
+  for (const path of ["/proposals", "/attestations"]) {
+    const first = await get(`${path}?${q}&at=6:${hash}&limit=1`);
+    assert.equal(first.status, 200, path);
+    const after = first.body.next;
+    for (const at of ["", "&at=6"]) {
+      const r = await get(`${path}?${q}${at}&limit=1&after=${after}`);
+      assert.equal(r.status, 400, `${path} after${at}`);
+      assert.match(r.body.error, /after needs at=<height>:<block hash>/);
+    }
+    assert.equal((await get(`${path}?${q}&at=6:${hash}&limit=1&after=${after}`)).status, 200, `${path} honest page 2`);
+  }
+});

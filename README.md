@@ -92,7 +92,8 @@ The extras:
   nothing, for the tip) on the first page, then `at=<height>:<hash>` from the answer and `after=` set
   to `next` until `next` is null. A reorg above the snapshot leaves the walk unchanged; one at or
   below it makes the next page answer 409, and the walk starts again. A malformed `at` or `after` is
-  400; an empty index is 503.
+  400, and so is `after` without `at=<height>:<hash>` (a height-only snapshot cannot detect a reorg);
+  an empty index is 503.
 - `GET /address/:a/reputation`: aggregates over the address's newest 200 attestations; past that the
   answer says `truncated: true` and names the window.
 - `GET /analytics/miners?window=`, `/analytics/richlist?limit=`, `/analytics/supply`,

@@ -235,6 +235,7 @@ export function buildApp() {
     if (after !== undefined && (!afterM || !Number.isSafeInteger(Number(afterM[1])) || !Number.isSafeInteger(Number(afterM[2])))) {
       return bad(res, "want after=<height>:<position in block>");
     }
+    if (afterM && !atM?.[2]) return bad(res, "after needs at=<height>:<block hash> from the first page's answer");
     const n = Math.floor(Number(limit));
     const lim = Number.isFinite(n) && n >= 1 ? Math.min(n, q.FEED_LIMIT_MAX) : q.FEED_LIMIT_MAX;
     const page = await q.feedPage(kind, {
