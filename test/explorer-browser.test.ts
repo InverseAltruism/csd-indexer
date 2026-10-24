@@ -970,6 +970,8 @@ test("latest blocks: ages read \"now\" and \"1 min\"; a hash shows its zeros dim
       const cut: string[] = await v.page.evaluate(() => [...document.querySelectorAll("#blkfeed td")].filter((c: any) =>
         c.getBoundingClientRect().right > c.closest(".scroll-x").getBoundingClientRect().right + 0.5).map((c: any) => c.textContent));
       assert.deepEqual(cut, [], `no cell past the box at ${width} px`);
+      // on a phone the list drops its tx count rather than squeeze the hash
+      assert.equal(await v.page.evaluate(() => getComputedStyle(document.querySelector("#blkfeed td:last-child")).display), width < 400 ? "none" : "table-cell");
       assert.equal(v.overflow, 0);
     } finally { await v.close(); }
   }
