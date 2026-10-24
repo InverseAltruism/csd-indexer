@@ -976,3 +976,52 @@ test("latest blocks: ages read \"now\" and \"1 min\"; a hash shows its zeros dim
     } finally { await v.close(); }
   }
 });
+
+// One gutter: a heading, the table or list under it and the panel's other content start at the same x, at every width. A
+// "box:" selector is measured at its border edge (a field or a pill lines up by its outline), the others at their text.
+const gutter = (page: any, pairs: [string, string][]) => page.evaluate((pairs: [string, string][]) => pairs.map(([a, b]) => ({ a, b,
+  at: [a, b].map((sel) => { const e = document.querySelector(sel.replace(/^box:/, "")); if (!e) return null;
+    const r = e.getBoundingClientRect(), s = getComputedStyle(e);
+    return Math.round(r.left + (sel.startsWith("box:") ? 0 : parseFloat(s.paddingLeft) + parseFloat(s.borderLeftWidth))); }) }))
+  .filter((x) => x.at[0] === null || x.at[0] !== x.at[1]), pairs);
+for (const width of [390, 1280]) {
+  test(`one gutter at ${width} px: headings line up with the rows, lists and fields under them`, { skip: why || false }, async () => {
+    Object.assign(S, { market: "off", series: true, shell: true, records: "on" });
+    INDEXER["/domain/cairnx:v1/proposals"] = PROPS.slice(0, 3);
+    try {
+      const home = await open("/explorer", width, () => !!document.querySelector("#actfeed .actrow") && !!document.querySelector("#blkfeed tr"));
+      try {
+        assert.deepEqual(await gutter(home.page, [
+          [".ex-col:first-child > h2", "#blkfeed tr:first-child td:first-child"],
+          ["#actcol > h2", "#actfeed .actrow:first-child"],
+          ["#actcol > h2", "box:#actcol > .tabs"],
+          [".ex-col:first-child > h2", ".pulse > .pu:first-child"],
+          [".ex-col:first-child > h2", "box:form.search"],
+          [".row .panel:has(table) > h2", ".row .panel:has(table) tbody tr:first-child td:first-child"],
+          ["#csd-mkt ~ .muted, .panel:has(#emchart) > h2", ".panel:has(#emchart) .figs"],
+        ]), []);
+      } finally { await home.close(); }
+      const hash = block(TIP - 2).hash;
+      Object.assign(INDEXER, { [`/block/${hash}`]: block(TIP - 2), [`/block/${hash}/txids`]: ["0x" + "e1".repeat(32)] });
+      const blk = await open(`/explorer#/block/${hash}`, width, () => !!document.querySelector("#blkconfs") && document.querySelectorAll("tbody tr").length > 0);
+      try {
+        assert.deepEqual(await gutter(blk.page, [["h2.ex-title", ".kv > div:first-child"], ["main > .panel:nth-child(2) > h2", "main > .panel:nth-child(2) tbody tr:first-child td:first-child"]]), []);
+      } finally { await blk.close(); }
+    } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; }
+  });
+}
+
+// The search's placeholder fits its field, measured in the field's own font: the short form on a phone, the long one on a desktop.
+for (const width of [360, 390, 1280]) {
+  test(`the search placeholder fits its field at ${width} px`, { skip: why || false }, async () => {
+    Object.assign(S, { market: "off", series: true, shell: true });
+    const v = await open("/explorer", width, () => !!document.querySelector("#pu-hr"));
+    try {
+      const m = await v.page.evaluate(() => { const q = document.querySelector("#q") as any, s = getComputedStyle(q), c = document.createElement("canvas").getContext("2d") as any;
+        c.font = `${s.fontWeight} ${s.fontSize} ${s.fontFamily}`;
+        return { text: q.placeholder, need: Math.ceil(c.measureText(q.placeholder).width), room: q.clientWidth - parseFloat(s.paddingLeft) - parseFloat(s.paddingRight) }; });
+      assert.ok(m.need <= m.room, `"${m.text}" needs ${m.need} px, the field has ${m.room}`);
+      assert.equal(m.text, width < 480 ? "Block, tx, address or name.csd" : "Search a block, transaction, address or name.csd");
+    } finally { await v.close(); }
+  });
+}

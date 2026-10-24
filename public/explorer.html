@@ -301,7 +301,7 @@
     td.act { min-width: 8em; }
     /* the address page's rows stack: txid and the delta on one line, the action under them at full width */
     table.stack tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--ui-space-1) var(--ui-space-3);
-      padding: var(--ui-space-2) var(--ui-space-4); border-bottom: 1px solid var(--ui-line); }
+      padding: var(--ui-space-2) var(--ui-space-5); border-bottom: 1px solid var(--ui-line); }
     table.stack th, table.stack td { padding: 0; border: 0; }
     table.stack .act { grid-column: 1 / -1; grid-row: 2; min-width: 0; }
   }
@@ -315,8 +315,13 @@
     th, td { padding-inline: var(--ui-space-3); }
     /* the latest-blocks list keeps its 16 px edges and tightens between columns */
     .ex-col th, .ex-col td { padding-inline: var(--ui-space-2); }
-    .ex-col th:first-child, .ex-col td:first-child { padding-left: var(--ui-space-4); }
-    .ex-col th:last-child, .ex-col td:last-child { padding-right: var(--ui-space-4); }
+    /* one 16 px gutter for headings, tables and lists: a column panel adds none of its own, a table's outer cells carry it */
+    .ex-col { padding-inline: 0; }
+    .ex-col > .scroll-x { margin-inline: 0; }
+    .ex-col > h2 { padding-inline: var(--ui-space-4); }
+    th:first-child, td:first-child { padding-left: var(--ui-space-4); }
+    th:last-child, td:last-child { padding-right: var(--ui-space-4); }
+    table.stack tr { padding-inline: var(--ui-space-4); }
     .kv { grid-template-columns: minmax(0, 1fr); gap: 2px 0; }
     .kv > .v { margin-bottom: var(--ui-space-2); }
   }
@@ -335,7 +340,7 @@
          inline handler attribute -->
     <form class="search" id="search-form" role="search">
       <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.6-3.6"/></svg>
-      <input id="q" aria-label="search the chain" placeholder="Search a block, transaction, address or name.csd" autocomplete="off" enterkeyhint="search"/>
+      <input id="q" aria-label="search the chain" placeholder="Search a block, transaction, address or name.csd" data-short="Block, tx, address or name.csd" autocomplete="off" enterkeyhint="search"/>
       <span class="kbd" aria-hidden="true">/</span>
     </form>
     <div class="stats" id="stats" aria-live="polite"><span>connecting…</span></div>
@@ -443,6 +448,10 @@ async function verifyInclusion(txid,pos,branch,root){
 window.addEventListener('hashchange',route);
 // bind search here (NOT an inline onsubmit=) so it survives the nonce CSP on the proxied /explorer.
 document.getElementById('search-form').addEventListener('submit',doSearch);
+// the long placeholder fits from about 445 px of window (measured in Geist); below 481 px the short form, so neither is cut mid-word
+(()=>{ const q=document.getElementById('q'), long=q.placeholder, narrow=matchMedia('(max-width: 480px)');
+  const pick=()=>{ q.placeholder=narrow.matches?q.dataset.short:long; }; pick();
+  if(narrow.addEventListener) narrow.addEventListener('change',pick); })();
 // "/" anywhere outside a field puts the cursor in the search
 document.addEventListener('keydown',(e)=>{ const t=e.target; if(e.key!=='/'||e.metaKey||e.ctrlKey||e.altKey||(t&&(t.isContentEditable||/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)))) return;
   e.preventDefault(); $('#q').focus(); });
