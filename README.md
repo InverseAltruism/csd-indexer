@@ -104,6 +104,8 @@ indexer reports: a consistency check, not a proof-of-work check (for that, use t
 On a proposal page served through the front door it fetches the content from the front door's
 `/content` and hashes it in your browser, calling it verified only when that hash matches the
 on-chain payload hash.
+Through the front door a CairnX record, a fill or a cancel among them, reads by the CairnX resolver's verdict:
+the chain mines a paid fill whose delivery CairnX refuses, and the explorer shows that one as having no effect.
 
 Served through the cairn front door (https://cairn-substrate.com/explorer) it also shows the CSD price in USD
 with the venue and time beside every figure, and charts of the emission schedule, the CSD/USD price, the network

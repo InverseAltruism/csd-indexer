@@ -7,7 +7,8 @@
 // named, no horizontal overflow, a chart in every host, each USD figure with its basis and source, the stale age
 // passed on, no USD text with the market off, never NaN or a 0 USD; the hashrate window from the module in the tile
 // and on the chart; the request cadence; no chart of a replaced view left alive; the verdict reads and their
-// fallback; the proposal page's content check.
+// fallback; an Attest on an offer worded by its verdict; the name page's primary badge from the resolver's pick; the
+// proposal page's content check.
 // Needs playwright-core (PLAYWRIGHT_CORE or the devDependency) and a Chromium (PLAYWRIGHT_CHROMIUM or the build that
 // playwright-core installs, chromium_headless_shell-1243); without either the file skips by name, and with
 // EXPLORER_BROWSER_REQUIRED=1 (CI) it fails instead. Run: npx tsx --test test/explorer-browser.test.ts
@@ -97,12 +98,45 @@ const WALLET = "0x" + "77".repeat(20);
 const txRow = (p: { txid: string; height: number }) => ({ txid: p.txid, height: p.height, pos: 1, app_type: "Propose", signer: WALLET, fee: 25000000,
   time: bt(p.height), n_in: 1, n_out: 1, coinbase: false, outputs: [] });
 const PAGE1 = PROPS.slice(1, 26), PAGE2 = [PROPS[0]!, ...PROPS.slice(26, 50)];
+// Attests on CairnX offers in the shapes of the node's /tx (the app's score, confidence and proposal id) and the
+// indexer's /tx, with the resolver's verdicts: F's live refused fill (1.255 CSD paid, "offer filled") and refused cancel,
+// their applied counterparts, an applied claim and token swap, and a fill the resolver has no verdict for (404).
+const SELLER = "0x44d92872a5b65d37d60ed532f41efe7c5aed59ec", BUYER = "0x6b09ce74e6070ebc982ab0fb793a211c4d24f016";
+const OFFER = cxProp(970, { v: 1, t: "offer", give: { ticker: "CAIRN", amount: "100000000" }, want: { value: 125500000 } });
+const SWAP = cxProp(971, { v: 1, t: "offer", give: { ticker: "CAIRN", amount: "100" }, want: { ticker: "QTOK", amount: "12345" } });
+type Verdict = { kind: string; applied: boolean; note: string | null };
+const att = (n: number, pid: string, score: number, confidence: number, verdict: Verdict | null) =>
+  ({ txid: "0x" + (0xa000 + n).toString(16).padStart(64, "0"), height: TIP - 40 - n, pid, score, confidence, verdict });
+const ATTESTS = {
+  refusedFill: att(1, OFFER.txid, 100, 100, { kind: "fill", applied: false, note: "offer filled" }),
+  fill: att(2, OFFER.txid, 100, 100, { kind: "fill", applied: true, note: null }),
+  refusedCancel: att(3, OFFER.txid, 0, 0, { kind: "cancel", applied: false, note: "offer cancelled" }),
+  cancel: att(4, OFFER.txid, 0, 0, { kind: "cancel", applied: true, note: null }),
+  claim: att(5, OFFER.txid, 50, 0, { kind: "claim", applied: true, note: null }),
+  swap: att(6, SWAP.txid, 100, 1_000_000, { kind: "fill", applied: true, note: null }),
+  unread: att(7, OFFER.txid, 100, 100, null),
+};
+type Attest = (typeof ATTESTS)[keyof typeof ATTESTS];
+const attPaid = (a: Attest) => (a.score === 100 && a.confidence === 100 ? 125500000 : 0);
+const attTx = (a: Attest) => ({ txid: a.txid, height: a.height, pos: 3, app_type: "Attest", signer: BUYER, fee: 5000000, time: bt(a.height), n_in: 1, n_out: 2, coinbase: 0,
+  outputs: [{ txid: a.txid, vout: 0, addr: SELLER, value: attPaid(a) }, { txid: a.txid, vout: 1, addr: BUYER, value: 1368000000 }] });
+const ATT_BY_ID = new Map(Object.values(ATTESTS).map((a) => [a.txid, a]));
+for (const a of Object.values(ATTESTS)) if (a.verdict) VERDICTS[a.txid] = { ...a.verdict, note: a.verdict.note ?? "", height: a.height };
+// Two names of one owner that both point at the owner: the resolver's primary pick (/cairnx/primary) is "solo".
+const NAMES: Record<string, unknown> = {
+  twin: { ok: true, name: "twin", owner: MINER, addr: MINER, height: TIP - 30, effectiveHeight: TIP - 30, lease: {}, offer: { give: { name: "twin" }, want: { ticker: "QTOK", amount: "12345" } } },
+  solo: { ok: true, name: "solo", owner: MINER, addr: MINER, height: TIP - 31, effectiveHeight: TIP - 31, lease: {}, offer: null },
+};
 function ADDRESS(k: string, _q: URLSearchParams): unknown {
+  if (k === `/address/${BUYER}`) return { address: BUYER, chain_stats: { balance: 0, funded: 0, spent: 0, tx_count: ATT_BY_ID.size } };
+  if (k === `/address/${BUYER}/utxo`) return [];
+  if (k === `/address/${BUYER}/txs`) return Object.values(ATTESTS).map(attTx);
+  if (k.startsWith("/tx/") && ATT_BY_ID.has(k.slice(4))) return attTx(ATT_BY_ID.get(k.slice(4))!);
   if (k === `/address/${WALLET}`) return { address: WALLET, chain_stats: { balance: 0, funded: 0, spent: 0, tx_count: 50 } };
   if (k === `/address/${WALLET}/utxo`) return [];
   if (k === `/address/${WALLET}/txs`) return PAGE1.map(txRow);
   if (k === `/address/${WALLET}/txs/chain/${PAGE1[PAGE1.length - 1]!.txid}`) return PAGE2.map(txRow);
-  const prop = k.startsWith("/proposal/") ? [...PROPS, ...Object.values(CONTENT_PROPS)].find((p) => p.txid === k.slice(10)) : undefined;
+  const prop = k.startsWith("/proposal/") ? [...PROPS, ...Object.values(CONTENT_PROPS), OFFER, SWAP].find((p) => p.txid === k.slice(10)) : undefined;
   return prop ?? undefined;
 }
 // Proposals whose content cairn's /content serves: honest JSON, honest bytes that are not UTF-8, bytes that do not
@@ -157,8 +191,17 @@ const server = createServer(async (req, res) => {
     // otherwise answer the page's re-reads with the earlier body
     return body ? json(res, 200, body, { "cache-control": "no-store" }) : json(res, 503, { ok: false, error: "market data off" }, { "cache-control": "no-store" });
   }
+  if (p.startsWith("/api/rpc/tx/") && ATT_BY_ID.has(p.slice(12))) {
+    const a = ATT_BY_ID.get(p.slice(12))!;
+    return json(res, 200, { ok: true, txid: a.txid, height: a.height, tx: { app: { type: "Attest", proposal_id: a.pid, score: a.score, confidence: a.confidence } } });
+  }
   if (p.startsWith("/trade/api/cairnx/")) {
     const k = p.slice(17);
+    if (k.startsWith("/record/")) { const v = VERDICTS[k.slice(8)]; return v ? json(res, 200, { txid: k.slice(8), ...v, tipHeight: TIP }) : json(res, 404, { ok: false, error: "no resolved record for this txid" }); }
+    if (k === `/primary/${MINER}`) return json(res, 200, { ok: true, address: MINER, name: "solo" });
+    if (k.startsWith("/name/") && k.slice(6) in NAMES) return json(res, 200, NAMES[k.slice(6)]);
+    if (k === "/name-history/twin") return json(res, 200, { ok: true, name: "twin", events: [ATTESTS.fill, ATTESTS.refusedFill].map((a) => ({ txid: a.txid, height: a.height, pos: 3, kind: "fill" })) });
+    if (k === "/tokens") return json(res, 200, [{ ticker: "QTOK", name: "Quarter", decimals: 2, supply: "100000000", minted: "100000", mint: "issuer" }]);
     if (k === "/records") {
       if (S.records === "404") return json(res, 404, { ok: false, error: "not a cairnx read endpoint" });
       if (S.records === "400") return json(res, 400, { ok: false, error: "at most 100 txids per request, got 130" });
@@ -255,6 +298,8 @@ for (const market of ["fresh", "stale", "off"] as const) for (const width of [39
       assert.deepEqual(narrow, [], "each chart's pane fills its plot");
       const text: string = await v.page.evaluate(() => document.body.innerText);
       assert.doesNotMatch(text, bad);
+      assert.match(await v.page.textContent("#tok-note"), /a paid fill can be refused/, "the token note says delivery is the resolver's");
+      assert.doesNotMatch(text, /atomic/i, "no atomic delivery claim: a paid fill can be refused");
       if (market === "off") {
         assert.equal(await v.page.isVisible("#csd-mkt"), false, "the CSD/USD block hidden");
         assert.doesNotMatch(text, /USD/, "no USD text with the market off");
@@ -462,6 +507,73 @@ test("address page: each page of txs asks /cairnx/records for its own Propose tx
   } finally { await v.close(); }
 });
 
+// An Attest on an offer reads by the resolver's verdict for its txid (/cairnx/record on the tx page, /cairnx/records
+// on the address page): the words for an effect only when CairnX applied it, a refused one struck with its reason, and
+// one without a verdict as the request it made. The chain mines a paid fill whose delivery CairnX refuses.
+const sh = (h: string) => h.slice(0, 10) + "\u2026" + h.slice(-6);
+const RESERVED_NOTE = "(open offer, claimed; the purchase completes after a short reorg-safe wait)";
+const ATTEST_LINES: Record<keyof typeof ATTESTS, string> = {
+  refusedFill: `\u{1F91D} Fill request on CAIRN: paid 1.255 CSD, offer ${sh(OFFER.txid)} \u2715 no effect: offer filled`,
+  fill: `\u{1F91D} Bought CAIRN for 1.255 CSD, offer ${sh(OFFER.txid)}`,
+  refusedCancel: `\u2715 Cancel request on an offer: ${sh(OFFER.txid)} \u2715 no effect: offer cancelled`,
+  cancel: `\u2715 Cancelled an offer: ${sh(OFFER.txid)}`,
+  claim: `\u{1F4CC} Reserved CAIRN ${RESERVED_NOTE}, offer ${sh(OFFER.txid)}`,
+  swap: `\u21C4 Token swap fill: took the offer ${sh(SWAP.txid)} (100 base units CAIRN for 123.45 QTOK, paid in tokens; no CSD moves)`,
+  unread: `\u{1F91D} Fill request on CAIRN: paid 1.255 CSD, offer ${sh(OFFER.txid)}`,
+};
+const decoded = () => !/decoding/.test(document.querySelector("#txaction")?.textContent ?? "decoding");
+for (const [which, width] of [...Object.keys(ATTESTS).map((k) => [k, 1280] as const), ["refusedFill", 390] as const]) {
+  test(`transaction page, Attest ${which} at ${width} px: "${ATTEST_LINES[which as keyof typeof ATTESTS]}"`, { skip: why || false }, async () => {
+    Object.assign(S, { market: "off", series: true, records: "on" });
+    const a = ATTESTS[which as keyof typeof ATTESTS];
+    const v = await open(`/explorer#/tx/${a.txid}`, width, decoded);
+    try {
+      assert.deepEqual(v.errors, []);
+      const line: string = await v.page.textContent("#txaction");
+      assert.equal(line, ATTEST_LINES[which as keyof typeof ATTESTS]);
+      assert.equal(await v.page.locator("#txaction .cx-void").count(), a.verdict?.applied === false ? 1 : 0, "struck only when refused");
+      if (a.verdict?.applied !== true) assert.doesNotMatch(line, /Bought|Cancelled|Reserved|took the offer/, "no effect words without an applied verdict");
+      assert.doesNotMatch(await v.page.evaluate(() => document.body.innerText), /atomic/i);
+      assert.equal(v.asked.filter((x) => x === `/trade/api/cairnx/record/${a.txid}`).length, 1, "the resolver asked for this txid's verdict");
+      assert.equal(v.overflow, 0, "horizontal overflow");
+    } finally { await v.close(); }
+  });
+}
+
+test("address page: Attest rows ask /cairnx/records with the page's txids and read like the tx page", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, records: "on" });
+  RECORD_READS.length = 0;
+  const keys = Object.keys(ATTESTS) as (keyof typeof ATTESTS)[];
+  const v = await open(`/explorer#/address/${BUYER}`, 1280, () => [...document.querySelectorAll("td.act")].every((c: any) => !/^Attest$/.test(c.textContent)) && document.querySelectorAll("td.act").length > 0);
+  try {
+    assert.deepEqual(v.errors, []);
+    assert.deepEqual(RECORD_READS, [keys.length], "one read for the page's Attest txids");
+    const acts: string[] = await v.page.evaluate(() => [...document.querySelectorAll("td.act")].map((c: any) => c.textContent));
+    assert.deepEqual(acts, keys.map((k) => ATTEST_LINES[k]));
+  } finally { await v.close(); }
+});
+
+for (const width of [390, 1280]) {
+  test(`name page at ${width} px: the primary badge is the resolver's pick for the owner; a token price in the token's decimals; a refused fill in the history shows no effect`, { skip: why || false }, async () => {
+    Object.assign(S, { market: "off", series: true, records: "on" });
+    const twin = await open("/explorer#/name/twin", width, () => /history \(/i.test(document.body.innerText));
+    try {
+      assert.deepEqual(twin.errors, []);
+      assert.equal(await twin.page.locator(".namehdr .badge").count(), 0, "a self-pointing name the resolver did not pick: no badge");
+      assert.equal(await twin.page.textContent(".panel:has(h2:text-is('for sale')) .action"), "\u{1F3F7} Listed for 123.45 QTOK \u00b7 open offer");
+      const hist: string[] = await twin.page.evaluate(() => [...document.querySelectorAll(".panel:has(h2) tbody tr td:first-child")].map((c: any) => c.textContent));
+      assert.deepEqual(hist, ["\u{1F91D} bought / sold (fill) \u2715 no effect: offer filled", "\u{1F91D} bought / sold (fill)"]);
+      assert.equal(twin.overflow, 0, "horizontal overflow");
+    } finally { await twin.close(); }
+    const solo = await open("/explorer#/name/solo", width, () => /resolves to/i.test(document.body.innerText));
+    try {
+      assert.deepEqual(solo.errors, []);
+      assert.equal(await solo.page.textContent(".namehdr .badge"), "\u2605 primary", "the resolver's pick carries the badge");
+      assert.equal(solo.overflow, 0, "horizontal overflow");
+    } finally { await solo.close(); }
+  });
+}
+
 // The proposal page's content check reads cairn's /content (same origin), hashes the bytes as received and calls
 // them verified only when they hash to the on-chain payload hash.
 const CONTENT_CASES = [
@@ -554,6 +666,8 @@ test("domain page: record lines separate their parts with a colon or comma, neve
     cxProp(914, { v: 1, t: "bid", give: { value: 100000000 }, want: { name: "zed" } }),
     cxProp(915, { v: 1, t: "ncommit", commit: "0x" + "11".repeat(32) }),
     cxProp(916, { v: 1, t: "nrenew", name: "zed" }),
+    cxProp(917, { v: 1, t: "offer", give: { name: "zed" }, want: { ticker: "QTOK", amount: "12345" } }),
+    cxProp(918, { v: 1, t: "offer", give: { name: "zed" }, want: { ticker: "ZED", amount: "500" } }),
   ];
   try {
     const v = await open("/explorer#/domain/cairnx%3Av1", 1280, () => /proposal\(s\)/.test(document.body.innerText));
@@ -567,6 +681,8 @@ test("domain page: record lines separate their parts with a colon or comma, neve
         "\u{1F64B} Bid 1 CSD for name zed.csd: non-binding; a seller answers with a reserved offer",
         "\u{1F512} Sealed a name commitment: the name is revealed later (front-run defense)",
         "\u267B\uFE0F Renewed the lease on zed.csd for one more year",
+        "\u{1F3F7} Listed name zed.csd for 123.45 QTOK, open offer",
+        "\u{1F3F7} Listed name zed.csd for 500 base units ZED, open offer",
       ]);
       assert.equal(acts.filter((a) => / - /.test(a)).length, 0);
     } finally { await v.close(); }
