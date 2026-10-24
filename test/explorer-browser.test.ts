@@ -966,6 +966,10 @@ test("latest blocks: ages read \"now\" and \"1 min\"; a hash shows its zeros dim
         assert.equal(r.title, hash);
         assert.equal(r.cut, false, `the hash inside its box at ${width} px`);
       }
+      // every cell of the list inside its box, with the fixture's older rows (ages up to "22 min") setting the widths
+      const cut: string[] = await v.page.evaluate(() => [...document.querySelectorAll("#blkfeed td")].filter((c: any) =>
+        c.getBoundingClientRect().right > c.closest(".scroll-x").getBoundingClientRect().right + 0.5).map((c: any) => c.textContent));
+      assert.deepEqual(cut, [], `no cell past the box at ${width} px`);
       assert.equal(v.overflow, 0);
     } finally { await v.close(); }
   }

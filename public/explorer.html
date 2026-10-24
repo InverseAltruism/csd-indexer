@@ -305,12 +305,18 @@
     table.stack th, table.stack td { padding: 0; border: 0; }
     table.stack .act { grid-column: 1 / -1; grid-row: 2; min-width: 0; }
   }
+  /* below 381 px the block list drops its tx count (on each block's page) so the hash keeps its eight digits */
+  @media (max-width: 380px) { .opt-xs { display: none; } }
   @media (max-width: 520px) {
     .ex-top, .panel, .loading { padding-inline: var(--ui-space-4); }
     .panel > .scroll-x { margin-inline: calc(-1 * var(--ui-space-4)); }
     .pu, .actrow { padding-inline: var(--ui-space-4); }
     .ex-col > .tabs, .ex-col > #actmore { margin-inline: var(--ui-space-4); }
     th, td { padding-inline: var(--ui-space-3); }
+    /* the latest-blocks list keeps its 16 px edges and tightens between columns, so a hash with its eight digits fits at 360 px */
+    .ex-col th, .ex-col td { padding-inline: var(--ui-space-2); }
+    .ex-col th:first-child, .ex-col td:first-child { padding-left: var(--ui-space-4); }
+    .ex-col th:last-child, .ex-col td:last-child { padding-right: var(--ui-space-4); }
     .kv { grid-template-columns: minmax(0, 1fr); gap: 2px 0; }
     .kv > .v { margin-bottom: var(--ui-space-2); }
   }
@@ -811,7 +817,7 @@ async function home(v){
   // ── latest blocks and the recent CairnX activity, side by side ──
   const cols=el(`<div class="ex-cols">
     <div class="panel ex-col"><h2>Latest blocks <span class="pill" id="livepill"><span class="ui-dot ui-dot-live green"></span>live</span></h2>
-      <div class="scroll-x"><table><thead><tr><th>height</th><th>age</th><th>hash</th><th class="num">txs</th></tr></thead><tbody id="blkfeed" aria-live="polite"></tbody></table></div></div>
+      <div class="scroll-x"><table><thead><tr><th>height</th><th>age</th><th>hash</th><th class="num opt-xs">txs</th></tr></thead><tbody id="blkfeed" aria-live="polite"></tbody></table></div></div>
     <div class="panel ex-col" id="actcol"><h2>Recent CairnX activity</h2></div>
   </div>`);
   v.appendChild(cols);
@@ -972,7 +978,7 @@ async function tokenPage(v,ticker){
 function blockRow(b,live){
   if(b.time) TIP_TIME=Math.max(TIP_TIME,b.time);   // keep the age reference current with the chain tip
   return el(`<tr class="${live?'feed-row':''}" data-h="${b.height}" data-hash="${b.hash}"><td class="mono">${link('/block/'+b.height,fmtInt(b.height))}</td>
-    <td class="dim" data-ts="${b.time||''}" title="${b.time?fmtDate(b.time):''}">${age(b.time)}</td><td class="mono">${blockLead(b.hash)}</td><td class="num">${fmtInt(b.tx_count)}</td></tr>`);
+    <td class="dim" data-ts="${b.time||''}" title="${b.time?fmtDate(b.time):''}">${age(b.time)}</td><td class="mono">${blockLead(b.hash)}</td><td class="num opt-xs">${fmtInt(b.tx_count)}</td></tr>`);
 }
 async function recentBlocks(){
   // one round-trip (newest-first); 31 blocks feed the block list (12 shown), the emission chart's
