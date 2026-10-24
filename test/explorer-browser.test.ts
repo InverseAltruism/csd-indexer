@@ -52,7 +52,9 @@ test("a browser is present when EXPLORER_BROWSER_REQUIRED=1", { skip: process.en
 const NOW = Math.floor(Date.now() / 1000), TIP = 121_800, MINER = "0x40379fb123bec901080bb94deeda2f457062b7bd";
 const bt = (h: number) => NOW - (TIP - h) * 121 + ((h % 7) - 3) * 10;
 const iso = (s: number) => new Date(s * 1000).toISOString();
-const block = (h: number) => ({ height: h, hash: "0x" + h.toString(16).padStart(64, "0"), prev: "0x" + (h - 1).toString(16).padStart(64, "0"),
+// a block hash as the chain has them: twelve leading zeros, then digits
+const bhash = (h: number) => "0x" + "0".repeat(12) + createHash("sha256").update(`block ${h}`).digest("hex").slice(0, 52);
+const block = (h: number) => ({ height: h, hash: bhash(h), prev: bhash(h - 1),
   merkle: "0x" + "ab".repeat(32), time: bt(h), bits: 453035574, nonce: 1, version: 1, tx_count: 1, chainwork: String(BigInt(h) * 10n ** 15n), orphaned: 0 });
 const recent = (n: number) => Array.from({ length: n }, (_, i) => block(TIP - i));
 const FROM = TIP - 720;
@@ -263,11 +265,11 @@ async function until(page: any, ready: () => boolean, ms = 15_000): Promise<void
   const end = Date.now() + ms;
   while (!(await page.evaluate(ready))) { if (Date.now() > end) throw new Error(`timed out waiting for ${ready.toString().slice(0, 120)}`); await sleep(100); }
 }
-async function open(path: string, width: number, ready: () => boolean, { clock = false, response = "", scheme = "dark", locale = "en-US" } = {}): Promise<View> {
+async function open(path: string, width: number, ready: () => boolean, { clock = false, response = "", scheme = "dark", locale = "en-US", at = 0 } = {}): Promise<View> {
   const ctx = await browser.newContext({ viewport: { width, height: width < 500 ? 844 : 900 }, isMobile: width < 500, hasTouch: width < 500, colorScheme: scheme, locale, serviceWorkers: "block" });
   await ctx.addInitScript(() => { try { localStorage.setItem("cairn:terms:v4", "2026-10-12T00:00:00.000Z"); } catch { /* no storage */ } });
   const page = await ctx.newPage();
-  if (clock) await page.clock.install();
+  if (clock || at) await page.clock.install(at ? { time: at } : undefined);
   const errors: string[] = [], failed: string[] = [], asked: string[] = [];
   let bytes = 0;
   page.on("request", (r: any) => asked.push(new URL(r.url()).pathname)); // every fetch the page makes, browser cache or not
@@ -887,7 +889,7 @@ test("a German-locale browser: amounts grouped with commas, numbers right-aligne
       assert.equal(h.text, hash, "the hash whole");
       assert.equal(h.zeros, hash.match(/^0x0+/)![0]);
       assert.ok(h.dim, "the zeros dimmed");
-      assert.match(h.time, /^\d{1,2} (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4}, \d\d:\d\d:\d\d UTC · \d+[smhd] ago$/);
+      assert.match(h.time, /^\d{1,2} (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4}, \d\d:\d\d:\d\d UTC · (now|\d+ (min|h|d) ago)$/);
       assert.equal(await blk.page.textContent("#blkconfs"), "1 confirmation", "the indexer's tip is this block");
       assert.equal(blk.overflow, 0, "horizontal overflow");
     } finally { await blk.close(); }
@@ -942,4 +944,29 @@ test("the live dot beside \"live\" and the status line's dot have a size", { ski
     const sizes = await v.page.evaluate(() => ["#stats .ui-dot", "#livepill .ui-dot"].map((s) => { const r = document.querySelector(s).getBoundingClientRect(); return [Math.round(r.width), Math.round(r.height)]; }));
     for (const [w, h] of sizes) assert.ok(w > 0 && h > 0, `a dot of ${w} by ${h}`);
   } finally { await v.close(); }
+});
+
+// The latest-blocks list: ages in the preview's form, and each hash with its leading zeros and eight digits after them.
+test("latest blocks: ages read \"now\" and \"1 min\"; a hash shows its zeros dimmed and eight digits, the whole hash in its link", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true });
+  for (const width of [390, 1280]) {
+    // the page's clock at the fixture's NOW, however long the earlier tests took
+    const v = await open("/explorer", width, () => document.querySelectorAll("#blkfeed tr").length > 2, { at: NOW * 1000 });
+    try {
+      const rows = await v.page.evaluate(() => [...document.querySelectorAll("#blkfeed tr")].slice(0, 2).map((r: any) => {
+        const a = r.children[2].querySelector("a"), z = a.querySelector(".lz");
+        return { age: r.children[1].textContent, zeros: z.textContent, digits: a.textContent.slice(z.textContent.length).replace(/…$/, ""),
+          href: a.getAttribute("href"), title: a.title, cut: a.getBoundingClientRect().right > r.closest(".scroll-x").getBoundingClientRect().right + 0.5 }; }));
+      assert.deepEqual(rows.map((r: { age: string }) => r.age), ["now", "1 min"], "the fixture's newest blocks are 30 s and 91 s old");
+      for (const [i, r] of rows.entries()) {
+        const hash = bhash(TIP - i);
+        assert.equal(r.zeros, "0x000000000000");
+        assert.equal(r.digits, hash.slice(14, 22), "eight significant digits");
+        assert.equal(r.href, `#/block/${hash}`);
+        assert.equal(r.title, hash);
+        assert.equal(r.cut, false, `the hash inside its box at ${width} px`);
+      }
+      assert.equal(v.overflow, 0);
+    } finally { await v.close(); }
+  }
 });

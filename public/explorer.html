@@ -53,7 +53,7 @@
   a { color: var(--ui-ink); text-decoration: none; text-underline-offset: 3px; text-decoration-thickness: 1px; }
   a:hover { text-decoration: underline; }
   :focus-visible { outline: 2px solid var(--ui-ink); outline-offset: 2px; border-radius: var(--ui-radius-sm); }
-  b { font-weight: 600; }
+  b { font-weight: 500; }
   svg.i { width: var(--ui-text-lg); height: var(--ui-text-lg); flex: none; fill: none; stroke: currentColor; stroke-width: 1.6;
     stroke-linecap: round; stroke-linejoin: round; }
   /* mono only for hashes, addresses, heights and amounts in tables */
@@ -242,6 +242,7 @@
   .actrow > .action { min-width: 0; padding: 0; font-size: var(--ui-text-sm); overflow-wrap: anywhere; }
   .actrow .meta { flex: none; color: var(--ui-muted); font-size: var(--ui-text-xs); text-align: right; white-space: nowrap; }
   .actrow .meta a { color: var(--ui-muted); }
+  .actrow .meta .addrl.hasname { font-weight: 400; }
   .ex-col .actrow { flex-direction: column; gap: var(--ui-space-1); }
   .ex-col .actrow .meta { text-align: left; white-space: normal; }
 
@@ -400,13 +401,21 @@ const ICON={ copy:'<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x
 /** A button that copies `value` (what: the accessible name's object, a constant word). */
 const copyBtn = (value,what)=>`<button type="button" class="copy" data-copy="${esc(value)}" aria-label="Copy ${what}" title="Copy ${what}">${ICON.copy}</button>`;
 const blockLink = (h,n)=>`<a class="mono" href="#/block/${esc(h)}">${hashHtml(h,n)}</a>`;
+/** A block hash in a list: its leading zeros (dimmed) and the next eight digits, the whole hash in the link and its title. */
+const blockLead = (h)=>{ const s=String(h||''), z=(/^0x0*/.exec(s)||['0x'])[0];
+  return `<a class="mono" href="#/block/${esc(s)}" title="${esc(s)}"><span class="lz">${esc(z)}</span>${esc(s.slice(z.length,z.length+8))}…</a>`; };
 /** The label in front of a record line naming its family (Token, Name, Market, Bridge, Record, CSD; a constant word). */
 const kind = (k)=>`<span class="kind">${k}</span> `;
 // CSD block timestamps can run AHEAD of wall-clock (miners stamp up to the future-drift tolerance), so a
 // naive now-blockTime goes negative and clamps to 0 → every recent block reads "0s ago". Reference ages to
 // max(now, newest-block-time) so they show correct RELATIVE spacing whether or not the chain clock leads.
 let TIP_TIME = 0;   // newest block time seen (updated in blockRow)
-const ago = (t)=>{if(!t)return '';const ref=Math.max(Math.floor(Date.now()/1000),TIP_TIME);const s=Math.max(0,ref-t);if(s<60)return s+'s ago';if(s<3600)return (s/60|0)+'m ago';if(s<86400)return (s/3600|0)+'h ago';return (s/86400|0)+'d ago';};
+/** The page's one age form for a span of seconds: "now", "2 min", "1 h", "3 d". */
+const ageOf = (s)=>{ s=Math.max(0,Math.floor(Number(s)||0)); return s<60?'now':s<3600?`${s/60|0} min`:s<86400?`${s/3600|0} h`:`${s/86400|0} d`; };
+/** A block time's age, for an Age column. */
+const age = (t)=>t?ageOf(Math.max(Math.floor(Date.now()/1000),TIP_TIME)-t):'';
+/** The same age in running text: "now", or "2 min ago". */
+const ago = (t)=>{ const a=age(t); return a&&a!=='now'?a+' ago':a; };
 const j = async(p)=>{const r=await fetch(API+p);if(!r.ok)throw new Error(p+' → '+r.status);return r.json();};
 
 // ── client-side merkle fold (SubtleCrypto, no deps). A consistency check against the
@@ -821,8 +830,7 @@ async function home(v){
   else {
     // age from height distance (blocks target ~2min): honest "~" display, no per-row block fetch
     const avgSecs=(miners&&miners.avg_interval_secs)||120, tipH=health.indexed_height||0;
-    const hAgo=(hh)=>{ if(!hh||!tipH||hh>tipH) return ''; const s=Math.round((tipH-hh)*avgSecs);
-      if(s<90)return 'just now'; if(s<3600)return '~'+Math.round(s/60)+'m ago'; if(s<86400)return '~'+Math.round(s/3600)+'h ago'; return '~'+Math.round(s/86400)+'d ago'; };
+    const hAgo=(hh)=>{ if(!hh||!tipH||hh>tipH) return ''; const a=ageOf(Math.round((tipH-hh)*avgSecs)); return a==='now'?'now':'~'+a+' ago'; };
     act.insertAdjacentHTML('beforeend',`<div class="tabs" role="group" aria-label="filter"><button class="tab on" data-f="all" aria-pressed="true">All</button><button class="tab" data-f="name" aria-pressed="false">Names</button><button class="tab" data-f="dex" aria-pressed="false">DEX</button></div>
       <div id="actfeed"></div><div id="actmore"></div>`);
     let shown=12, filt='all';
@@ -964,7 +972,7 @@ async function tokenPage(v,ticker){
 function blockRow(b,live){
   if(b.time) TIP_TIME=Math.max(TIP_TIME,b.time);   // keep the age reference current with the chain tip
   return el(`<tr class="${live?'feed-row':''}" data-h="${b.height}" data-hash="${b.hash}"><td class="mono">${link('/block/'+b.height,fmtInt(b.height))}</td>
-    <td class="dim" data-ts="${b.time||''}" title="${b.time?fmtDate(b.time):''}">${b.time?ago(b.time):''}</td><td>${blockLink(b.hash,10)}</td><td class="num">${fmtInt(b.tx_count)}</td></tr>`);
+    <td class="dim" data-ts="${b.time||''}" title="${b.time?fmtDate(b.time):''}">${age(b.time)}</td><td class="mono">${blockLead(b.hash)}</td><td class="num">${fmtInt(b.tx_count)}</td></tr>`);
 }
 async function recentBlocks(){
   // one round-trip (newest-first); 31 blocks feed the block list (12 shown), the emission chart's
@@ -994,7 +1002,7 @@ function subscribeBlocks(tb){
       else { tb.prepend(nr); const hn=$('.pu.hot .n'); if(hn) hn.textContent=fmtInt(b.height); }   // new: prepend + keep the hero height live
       seen.set(b.height, b.hash); }
     while(tb.children.length>14){ const lc=tb.lastChild; seen.delete(+lc.getAttribute('data-h')); tb.removeChild(lc); }
-    if(fresh.length) document.querySelectorAll('[data-ts]').forEach(e=>{const t=+e.getAttribute('data-ts'); if(t)e.textContent=ago(t);}); // re-age with the advanced TIP_TIME
+    if(fresh.length) document.querySelectorAll('[data-ts]').forEach(e=>{const t=+e.getAttribute('data-ts'); if(t)e.textContent=age(t);}); // re-age with the advanced TIP_TIME
   }
   const iv=setInterval(poll,12000);
   try{ es=new EventSource(API+'/stream/blocks');
@@ -1318,7 +1326,7 @@ async function refreshStats(){
   }catch{$('#stats').innerHTML='<span class="red"><span class="ui-dot"></span>indexer offline</span>';}
 }
 refreshStats();setInterval(refreshStats,15000);
-setInterval(()=>document.querySelectorAll('[data-ts]').forEach(e=>{const t=+e.getAttribute('data-ts'); if(t)e.textContent=ago(t);}),10000);  // tick relative times
+setInterval(()=>document.querySelectorAll('[data-ts]').forEach(e=>{const t=+e.getAttribute('data-ts'); if(t)e.textContent=age(t);}),10000);  // tick relative times
 route();
 </script>
 <script src="/footer.js"></script>
