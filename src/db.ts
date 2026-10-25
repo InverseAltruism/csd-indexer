@@ -87,6 +87,9 @@ const DDL = `
     confidence BIGINT, fee BIGINT, height BIGINT, time BIGINT
   );
   CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+  -- Per-address count and sum of the coinbase outputs in outputs JOIN txs (COINBASE_OUTPUTS below), kept equal
+  -- to that aggregate by indexer.ts coinbaseTotalsWrites inside every writeBlock and unwindAbove transaction.
+  CREATE TABLE IF NOT EXISTS coinbase_totals (addr TEXT PRIMARY KEY, outputs BIGINT NOT NULL, value BIGINT NOT NULL);
 
   CREATE INDEX IF NOT EXISTS idx_txs_height       ON txs(height);
   CREATE INDEX IF NOT EXISTS idx_txs_signer       ON txs(signer);
@@ -113,6 +116,24 @@ const DDL = `
   CREATE INDEX IF NOT EXISTS idx_addrhist_height  ON address_history(height);
 `;
 
+// The coinbase outputs paying an address: the one definition coinbase_totals summarises. Callers append
+// `AND (...)` to narrow it.
+export const COINBASE_OUTPUTS = "FROM outputs o JOIN txs t ON t.txid = o.txid WHERE t.coinbase = 1 AND o.addr IS NOT NULL";
+// coinbase_totals is filled from the existing rows once, in the transaction that sets the marker; from then on
+// the write paths maintain it. A writer without that maintenance (an older version) leaves it stale: deleting
+// the marker and the table's rows makes the next boot fill it again.
+export const COINBASE_TOTALS_MARKER = "coinbase_totals_backfilled";
+const COINBASE_MARKED_SQL = `SELECT 1 AS done FROM meta WHERE key = '${COINBASE_TOTALS_MARKER}'`;
+const COINBASE_BACKFILL_SQL =
+  `INSERT INTO coinbase_totals(addr, outputs, value) SELECT o.addr, COUNT(*), SUM(o.value) ${COINBASE_OUTPUTS} GROUP BY o.addr`;
+const COINBASE_MARK_SQL = `INSERT INTO meta(key, value) VALUES('${COINBASE_TOTALS_MARKER}', '1')`;
+/** Runs inside the caller's transaction. */
+async function backfillCoinbaseTotalsOnce(get: (sql: string) => Promise<unknown>, run: (sql: string) => Promise<unknown>): Promise<void> {
+  if (await get(COINBASE_MARKED_SQL)) return;
+  await run(COINBASE_BACKFILL_SQL);
+  await run(COINBASE_MARK_SQL);
+}
+
 // ── sqlite backend ──
 class SqliteStore implements Store {
   readonly backend = "sqlite" as const;
@@ -125,6 +146,11 @@ class SqliteStore implements Store {
     this.d = new DatabaseSync(file);
     this.d.exec(`PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = OFF;`);
     this.d.exec(DDL);
+    this.d.exec("BEGIN");
+    try {
+      if (!this.d.prepare(COINBASE_MARKED_SQL).get()) this.d.exec(`${COINBASE_BACKFILL_SQL}; ${COINBASE_MARK_SQL};`);
+      this.d.exec("COMMIT");
+    } catch (e) { try { this.d.exec("ROLLBACK"); } catch { /* already rolled back */ } throw e; }
   }
   private stmt(sql: string) {
     let st = this.stmts.get(sql);
@@ -230,6 +256,14 @@ class PgStore implements Store {
         await c.query(`CREATE SCHEMA IF NOT EXISTS ${this.schemaSafe}`);
         await c.query(`SET search_path TO ${this.schemaSafe}`);
         await c.query(DDL);
+        await c.query("BEGIN");
+        try {
+          await backfillCoinbaseTotalsOnce(async (q) => (await c.query(q)).rows[0], (q) => c.query(q));
+          await c.query("COMMIT");
+        } catch (e) {
+          try { await c.query("ROLLBACK"); } catch { /* connection gone */ }
+          throw e;
+        }
       } finally { c.release(); }
     })();
     this._ready = p;
@@ -302,10 +336,11 @@ export async function checkpoint(): Promise<void> { await store().checkpoint(); 
 /** TEST ONLY: drop every table so a suite starts from nothing (works on both backends). */
 export async function resetStoreForTests(): Promise<void> {
   const s = store();
-  for (const t of ["address_history", "attestations", "proposals", "outputs", "txs", "blocks", "meta"]) {
+  for (const t of ["address_history", "attestations", "proposals", "outputs", "txs", "blocks", "meta", "coinbase_totals"]) {
     await s.exec(`DROP TABLE IF EXISTS ${t}`);
   }
   await s.exec(DDL);
+  await s.tx((d) => backfillCoinbaseTotalsOnce((q) => d.get(q), (q) => d.run(q)));
 }
 
 export async function getMeta(k: string): Promise<string | null> {

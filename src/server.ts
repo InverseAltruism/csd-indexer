@@ -171,6 +171,13 @@ export function buildApp() {
     if (!ADDR.test(req.params.a!.toLowerCase())) return bad(res, "want /address/0x<40-hex>");
     res.json({ address: req.params.a!.toLowerCase(), chain_stats: await q.addressStats(req.params.a!) });
   }));
+  // Lifetime count and sum of the coinbase outputs paying the address on the indexed chain; a separate route so
+  // /address/:a does not read coinbase_totals.
+  app.get("/address/:a/coinbase", h(async (req, res) => {
+    if (!ADDR.test(req.params.a!.toLowerCase())) return bad(res, "want /address/0x<40-hex>/coinbase");
+    const t = await q.addressCoinbase(req.params.a!);
+    return t.indexed_height == null ? res.status(503).json({ error: "index not ready" }) : res.json(t);
+  }));
   app.get("/address/:a/txs", h(async (req, res) => {
     if (!ADDR.test(req.params.a!.toLowerCase())) return bad(res, "want /address/0x<40-hex>");
     const ids = await q.addressTxids(req.params.a!, null);
@@ -268,6 +275,16 @@ export function buildApp() {
       address: req.params.a!.toLowerCase(), attestations: n, avg_score: avgScore, avg_confidence: avgConf, fees_paid: feesPaid,
       truncated, ...(truncated ? { note: `newest ${q.REPUTATION_WINDOW} attestations only` } : {}),
     });
+  }));
+
+  // All-time coinbase totals per address from coinbase_totals, most outputs first.
+  app.get("/miners/coinbase", h(async (req, res) => {
+    const raw = req.query.limit;
+    if (raw !== undefined && !/^\d+$/.test(String(raw))) return bad(res, `want limit=<1..${q.COINBASE_MINERS_LIMIT_MAX}>`);
+    const n = raw === undefined ? q.COINBASE_MINERS_LIMIT_MAX : Number(raw);
+    if (n < 1) return bad(res, `want limit=<1..${q.COINBASE_MINERS_LIMIT_MAX}>`);
+    const page = await q.coinbaseMiners(Math.min(n, q.COINBASE_MINERS_LIMIT_MAX));
+    return page.indexed_height == null ? res.status(503).json({ error: "index not ready" }) : res.json(page);
   }));
 
   // ── miner / holder / supply analytics (read-only aggregates; see src/analytics.ts) ──

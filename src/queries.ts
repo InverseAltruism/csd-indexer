@@ -123,6 +123,27 @@ export async function addressStats(addr: string): Promise<{ funded: number | str
   return { funded: amt(funded), spent: amt(spent), balance: amt(BigInt(funded) - BigInt(spent)), tx_count: Number(txc) };
 }
 
+// Coinbase lifetime totals read from the maintained coinbase_totals table (db.ts), one row per address, with
+// the indexed tip in the same statement so the figures and their height are one view on both backends.
+// indexed_height is null on an empty index.
+export interface CoinbaseTotal { address: string; outputs: number; value: number | string }
+export async function addressCoinbase(addr: string): Promise<{ indexed_height: number | null } & CoinbaseTotal> {
+  const a = addr.toLowerCase();
+  const r = await store().get<{ indexed_height: number | null; outputs: number | bigint | null; value: number | bigint | null }>(
+    "SELECT b.h AS indexed_height, c.outputs, c.value FROM (SELECT MAX(height) AS h FROM blocks) b LEFT JOIN coinbase_totals c ON c.addr = ?", a);
+  return { address: a, outputs: Number(r?.outputs ?? 0), value: amt(r?.value), indexed_height: r?.indexed_height ?? null };
+}
+export const COINBASE_MINERS_LIMIT_MAX = 1000;
+export async function coinbaseMiners(limit: number): Promise<{ indexed_height: number | null; miners: CoinbaseTotal[] }> {
+  const rows = await store().all<{ indexed_height: number | null; addr: string | null; outputs: number | bigint | null; value: number | bigint | null }>(
+    "SELECT b.h AS indexed_height, c.addr, c.outputs, c.value FROM (SELECT MAX(height) AS h FROM blocks) b " +
+    "LEFT JOIN coinbase_totals c ON 1 = 1 ORDER BY c.outputs DESC, c.addr ASC LIMIT ?", limit);
+  return {
+    indexed_height: rows[0]?.indexed_height ?? null,
+    miners: rows.filter((r) => r.addr != null).map((r) => ({ address: r.addr!, outputs: Number(r.outputs), value: amt(r.value) })),
+  };
+}
+
 // ── CSD-specific (the reason this exists) ──
 export async function proposal(id: string): Promise<any> { return jsonSafe((await store().get("SELECT * FROM proposals WHERE txid=?", id)) ?? null); }
 export async function proposalsByDomain(domain: string, limit = 100, from?: number): Promise<any[]> {
