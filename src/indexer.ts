@@ -8,7 +8,7 @@
 // un-spend orphaned spends), and replay the canonical branch; the electrs/Subsquid
 // roll-back-then-replay pattern. Blocks deeper than finalDepth are never touched.
 import * as rpc from "./rpc.js";
-import { store, getMeta, setMeta, tx as dbTx, COINBASE_OUTPUTS, type Store } from "./db.js";
+import { store, getMeta, setMeta, tx as dbTx, COINBASE_OUTPUTS, COINBASE_TOTALS_LOCK, type Store } from "./db.js";
 import { deriveAddr, addrFromScriptPubkey, appType } from "./decode.js";
 import { CFG } from "./config.js";
 import { bus } from "./events.js";
@@ -157,6 +157,7 @@ export async function writeBlock(b: rpc.RpcBlock): Promise<void> {
     // "byte-identical rows" claim. Rule: every integer bound into a column goes through the SAME clamp
     // helper, so header time/bits/nonce/version use safeValue() exactly like value, fee and expires_epoch.
     const time = safeValue(blk.header.time);
+    if (d.backend === "postgres") await d.run(COINBASE_TOTALS_LOCK); // serializes with the boot rebuild (db.ts)
     // clear any prior contents of THIS height (keeps a same-height re-write internally consistent)
     const cleared = await d.all<CoinbaseRow>(coinbaseRowsSql(COINBASE_WHERE.height, COINBASE_WHERE.txAtHeight), blk.height, blk.height, blk.height);
     for (const [sql, ...p] of coinbaseTotalsWrites(cleared, -1n)) await d.run(sql, ...p);
@@ -311,6 +312,7 @@ function coinbaseTotalsWrites(rows: CoinbaseRow[], sign: 1n | -1n): [string, ...
 export async function unwindAbove(ancestor: number, newTip: number = ancestor): Promise<void> {
   await dbTx(async (d: Store) => {
     const h = ancestor;
+    if (d.backend === "postgres") await d.run(COINBASE_TOTALS_LOCK); // serializes with the boot rebuild (db.ts)
     const orphaned = await d.all<CoinbaseRow>(coinbaseRowsSql(COINBASE_WHERE.above, COINBASE_WHERE.txAbove), h, h, h);
     for (const [sql, ...p] of coinbaseTotalsWrites(orphaned, -1n)) await d.run(sql, ...p);
     // un-spend outputs whose spender was orphaned (those spends no longer happened)

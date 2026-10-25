@@ -11,7 +11,7 @@ process.env.CSD_INDEX_PG_SCHEMA = "t_coinbase_totals";
 process.env.CSD_INDEX_FROM = "0";
 
 const { writeBlock, unwindAbove, coinbaseRowsSql, COINBASE_WHERE } = await import("../src/indexer.js");
-const { store, resetStoreForTests, closeDb, COINBASE_OUTPUTS, COINBASE_TOTALS_MARKER } = await import("../src/db.js");
+const { store, resetStoreForTests, closeDb, COINBASE_OUTPUTS, coinbaseTotalsRebuildSql } = await import("../src/db.js");
 await resetStoreForTests();
 test.after(async () => { await closeDb(); });
 
@@ -111,20 +111,83 @@ test("a replayed coinbase split across two heights stays equal through an unwind
   }
 });
 
-test("the backfill fills coinbase_totals from existing rows once, and only once", async () => {
+// A writer without the maintenance (an older version after a rollback, or rows written by hand) leaves
+// coinbase_totals wrong; the next boot rebuilds it from outputs JOIN txs.
+test("a boot rebuilds coinbase_totals left wrong by a writer without maintenance", async () => {
   await resetStoreForTests();
   await walk(9, 60);
+  const [A, C] = [ADDRS[0]!, ADDRS[2]!];
+  await store().tx(async (d) => {
+    await d.run("INSERT INTO txs(txid,height,pos,app_type,signer,fee,time,n_in,n_out,coinbase) VALUES(?,?,?,?,?,?,?,?,?,?)", hex32(9_000_001), 9999, 0, "Coinbase", null, 0, 0, 0, 1, 1);
+    await d.run("INSERT INTO outputs(txid,vout,addr,value,height) VALUES(?,?,?,?,?)", hex32(9_000_001), 0, `0x${C}`, 123, 9999);
+    await d.run("UPDATE coinbase_totals SET outputs = outputs + 5 WHERE addr = ?", `0x${A}`);
+  });
   const want = await aggregate();
-  // a database indexed before coinbase_totals existed: no table rows, no marker
-  await store().run("DELETE FROM coinbase_totals");
-  await store().run("DELETE FROM meta WHERE key=?", COINBASE_TOTALS_MARKER);
+  assert.notDeepEqual(await totals(), want, "the table is wrong before the boot");
   await closeDb();
-  assert.deepEqual(await totals(), want, "the boot after the upgrade fills the table from outputs JOIN txs");
-  // with the marker set, a later boot leaves the table alone
-  await store().run("UPDATE coinbase_totals SET outputs = outputs + 1");
-  const bumped = await totals();
+  assert.deepEqual(await totals(), want, "the boot rebuilt coinbase_totals from outputs JOIN txs");
+});
+
+// Another process may boot (and rebuild) while this one writes, or two may boot at once. Each case below runs
+// the other process's transaction on a second connection, holds it open while this process acts, then commits.
+test("Postgres: writers and boot rebuilds serialize on the coinbase_totals lock", { skip: SQLITE && "the lock is Postgres-only; SQLite is covered below" }, async () => {
+  await resetStoreForTests();
+  const A = ADDRS[0]!;
+  const blk = (h: number, id: number): any => ({ hash: hex32(800_000 + h), height: h, chainwork: String(h + 1),
+    header: { prev: null, merkle: null, time: 1700000000 + h, bits: 1, nonce: 0, version: 1 },
+    txs: [{ txid: hex32(810_000 + id), inputs: [], outputs: [{ script_pubkey: A, value: 9 }, { script_pubkey: ADDRS[1]!, value: 4 }] }] });
+  await writeBlock(blk(0, 0));
+  const { Client } = await import("pg");
+  const other = new Client({ connectionString: process.env.CSD_INDEX_PG });
+  await other.connect();
+  try {
+    await other.query("SET search_path TO t_coinbase_totals");
+    const interleave = async (theirs: string[], ours: () => Promise<unknown>, readersRun = true) => {
+      await other.query("BEGIN");
+      for (const q of theirs) await other.query(q);
+      const p = ours();
+      if (readersRun) {
+        const read = await Promise.race([store().get("SELECT COUNT(*) AS n FROM coinbase_totals").then(() => "answered"),
+          new Promise((r) => setTimeout(() => r("blocked"), 250))]);
+        assert.equal(read, "answered", "a reader is not blocked by the lock");
+      }
+      await new Promise((r) => setTimeout(r, 300));
+      await other.query("COMMIT");
+      await p;
+    };
+    // A's total wrong, as a writer without maintenance leaves it, so a stale read of it shows in the result
+    const corrupt = () => store().run("UPDATE coinbase_totals SET outputs = outputs + 5 WHERE addr = ?", `0x${A}`);
+    // another process's boot rebuild in flight: our writer must read A's total after it commits, not before
+    await corrupt();
+    await interleave(coinbaseTotalsRebuildSql("postgres"), () => writeBlock(blk(1, 1)));
+    assert.deepEqual(await totals(), await aggregate(), "writeBlock during another process's rebuild");
+    await corrupt();
+    await interleave(coinbaseTotalsRebuildSql("postgres"), () => unwindAbove(0));
+    assert.deepEqual(await totals(), await aggregate(), "unwindAbove during another process's rebuild");
+    // another boot's rebuild that has deleted and re-inserted but not committed: ours must wait for it, not collide
+    await closeDb();
+    await interleave(coinbaseTotalsRebuildSql("postgres").filter((q) => !q.startsWith("LOCK")), () => store().get("SELECT 1"), false);
+    assert.deepEqual(await totals(), await aggregate(), "two boots rebuilding at once");
+  } finally {
+    await other.query("ROLLBACK").catch(() => undefined);
+    await other.end();
+  }
+});
+
+test("SQLite: a writer whose snapshot the boot rebuild outdated fails instead of writing stale totals", { skip: !SQLITE && "SQLite-only; Postgres is covered above" }, async () => {
+  await resetStoreForTests();
+  await walk(5, 20);
+  const { DatabaseSync } = await import("node:sqlite");
+  const writer = new DatabaseSync(process.env.CSD_INDEX_DB!);
+  writer.exec("PRAGMA busy_timeout = 100");
+  writer.exec("BEGIN");
+  writer.prepare("SELECT addr, outputs FROM coinbase_totals").all();        // the writer's read: its snapshot starts here
   await closeDb();
-  assert.deepEqual(await totals(), bumped, "a second boot does not run the backfill again");
+  await store().get("SELECT 1");                                              // another process boots and rebuilds
+  assert.throws(() => writer.exec(`INSERT INTO coinbase_totals(addr, outputs, value) VALUES('0x${ADDRS[4]}', 1, 1)`), /busy|locked/i);
+  writer.exec("ROLLBACK");
+  writer.close();
+  assert.deepEqual(await totals(), await aggregate());
 });
 
 test("HAPPY PATH: an honest chain's totals are the per-address coinbase sums", async () => {
