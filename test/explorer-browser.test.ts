@@ -9,7 +9,7 @@
 // and on the chart; the request cadence; no chart of a replaced view left alive; the verdict reads and their
 // fallback; an Attest on an offer worded by its verdict; the name page's primary badge from the resolver's pick; the
 // proposal page's content check; the indexer's state beside the search; the home's activity ledger; a miss told apart
-// from a failed read; the design direction's colour rule on every view.
+// from a failed read; the design direction's colour rule on every view; a new block's entrance.
 // Needs playwright-core (PLAYWRIGHT_CORE or the devDependency) and a Chromium (PLAYWRIGHT_CHROMIUM or the build that
 // playwright-core installs, chromium_headless_shell-1243); without either the file skips by name, and with
 // EXPLORER_BROWSER_REQUIRED=1 (CI) it fails instead. Run: npx tsx --test test/explorer-browser.test.ts
@@ -57,7 +57,8 @@ const iso = (s: number) => new Date(s * 1000).toISOString();
 const bhash = (h: number) => "0x" + "0".repeat(12) + createHash("sha256").update(`block ${h}`).digest("hex").slice(0, 52);
 const block = (h: number) => ({ height: h, hash: bhash(h), prev: bhash(h - 1),
   merkle: "0x" + "ab".repeat(32), time: bt(h), bits: 453035574, nonce: 1, version: 1, tx_count: 1, chainwork: String(BigInt(h) * 10n ** 15n), orphaned: 0 });
-const recent = (n: number) => Array.from({ length: n }, (_, i) => block(TIP - i));
+// S.newer: blocks mined above the fixture's tip since the page opened (a poll then finds them)
+const recent = (n: number) => Array.from({ length: n }, (_, i) => block(TIP + S.newer - i));
 const FROM = TIP - 720;
 const SERIES = { window: "1d", from: FROM, to: TIP, points: Array.from({ length: 56 }, (_, k) => {
   const h = FROM + Math.round(((k + 1) * 720) / 56), p = FROM + Math.round((k * 720) / 56);
@@ -95,7 +96,7 @@ const csdSeries = (q: URLSearchParams) => ({ ok: true, pair: "csd-usd", period: 
 
 const S = { market: "fresh" as "fresh" | "stale" | "off", thin: false, partial: false, series: true, records: "on" as "on" | "404" | "400" | "500", gates: true, shell: true,
   // the indexer's /health as live, at an old tip, behind the node, or not answering; a path prefix the indexer fails with a 500
-  health: "live" as "live" | "old" | "behind" | "down", fail: "" };
+  health: "live" as "live" | "old" | "behind" | "down", fail: "", newer: 0 };
 // CairnX proposals in the shapes of /domain/:d/proposals, and the resolver's verdicts for them: one refused mint
 const cxProp = (n: number, uri: object) => ({ txid: "0x" + n.toString(16).padStart(64, "0"), height: TIP - n, proposer: MINER, fee: 25000000, domain: "cairnx:v1", uri: JSON.stringify(uri) });
 const PROPS = Array.from({ length: 130 }, (_, i) => cxProp(i + 1, { v: 1, t: "mint", ticker: "CAIRN", amount: "100" }));
@@ -276,8 +277,9 @@ async function until(page: any, ready: () => boolean, ms = 15_000): Promise<void
   const end = Date.now() + ms;
   while (!(await page.evaluate(ready))) { if (Date.now() > end) throw new Error(`timed out waiting for ${ready.toString().slice(0, 120)}`); await sleep(100); }
 }
-async function open(path: string, width: number, ready: () => boolean, { clock = false, response = "", scheme = "dark", locale = "en-US", at = 0 } = {}): Promise<View> {
-  const ctx = await browser.newContext({ viewport: { width, height: width < 500 ? 844 : 900 }, isMobile: width < 500, hasTouch: width < 500, colorScheme: scheme, locale, serviceWorkers: "block" });
+async function open(path: string, width: number, ready: () => boolean, { clock = false, response = "", scheme = "dark", locale = "en-US", at = 0, reduced = false } = {}): Promise<View> {
+  const ctx = await browser.newContext({ viewport: { width, height: width < 500 ? 844 : 900 }, isMobile: width < 500, hasTouch: width < 500, colorScheme: scheme, locale, serviceWorkers: "block",
+    reducedMotion: reduced ? "reduce" : "no-preference" });
   await ctx.addInitScript(() => { try { localStorage.setItem("cairn:terms:v4", "2026-10-12T00:00:00.000Z"); } catch { /* no storage */ } });
   const page = await ctx.newPage();
   if (clock || at) await page.clock.install(at ? { time: at } : undefined);
@@ -1096,6 +1098,35 @@ test("colour on every view: the neutral ramp and the up, down and caution tokens
     } finally { await v.close(); }
   } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; delete INDEXER[`/block/${deep.hash}`]; delete INDEXER[`/block/${deep.hash}/txids`]; }
 });
+
+// A block mined while the page is open enters the latest blocks at the top, once, as the preview's does: it fades in and
+// drops 14 px into place over 460 ms on the shared curve; the rows under it move down without an animation of their own,
+// and a poll that finds nothing new starts none. With reduced motion it only fades.
+const arrival = (page: any) => page.evaluate(() => [...document.querySelectorAll("#blkfeed tr")].map((r: any) => r.getAnimations().map((a: any) => {
+  const t = a.effect.getTiming(), k = a.effect.getKeyframes();
+  return { h: r.dataset.h, name: a.animationName, ms: t.duration, ease: t.easing, from: k[0] ? { opacity: k[0].opacity, transform: k[0].transform ?? null } : null };
+})).flat());
+for (const reduced of [false, true]) {
+  test(`a new block enters the latest blocks once${reduced ? ", with reduced motion as a fade only" : ": a fade and a 14 px drop over 460 ms; the rows under it take no animation"}`, { skip: why || false }, async () => {
+    Object.assign(S, { market: "off", series: true, shell: true, newer: 0 });
+    const v = await open("/explorer", 1280, () => document.querySelectorAll("#blkfeed tr").length === 12, { clock: true, reduced });
+    try {
+      assert.deepEqual(await arrival(v.page), [], "the first paint enters nothing");
+      S.newer = 1;
+      await v.page.clock.runFor(12_000);
+      await until(v.page, () => document.querySelector("#blkfeed tr")?.getAttribute("data-h") === String(121_801));
+      const first = await arrival(v.page);
+      assert.deepEqual(first.map((a: any) => [a.h, a.name, a.ms]), [["121801", reduced ? "ex-fade-in" : "ex-row-in", 460]]);
+      assert.equal(first[0].from.opacity, "0");
+      if (reduced) assert.equal(first[0].from.transform, null, "no movement");
+      else assert.match(first[0].from.transform, /translateY\(-14px\)/);
+      assert.equal(await v.page.textContent(".pu.hot .n"), "121,801", "the height in the strip follows");
+      await v.page.clock.runFor(12_000);
+      await sleep(300);
+      assert.deepEqual((await arrival(v.page)).map((a: any) => a.h), ["121801"], "a poll with nothing new starts no animation");
+    } finally { await v.close(); S.newer = 0; }
+  });
+}
 
 // One gutter: a heading, the table or list under it and the panel's other content start at the same x, at every width. A
 // "box:" selector is measured at its border edge (a field or a pill lines up by its outline), the others at their text.

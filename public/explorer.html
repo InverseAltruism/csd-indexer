@@ -266,10 +266,11 @@
   .sk-rows .skel { margin: calc(var(--ui-space-5) + 2px) 0; }
   .kv .skel { margin: var(--ui-space-1) 0; }
   @keyframes ex-skel { to { opacity: 0.45; } }
-  /* a block that arrived while the page was open drops in at the top of the list, once */
+  /* a block that arrived while the page was open drops in at the top of the list, once; the rows under it step down */
   .feed-row { animation: ex-row-in var(--ui-dur-4) var(--ui-ease) both; }
-  @keyframes ex-row-in { from { opacity: 0; transform: translateY(calc(-1 * var(--ui-space-3))); } }
-  @media (prefers-reduced-motion: reduce) { .skel, .feed-row { animation: none; } }
+  @keyframes ex-row-in { from { opacity: 0; transform: translateY(calc(-1 * (var(--ui-space-3) + 2px))); } }
+  @keyframes ex-fade-in { from { opacity: 0; } }
+  @media (prefers-reduced-motion: reduce) { .skel { animation: none; } .feed-row { animation-name: ex-fade-in; } }
 
   /* charts: cairn's chart module through the front door (none standalone); it reads these at mount, and the page
      mounts its charts again on a theme switch */
