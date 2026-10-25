@@ -62,6 +62,10 @@ export async function mountChart(host, opts) {
       canvas.dataset.label = o.label ?? "";
       canvas.dataset.points = String(o.points.length);
       canvas.dataset.line = line;
+      // what the page asked for besides the points: labelled price lines, unlabelled extra lines (their levels), the domain
+      canvas.dataset.priceLines = String((o.lines ?? []).length);
+      canvas.dataset.extra = (o.extra ?? []).map((x) => `${x.points.map((p) => p[4]).join("/")}${x.dashed ? " dashed" : ""}`).join(";");
+      canvas.dataset.domainHi = o.domain ? String(o.domain.hi) : "";
       box.append(canvas);
       pane.append(box);
       plot.append(table);

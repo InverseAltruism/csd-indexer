@@ -120,15 +120,20 @@ on-chain payload hash.
 Through the front door a CairnX record, a fill or a cancel among them, reads by the CairnX resolver's verdict:
 the chain mines a paid fill whose delivery CairnX refuses, and the explorer shows that one as having no effect.
 A record names its effect ("Minted", "Finalized name", "Bought") only when the resolver applied it; a standalone page, or
-one whose verdict read failed, words it as the request it is ("Mint request for", "Fill request on").
+one whose verdict read failed, words it as the request it is ("Mint request for", "Fill request on"), and the page says
+in one line that the verdicts could not be checked.
 When the indexer is behind the node, its newest block is old, or it does not answer, a badge beside the search says
 which. A record the indexer does not hold reads "Nothing found"; a read that fails reads as a failure, with a way to try
-again.
+again. The same holds for what the page asks the resolver: a name reads "Not registered" only when the resolver says
+nobody holds it, and a token "No token with that ticker" only when the resolver has none; when the resolver does not
+answer the page says it could not check, never that a name is free. A search that is no block, transaction, address
+or name opens a category only when this indexer holds one by that name, and otherwise says that nothing matches.
 
 Served through the cairn front door (https://cairn-substrate.com/explorer) it also shows the CSD price in USD
 with the venue and time beside every figure, and charts of the emission schedule, the CSD/USD price, the network
-hashrate and recent block times, drawn by the front door's chart module. A standalone instance shows the same
-chain figures without the USD figures and charts.
+hashrate and recent block times, drawn by the front door's chart module, a registered name's identity avatar, and a
+token's listing badge from the front door's list of the tokens Cairn lists (a display convenience, not a consensus
+claim). A standalone instance shows the same chain figures without the USD figures, charts, avatars and badges.
 
 ## Honest limits
 

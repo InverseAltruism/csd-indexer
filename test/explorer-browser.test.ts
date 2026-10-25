@@ -24,6 +24,8 @@ import type { AddressInfo } from "node:net";
 
 const EXPLORER = fileURLToPath(new URL("../public/explorer.html", import.meta.url));
 const CHART_STUB = fileURLToPath(new URL("./fixtures/chart-stub.js", import.meta.url));
+// /trade's trustLevel stand-in (cairn's /trade/discover.js), as the chart module's
+const TRUST_STUB = fileURLToPath(new URL("./fixtures/trust-stub.js", import.meta.url));
 // Cairn's shell set (/ui/*, /header.js, /footer.js) is served from test/fixtures/ui/, stand-ins with only what the page and
 // these tests read; with S.shell false every one of them answers 404 as the indexer does on a direct hit.
 const UI = (f: string) => fileURLToPath(new URL(`./fixtures/ui/${f}`, import.meta.url));
@@ -35,7 +37,7 @@ const SHELL: Record<string, [string, string]> = {
 
 // playwright-core is loaded untyped, and the page callbacks below run in the browser (this file has no DOM lib):
 // `any` at those two boundaries only.
-declare const document: any, location: any, innerWidth: number, getComputedStyle: any, navigator: any;
+declare const document: any, location: any, innerWidth: number, getComputedStyle: any, navigator: any, window: any, Document: any, Element: any;
 let chromium: any = null, why = "";
 try { chromium = createRequire(import.meta.url)(process.env.PLAYWRIGHT_CORE || "playwright-core").chromium; }
 catch { why = "playwright-core not found (set PLAYWRIGHT_CORE to its path)"; }
@@ -70,7 +72,6 @@ const MINERS = { ok: true, window: "1d", from_height: FROM, to_height: TIP, bloc
 const INDEXER: Record<string, unknown> = {
   "/health": { ok: true, version: "0.2.13", backend: "sqlite", indexed_height: TIP, tip_height: TIP, seconds_since_tip: 60, stale: false, final_depth: 6,
     blocks: TIP + 1, txs: 147_000, proposals: 2300, attestations: 350 },
-  "/domains": [{ domain: "cairnx:v1", proposals: 3 }],
   "/analytics/supply": { ok: true, height: TIP, emitted_supply: "609005000000000", max_supply: "10511999988436800", pct_emitted: 5.79, block_reward: "5000000000",
     halving: { era: 0, interval: 1051200, next_height: 1051200, blocks_remaining: 929400, est_seconds_remaining: 111528000, next_reward: "2500000000" } },
   "/analytics/miners": MINERS,
@@ -79,9 +80,11 @@ const INDEXER: Record<string, unknown> = {
   "/domain/cairnx:v1/proposals": [],
 };
 const VWAP = 0.0594, EMITTED = 6_090_050, MAX = 105_119_999.884368;
+// the last price the market body carries; a test moves it to see a figure change
+const PRICE = { last: 0.0455 };
 function csdBody(): unknown {
   const age = S.market === "stale" ? 40 * 60 : 60;
-  const base = { ok: true, pair: "CSD/USD", quote: "USDT", price: { last: 0.0455, at: iso(NOW - age), source: "safetrade" }, range24h: { low: 0.023, high: 0.0899 },
+  const base = { ok: true, pair: "CSD/USD", quote: "USDT", price: { last: PRICE.last, at: iso(NOW - age), source: "safetrade" }, range24h: { low: 0.023, high: 0.0899 },
     change24h: null, stale: S.market === "stale", ageSecs: age, fallback: false, disagree: false, dropped: [] };
   const full = { ...base, vwap24h: VWAP, volume24h: { usd: 25620.23, csd: 431012.5 }, supply: { emitted: EMITTED, max: MAX, height: TIP, at: iso(NOW - 30) },
     marketCap: { usd: EMITTED * VWAP, basis: "vwap24h" }, fdv: { usd: MAX * VWAP, basis: "vwap24h" } };
@@ -96,7 +99,14 @@ const csdSeries = (q: URLSearchParams) => ({ ok: true, pair: "csd-usd", period: 
 
 const S = { market: "fresh" as "fresh" | "stale" | "off", thin: false, partial: false, series: true, records: "on" as "on" | "404" | "400" | "500", gates: true, shell: true,
   // the indexer's /health as live, at an old tip, behind the node, or not answering; a path prefix the indexer fails with a 500
-  health: "live" as "live" | "old" | "behind" | "down", fail: "", newer: 0 };
+  health: "live" as "live" | "old" | "behind" | "down", fail: "", newer: 0,
+  // the resolver behind the front door: answering, not answering (the front door's 502), or before its first scan (503)
+  cx: "up" as "up" | "502" | "503",
+  // /domain/:d/proposals honouring its limit (newest 100 by default) as the indexer does; cairn's avatar module and
+  // /trade's verified-token list present or absent
+  paged: false, avatar: true, trust: true };
+// /trade/verified-tokens.json as cairn serves it: the tokens Cairn lists, bound to their deploys, and the look-alike tickers
+const TRUST_LIST: { verified: Record<string, { name?: string; deployId?: string }>; impersonated: string[] } = { verified: {}, impersonated: ["BTC"] };
 // CairnX proposals in the shapes of /domain/:d/proposals, and the resolver's verdicts for them: one refused mint
 const cxProp = (n: number, uri: object) => ({ txid: "0x" + n.toString(16).padStart(64, "0"), height: TIP - n, proposer: MINER, fee: 25000000, domain: "cairnx:v1", uri: JSON.stringify(uri) });
 const PROPS = Array.from({ length: 130 }, (_, i) => cxProp(i + 1, { v: 1, t: "mint", ticker: "CAIRN", amount: "100" }));
@@ -138,6 +148,10 @@ const attTx = (a: Attest) => ({ txid: a.txid, height: a.height, pos: 3, app_type
   outputs: [{ txid: a.txid, vout: 0, addr: SELLER, value: attPaid(a) }, { txid: a.txid, vout: 1, addr: BUYER, value: 1368000000 }] });
 const ATT_BY_ID = new Map(Object.values(ATTESTS).map((a) => [a.txid, a]));
 for (const a of Object.values(ATTESTS)) if (a.verdict) VERDICTS[a.txid] = { ...a.verdict, note: a.verdict.note ?? "", height: a.height };
+// The resolver's primary names (/cairnx/primaries), for the address labels; a test that needs one sets it.
+const PRIMARIES: Record<string, string> = {};
+// the domain's total in /domains while S.paged (the indexer's count, above the 100 a read shows)
+let PAGED_TOTAL: number | null = null;
 // Two names of one owner that both point at the owner: the resolver's primary pick (/cairnx/primary) is "solo".
 const NAMES: Record<string, unknown> = {
   twin: { ok: true, name: "twin", owner: MINER, addr: MINER, height: TIP - 30, effectiveHeight: TIP - 30, lease: {}, offer: { give: { name: "twin" }, want: { ticker: "QTOK", amount: "12345" } } },
@@ -205,6 +219,11 @@ const server = createServer(async (req, res) => {
       return json(res, 200, S.health === "old" ? { ...h, seconds_since_tip: 1260, stale: true } : { ...h, tip_height: TIP + 7 });
     }
     if (k === "/blocks/recent") return json(res, 200, recent(Number(url.searchParams.get("limit") || 12)));
+    // the indexer's domains are those its proposals name, with their counts
+    if (k === "/domains") { const n = (INDEXER["/domain/cairnx:v1/proposals"] as unknown[]).length; return json(res, 200, n ? [{ domain: "cairnx:v1", proposals: S.paged ? PAGED_TOTAL ?? n : n }] : []); }
+    if (S.paged && k.startsWith("/domain/") && k.endsWith("/proposals") && k in INDEXER) return json(res, 200, (INDEXER[k] as unknown[]).slice(0, Math.min(10_000, Number(url.searchParams.get("limit")) || 100)));
+    // a domain the indexer has no proposals in: an empty list, as the indexer answers
+    if (k.startsWith("/domain/") && k.endsWith("/proposals") && !(k in INDEXER)) return json(res, 200, []);
     if (k === "/analytics/series" && !S.series) return json(res, 404, { error: "not found" });
     const addr = ADDRESS(k, url.searchParams);
     if (addr !== undefined) return json(res, 200, addr);
@@ -222,6 +241,8 @@ const server = createServer(async (req, res) => {
   }
   if (p.startsWith("/trade/api/cairnx/")) {
     const k = p.slice(17);
+    if (S.cx === "502") return json(res, 502, { ok: false, error: "cairnx backend unavailable" });
+    if (S.cx === "503") return json(res, 503, { ok: false, error: "not ready: no validated scan since this resolver started; retry shortly" });
     if (k.startsWith("/record/")) { const v = VERDICTS[k.slice(8)]; return v ? json(res, 200, { txid: k.slice(8), ...v, tipHeight: TIP }) : json(res, 404, { ok: false, error: "no resolved record for this txid" }); }
     if (k === `/primary/${MINER}`) return json(res, 200, { ok: true, address: MINER, name: "solo" });
     if (k.startsWith("/name/") && k.slice(6) in NAMES) return json(res, 200, NAMES[k.slice(6)]);
@@ -238,12 +259,14 @@ const server = createServer(async (req, res) => {
     if (k === "/health") return S.gates ? json(res, 200, { ok: true, gates: { V25: V25_AT } }) : json(res, 404, { ok: false, error: "not found" });
     if (k === "/token/ZED") return json(res, 200, { ticker: "ZED", name: "Zed", decimals: 0, supply: "1000", minted: "10", mint: "issuer", height: TIP - 5,
       deployer: MINER, deployId: "0x" + "de".repeat(32), tmeta: "0x" + "4d".repeat(32), holders: {} });
+    if (k.startsWith("/token/")) return json(res, 404, { ok: false, error: "unknown ticker" });
     if (k === "/name/onsale") return json(res, 200, { ok: true, owner: MINER, height: TIP - 9, effectiveHeight: TIP - 9, lease: {}, offer: { give: { name: "onsale" }, want: null } });
     // the resolver's answer for a name nobody holds
     if (k.startsWith("/name/")) return json(res, 404, { ok: false, error: "unregistered name", name: k.slice(6) });
     if (k === "/log" && S.records === "500") return json(res, 500, { ok: false, error: "resolver down" });
     if (k === "/log") return json(res, 200, Object.entries(VERDICTS).map(([id, v]) => ({ id, ok: v.applied, note: v.note, height: v.height })));
-    return json(res, 200, k === "/primaries" ? { ok: true, primaries: {} } : []);
+    if (k === "/primaries") { const want = (url.searchParams.get("addrs") ?? "").split(","); return json(res, 200, { ok: true, primaries: Object.fromEntries(want.filter((a) => a in PRIMARIES).map((a) => [a, PRIMARIES[a]])) }); }
+    return json(res, 200, []);
   }
   if (p === "/api/health") return json(res, 200, { ok: true, tipHeight: TIP });
   if (p.startsWith("/content/")) {
@@ -257,6 +280,11 @@ const server = createServer(async (req, res) => {
     res.writeHead(200, { "content-type": "application/json; charset=utf-8", ...(odd === "noheader" ? {} : { "x-csd-payload-hash": h }) });
     return res.end(body);
   }
+  if (p === "/ui/avatar.js" || p === "/trade/discover.js") {
+    if (p === "/ui/avatar.js" && (!S.avatar || !S.shell)) { res.writeHead(404, { "content-type": "text/html" }); return res.end("<pre>Cannot GET</pre>"); }
+    res.writeHead(200, { "content-type": "text/javascript" }); return res.end(await readFile(p === "/ui/avatar.js" ? UI("avatar.js") : TRUST_STUB));
+  }
+  if (p === "/trade/verified-tokens.json") return S.trust ? json(res, 200, { note: "display convenience", ...TRUST_LIST }) : json(res, 404, { ok: false, error: "not found" });
   if (p === "/charts/chart.js") {
     res.writeHead(200, { "content-type": "text/javascript" }); return res.end(await readFile(CHART_STUB));
   }
@@ -280,10 +308,11 @@ async function until(page: any, ready: () => boolean, ms = 15_000): Promise<void
   const end = Date.now() + ms;
   while (!(await page.evaluate(ready))) { if (Date.now() > end) throw new Error(`timed out waiting for ${ready.toString().slice(0, 120)}`); await sleep(100); }
 }
-async function open(path: string, width: number, ready: () => boolean, { clock = false, response = "", scheme = "dark", locale = "en-US", at = 0, reduced = false } = {}): Promise<View> {
+async function open(path: string, width: number, ready: () => boolean, { clock = false, response = "", scheme = "dark", locale = "en-US", at = 0, reduced = false, init = null as null | (() => void) } = {}): Promise<View> {
   const ctx = await browser.newContext({ viewport: { width, height: width < 500 ? 844 : 900 }, isMobile: width < 500, hasTouch: width < 500, colorScheme: scheme, locale, serviceWorkers: "block",
     reducedMotion: reduced ? "reduce" : "no-preference" });
   await ctx.addInitScript(() => { try { localStorage.setItem("cairn:terms:v4", "2026-10-12T00:00:00.000Z"); } catch { /* no storage */ } });
+  if (init) await ctx.addInitScript(init);
   const page = await ctx.newPage();
   if (clock || at) await page.clock.install(at ? { time: at } : undefined);
   const errors: string[] = [], failed: string[] = [], asked: string[] = [];
@@ -820,7 +849,9 @@ const look = (page: any) => page.evaluate(() => ({
   bg: getComputedStyle(document.body).backgroundColor, ink: getComputedStyle(document.body).color,
   sawTheme: document.querySelector("#site-header")?.dataset.sawTheme ?? null,
   brand: document.querySelector("#site-header .ex-brand") ? document.querySelector("#site-header .ex-brand").getBoundingClientRect().height > 0 : null,
-  foot: document.querySelector("#site-footer .ex-foot")?.getBoundingClientRect().height ?? 0,
+  // the page's trust statement, shown on the page itself (not folded into a footer)
+  trust: (() => { const n = document.querySelector("#trust-note"); return n && !n.closest("footer") ? Math.round(n.getBoundingClientRect().height) : 0; })(),
+  note: document.querySelector("#site-footer")?.getAttribute("data-note") ?? null,
 }));
 for (const scheme of ["light", "dark"] as const) {
   test(`through the front door, ${scheme}: theme-init.js runs before every style sheet, cairn's tokens win over the fallback, theme.js loads before header.js`, { skip: why || false }, async () => {
@@ -830,13 +861,14 @@ for (const scheme of ["light", "dark"] as const) {
       assert.deepEqual(v.errors, []);
       assert.deepEqual(v.failed, ["503 /api/market/csd"]);
       const l = await look(v.page);
+      assert.ok(l.trust > 0, "the trust statement on the page");
       assert.deepEqual(l, { theme: scheme, initSheets: "0", bg: scheme === "dark" ? "rgb(16, 16, 20)" : "rgb(250, 250, 240)",
-        ink: scheme === "dark" ? "rgb(238, 238, 238)" : "rgb(17, 17, 17)", sawTheme: "true", brand: null, foot: l.foot });
+        ink: scheme === "dark" ? "rgb(238, 238, 238)" : "rgb(17, 17, 17)", sawTheme: "true", brand: null, trust: l.trust, note: null });
     } finally { await v.close(); }
   });
 }
 
-test("a direct indexer hit, cairn's files absent: the page renders on its fallback tokens with its own brand line and footer", { skip: why || false }, async () => {
+test("a direct indexer hit, cairn's files absent: the page renders on its fallback tokens with its own brand line and its trust statement", { skip: why || false }, async () => {
   Object.assign(S, { market: "fresh", series: true, shell: false });
   try {
     for (const width of [390, 1280]) {
@@ -851,7 +883,8 @@ test("a direct indexer hit, cairn's files absent: the page renders on its fallba
         assert.equal(l.bg, "rgb(244, 244, 241)", "the fallback ground");
         assert.equal(l.ink, "rgb(12, 12, 11)", "the fallback ink");
         assert.equal(l.brand, true, "the page's own brand line shown");
-        assert.ok(l.foot > 0, "the standalone disclaimer");
+        assert.ok(l.trust > 0, "the trust statement on the page");
+        assert.equal(l.note, null, "said once: no footer copy of it");
         assert.equal(await v.page.textContent("#pu-hr .n"), "3.15 TH/s");
         const dot = await v.page.evaluate(() => { const r = document.querySelector("#livepill .ui-dot").getBoundingClientRect(); return [Math.round(r.width), Math.round(r.height)]; });
         assert.deepEqual(dot, [7, 7], "the live marker's dot, drawn by the page's own sheet");
@@ -1098,7 +1131,8 @@ test("a 404 reads \"Nothing found\" with the value; a 500 reads \"Could not load
 });
 
 // The design direction's colour rule, on every view: the neutral ramp, and colour only for up, down and caution (the
-// tokens --ui-up, --ui-down, --ui-warn at any alpha). A name's monogram is neutral too (identity colour belongs to cairn's
+// tokens --ui-up, --ui-down, --ui-warn at any alpha). A name's identity avatar is the one other colour, a background image
+// this rule does not read; the neutral disc without it is neutral (identity colour belongs to cairn's
 // avatar module). A hash's leading zeros are the faint step, below the muted text around them.
 const OFF_PALETTE = fileURLToPath(new URL("./fixtures/off-palette.js", import.meta.url));
 const offPalette = async (page: any) => page.evaluate(await readFile(OFF_PALETTE, "utf8"));
@@ -1225,3 +1259,452 @@ for (const width of [360, 390, 1280]) {
     } finally { await v.close(); }
   });
 }
+
+// ── Wave R10 fix round: a sibling read in three states, the activity's verdicts, the name page, the search, the domain
+// ledger, motion, the trust statement, the charts' reference lines and the block page. ──
+const text = (v: View) => v.page.evaluate(() => document.querySelector("main").innerText as string);
+
+// A name's page asks the resolver. Its 404 for a valid name is its answer that nobody holds it: "Not registered". A read
+// that fails (the front door's 502, the resolver's 503 before its first scan) says nothing: "Could not check", never a
+// verdict, with Try again. Standalone there is no resolver to ask; a label outside the name rule is never asked.
+for (const cx of ["503", "502"] as const) {
+  test(`name page, the resolver answering ${cx}: "Could not check", never "Not registered"; Try again shows the name once it answers`, { skip: why || false }, async () => {
+    Object.assign(S, { market: "off", series: true, shell: true, cx });
+    try {
+      for (const name of ["solo", "nobody"]) {
+        const v = await open(`/explorer#/name/${name}`, 1280, () => !document.querySelector("main .skel"));
+        try {
+          assert.deepEqual(v.errors, []);
+          const t = await text(v);
+          assert.match(t, /Could not check this name right now, so it is not shown as available\. Try again/);
+          assert.equal(await v.page.textContent(".namehdr .badge"), "Could not check");
+          assert.doesNotMatch(t, /Not registered|Register it|Available/);
+          if (name === "solo") {
+            S.cx = "up";
+            await v.page.click("[data-again]");
+            await until(v.page, () => /resolves to/i.test(document.body.innerText));
+            S.cx = cx;
+          }
+        } finally { await v.close(); }
+      }
+    } finally { S.cx = "up"; }
+  });
+}
+test("name page: the resolver's 404 reads \"Not registered\"; standalone needs the front door; a label outside the name rule is not asked; the resolver up shows the name", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, cx: "up" });
+  const miss = await open("/explorer#/name/nobody", 1280, () => !document.querySelector("main .skel"));
+  try {
+    assert.match(await text(miss), /^N\s+nobody\.csd\s+Not registered\. Register it on \/names$/, "the initial on its disc, the name, the miss");
+    assert.equal(await miss.page.locator("[data-again]").count(), 0);
+  } finally { await miss.close(); }
+  const alone = await open("/#/name/solo", 1280, () => !document.querySelector("main .skel"));
+  try { assert.match(await text(alone), /need the cairn front door/); } finally { await alone.close(); }
+  const bad = await open("/explorer#/name/bad-", 1280, () => !document.querySelector("main .skel"));
+  try {
+    assert.match(await text(bad), /Not a \.csd name/);
+    assert.deepEqual(bad.asked.filter((x) => x.startsWith("/trade/api/cairnx/name/")), [], "never asked");
+  } finally { await bad.close(); }
+  const up = await open("/explorer#/name/solo", 1280, () => /resolves to/i.test(document.body.innerText));
+  try { assert.deepEqual(up.errors, []); assert.doesNotMatch(await text(up), /Could not check|Not registered/); } finally { await up.close(); }
+});
+
+// The token page and the home's tokens panel read the resolver the same way.
+test("token page: 404 \"No token with that ticker\"; 503 \"Could not check this token\" with Try again; standalone needs the front door; up shows the token", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, cx: "up" });
+  try {
+    const miss = await open("/explorer#/token/NOPE", 1280, () => !document.querySelector("main .skel"));
+    try { assert.match(await text(miss), /^Token\s+NOPE\s+No token with that ticker on CairnX\./); } finally { await miss.close(); }
+    S.cx = "503";
+    const down = await open("/explorer#/token/ZED", 1280, () => !document.querySelector("main .skel"));
+    try {
+      const t = await text(down);
+      assert.match(t, /^Token\s+ZED\s+Could not check this token right now\. Try again$/);
+      assert.doesNotMatch(t, /front door|No token/);
+      S.cx = "up";
+      await down.page.click("[data-again]");
+      await until(down.page, () => /metadata/.test(document.body.innerText));
+    } finally { await down.close(); }
+    const alone = await open("/#/token/ZED", 1280, () => !document.querySelector("main .skel"));
+    try { assert.match(await text(alone), /Token data needs the cairn front door/); } finally { await alone.close(); }
+  } finally { S.cx = "up"; }
+});
+test("home tokens panel: the resolver down reads \"Could not check the CairnX tokens\", never the standalone line; standalone says it has no resolver; up lists them", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true });
+  const note = (v: View) => v.page.evaluate(() => [...document.querySelectorAll(".panel")].find((p: any) => /^Tokens on CairnX/.test(p.querySelector("h2")?.textContent ?? ""))!.innerText as string);
+  try {
+    for (const [cx, at, want, not] of [["503", "/explorer", /Could not check the CairnX tokens right now\. Try again/, /standalone/],
+      ["up", "/", /this standalone view has no token resolver/, /Could not check/], ["up", "/explorer", /Every token is CairnX/, /Could not check|standalone/]] as const) {
+      S.cx = cx;
+      const v = await open(at, 1280, () => !!document.querySelector("#pu-hr") && /Tokens on CairnX[\s\S]+\S/.test(document.body.innerText) && !!document.querySelector("#tok-note, .ex-unread"));
+      try {
+        await until(v.page, () => /Could not check the CairnX|standalone view has no token|Every token is/.test(document.body.innerText));
+        const t = await note(v);
+        assert.match(t, want, `${cx} ${at}`);
+        assert.doesNotMatch(t, not, `${cx} ${at}`);
+      } finally { await v.close(); }
+    }
+  } finally { S.cx = "up"; }
+});
+
+// With the verdicts unread, a record reads as the request it makes and the ledger says why, in one quiet line; with them
+// read there is no such line. On a transaction's page the same for its one record.
+test("verdicts unread: one quiet line on the home ledger and the domain page, every record a request and none struck; read, no line; standalone says so", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, cx: "up" });
+  INDEXER["/domain/cairnx:v1/proposals"] = PROPS.slice(0, 3);
+  const LINE = "Could not check these records with the CairnX resolver right now, so none is shown as applied. Try again";
+  try {
+    for (const [records, at, path, line] of [["500", "/explorer", "", LINE], ["on", "/explorer", "", null],
+      ["500", "/explorer", "#/domain/cairnx%3Av1", LINE], ["on", "/", "", "This standalone view has no CairnX resolver to ask, so each record reads as the request it makes."]] as const) {
+      S.records = records;
+      const v = await open(at + path, 1280, () => document.querySelectorAll("td.act").length >= 3);
+      try {
+        assert.deepEqual(v.errors, []);
+        assert.equal(await v.page.evaluate(() => document.querySelector("#verdict-line")?.textContent ?? null), line, `${records} ${at}${path}`);
+        const struck = await v.page.locator(".cx-void").count();
+        assert.equal(struck, records === "on" && at === "/explorer" ? 1 : 0, "struck only with a read verdict");
+        if (line) for (const a of await v.page.evaluate(() => [...document.querySelectorAll("td.act")].map((c: any) => c.textContent))) assert.match(a, /Mint request for/);
+      } finally { await v.close(); }
+    }
+  } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; S.records = "on"; }
+});
+test("transaction page, the resolver failing: an Attest on an offer reads as its request with the record's quiet line, never \"Bought\"", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, cx: "503" });
+  try {
+    const v = await open(`/explorer#/tx/${ATTESTS.fill.txid}`, 1280, decoded);
+    try {
+      assert.equal(await v.page.textContent("#txaction"), `${ATTEST_LINES.unread}Could not check this record with the CairnX resolver right now, so it is not shown as applied. Try again`);
+      assert.equal(await v.page.locator("#txaction .cx-void").count(), 0);
+    } finally { await v.close(); }
+  } finally { S.cx = "up"; }
+});
+
+// On a name's own page the owner and the address it resolves to are addresses, in groups of four; the owner's primary
+// name stands beside it only when it is another name.
+test("name page: owner and resolves-to as grouped addresses, the primary name beside them only when it is another name", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, cx: "up" });
+  const rows = (v: View) => v.page.evaluate(() => [...document.querySelectorAll(".ex-detail .kv > div")].filter((d: any) => /^(owner|resolves to)$/.test(d.textContent))
+    .map((d: any) => { const v = d.nextElementSibling, a = v.querySelector("a.addrl");
+      return { link: a.textContent, groups: a.querySelectorAll(".g4").length, named: a.classList.contains("hasname"), chip: v.querySelector(".chip")?.textContent ?? null }; }));
+  // the detail form of an address: 0x and its first eight digits, an ellipsis, its last eight, in four groups
+  const grouped = `${MINER.slice(0, 10)}\u2026${MINER.slice(34)}`;
+  PRIMARIES[MINER] = "solo";   // so the page's address labelling would name these rows, were they left to it
+  try {
+    for (const [name, chip] of [["twin", "primary name solo.csd"], ["solo", null]] as const) {
+      const v = await open(`/explorer#/name/${name}`, 1280, () => /resolves to/i.test(document.body.innerText));
+      try {
+        await sleep(400); // past the page's name labelling, which must leave these two alone
+        assert.deepEqual(v.errors, []);
+        assert.deepEqual(await rows(v), Array(2).fill({ link: grouped, groups: 4, named: false, chip }), name);
+      } finally { await v.close(); }
+    }
+  } finally { delete PRIMARIES[MINER]; }
+});
+
+// The search: a number, a hash or an address as pasted (spaces, separators, no 0x), a name in one word, and anything else
+// a domain only when the indexer knows it; otherwise "Nothing found" naming what was searched.
+test("search: each kind of query lands on its page; \"hello world\" and 40 x's are \"Nothing found\" naming the query; a known domain is its page", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, cx: "up" });
+  INDEXER["/domain/cairnx:v1/proposals"] = PROPS.slice(0, 3);
+  const h = TIP - 3;
+  try {
+    const v = await open("/explorer", 1280, () => !!document.querySelector("#pu-hr"));
+    try {
+      const go = async (q: string, want: string) => {
+        await v.page.fill("#q", q); await v.page.press("#q", "Enter");
+        for (const end = Date.now() + 5000; (await v.page.evaluate(() => location.hash)) !== want && Date.now() < end;) await sleep(50);
+        await until(v.page, () => !document.querySelector("main .skel"));
+        return v.page.evaluate(() => location.hash as string);
+      };
+      for (const [q, want] of [[h.toLocaleString("en-US"), `#/block/${h}`], [` ${String(h).slice(0, 3)} ${String(h).slice(3)} `, `#/block/${h}`],
+        [MINER.slice(2), `#/address/${MINER}`], ["0x" + MINER.slice(2).toUpperCase(), `#/address/${MINER}`], ["solo.csd", "#/name/solo"], ["Solo", "#/name/solo"],
+        [PROVEN, `#/tx/${PROVEN}`], ["0x" + "ab".repeat(32), "#/tx/0x" + "ab".repeat(32)], ["999999", "#/block/999999"], ["twin.CSD", "#/name/twin"],
+        ["cairnx:v1", "#/domain/cairnx%3Av1"]] as const) {
+        assert.equal(await go(q, want), want, JSON.stringify(q));
+      }
+      for (const q of ["hello world", "x".repeat(40)]) {
+        assert.equal(await go(q, "#/search/" + encodeURIComponent(q)), "#/search/" + encodeURIComponent(q), q);
+        // this query's miss, not the one before it
+        for (const end = Date.now() + 5000; !(await v.page.evaluate((q: string) => document.body.innerText.includes(`matches \u201c${q}\u201d.`), q)) && Date.now() < end;) await sleep(50);
+        assert.equal(await v.page.textContent("h2.ex-title"), "Nothing found");
+        assert.match(await text(v), new RegExp(`domain on this indexer matches \u201c${q}\u201d\\.`));
+      }
+      assert.deepEqual(v.errors, []);
+    } finally { await v.close(); }
+    // a link to a domain with no proposals: the same miss
+    const d = await open("/explorer#/domain/hello%20world", 1280, () => /Nothing found/.test(document.body.innerText));
+    try { assert.match(await text(d), /no proposals in the domain \u201chello world\u201d\./); } finally { await d.close(); }
+  } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; }
+});
+
+// A domain's ledger: the indexer's newest 100, its total from /domains, then 100 more a read.
+test("domain page: the total from /domains over the newest 100, Load more to the end; without the total \"Latest 100\"", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, cx: "up", records: "on", paged: true, fail: "" });
+  INDEXER["/domain/cairnx:v1/proposals"] = PROPS;
+  PAGED_TOTAL = PROPS.length;
+  const state = (v: View) => v.page.evaluate(() => ({ count: (document.querySelector("#domcount")?.textContent ?? "").split(".")[0], rows: document.querySelectorAll("#domrows tr").length,
+    more: document.querySelector("#domloadmore")?.textContent ?? null }));
+  try {
+    for (const [fail, head, more] of [["", "130 proposals", "Load more (100 of 130)"], ["/domains", "Latest 100", "Load more (100)"]] as const) {
+      S.fail = fail;
+      const v = await open("/explorer#/domain/cairnx%3Av1", 1280, () => document.querySelectorAll("#domrows tr").length > 0);
+      try {
+        assert.deepEqual(await state(v), { count: head, rows: 100, more });
+        await v.page.click("#domloadmore");
+        await until(v.page, () => document.querySelectorAll("#domrows tr").length === 130);
+        assert.deepEqual(await state(v), { count: fail ? "Latest 130" : head, rows: 130, more: null });
+        assert.equal(await v.page.locator(".cx-noeffect").count(), 1, "the refused mint among them, once");
+      } finally { await v.close(); }
+    }
+  } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; S.paged = false; S.fail = ""; PAGED_TOTAL = null; }
+});
+
+// The activity is read again on every new block, by the same poll; a record not shown before enters as a new block does.
+test("home activity: a record that lands with a new block enters at the top with the block's row-in; the rows under it and a poll with nothing new move nothing", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, cx: "up", records: "on", newer: 0 });
+  const later = cxProp(140, { v: 1, t: "mint", ticker: "CAIRN", amount: "100" });
+  later.height = TIP + 1;
+  applied(later);
+  INDEXER["/domain/cairnx:v1/proposals"] = PROPS.slice(1, 4);
+  const moving = (page: any) => page.evaluate(() => [...document.querySelectorAll("#actfeed tr")].flatMap((r: any) => r.getAnimations().map((a: any) =>
+    [r.querySelector("td.r a").getAttribute("href").slice(5), a.animationName, a.effect.getTiming().duration])));
+  try {
+    const v = await open("/explorer", 1280, () => document.querySelectorAll("#actfeed tr.actrow").length === 3, { clock: true });
+    try {
+      assert.deepEqual(await moving(v.page), [], "the first paint enters nothing");
+      INDEXER["/domain/cairnx:v1/proposals"] = [later, ...PROPS.slice(1, 4)];
+      S.newer = 1;
+      await v.page.clock.runFor(12_000);
+      await until(v.page, () => document.querySelectorAll("#actfeed tr.actrow").length === 4);
+      assert.deepEqual(await moving(v.page), [[later.txid, "ex-row-in", 460]]);
+      assert.match(await v.page.textContent("#actfeed tr:first-child td.act"), /^\s*Minted CAIRN/);
+      await v.page.clock.runFor(12_000);
+      await sleep(300);
+      assert.deepEqual((await moving(v.page)).map((m: any) => m[0]), [later.txid], "nothing new: no second entrance");
+    } finally { await v.close(); }
+  } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; S.newer = 0; delete VERDICTS[later.txid]; }
+});
+
+// A route change crossfades the two views on the shared curve: the page's view transition, 320 ms; with reduced motion
+// the same crossfade. The first paint runs none. Without the API the new view fades in.
+const VT_PROBE = () => { const o = (document as any).startViewTransition; if (o) (document as any).startViewTransition = function (cb: any) { (window as any).__vt = ((window as any).__vt || 0) + 1; return o.call(document, cb); }; };
+const NO_VT = () => { delete (Document.prototype as any).startViewTransition; };
+// polled from here: a function named inside a page callback would need a helper the page lacks
+async function crossfade(page: any): Promise<any[]> {
+  for (const end = Date.now() + 3000; Date.now() < end; await sleep(10)) {
+    // a CSS animation's curve is on its keyframes (its own timing easing is linear)
+    const a = await page.evaluate(() => document.getAnimations().map((x: any) => ({ el: x.effect?.pseudoElement ?? x.effect?.target?.id ?? "", ms: x.effect?.getTiming().duration,
+      ease: x.effect?.getTiming().easing !== "linear" ? x.effect?.getTiming().easing : x.effect?.getKeyframes()[0]?.easing, op: !!x.effect?.getKeyframes().some((k: any) => "opacity" in k) }))
+      .filter((x: any) => /view-transition-(old|new)\(root\)/.test(x.el) || (x.el === "view" && x.op)));
+    if (a.length) return a;
+  }
+  return [];
+}
+for (const [mode, init, reduced] of [["view transition", VT_PROBE, false], ["view transition, reduced motion", VT_PROBE, true], ["no view transition API", NO_VT, false]] as const) {
+  test(`a route change crossfades the views (${mode})`, { skip: why || false }, async () => {
+    Object.assign(S, { market: "off", series: true, shell: true, cx: "up" });
+    const v = await open("/explorer", 1280, () => !!document.querySelector("#blkfeed tr"), { init, reduced });
+    try {
+      assert.equal(await v.page.evaluate(() => (window as any).__vt ?? 0), 0, "the first paint swaps at once");
+      const hash = bhash(TIP - 3);
+      await v.page.evaluate((h: string) => { location.hash = "#/block/" + h; }, hash);
+      const seen = await crossfade(v.page);
+      if (init === NO_VT) assert.deepEqual(seen.map((a) => [a.el, a.ms, a.ease]), [["view", 200, "cubic-bezier(0.16, 1, 0.3, 1)"]]);
+      else {
+        assert.equal(await v.page.evaluate(() => (window as any).__vt), 1);
+        // the old view out and the new one in (Chromium runs a fade and a blend on each), all 320 ms on the shared curve
+        assert.deepEqual([...new Set(seen.map((a) => JSON.stringify([a.el, a.ms, a.ease])))].sort(), [["::view-transition-new(root)", 320, "cubic-bezier(0.16, 1, 0.3, 1)"],
+          ["::view-transition-old(root)", 320, "cubic-bezier(0.16, 1, 0.3, 1)"]].map((x) => JSON.stringify(x)));
+      }
+      await until(v.page, () => !document.querySelector("main .skel") && !!document.querySelector("h2.ex-title"));
+      assert.deepEqual(v.errors, []);
+    } finally { await v.close(); }
+  });
+}
+
+// The charts' reference levels (the 120 s target, the emission so far) are dashed lines without an axis label, which
+// would cover a tick; the block-times scale has its top half a 50 s step above a tick, so no label sits cut at the edge.
+test("charts: the target and the emission so far as dashed lines with no axis label; the block-times domain puts the padded top half a 50 s step above a tick", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true });
+  const v = await open("/explorer", 1280, charted);
+  try {
+    const c = await v.page.evaluate(() => Object.fromEntries(["#btchart", "#emchart"].map((s) => { const d = document.querySelector(`${s} canvas`).dataset; return [s, { lines: d.priceLines, extra: d.extra, hi: Number(d.domainHi) }]; })));
+    assert.deepEqual([c["#btchart"].lines, c["#btchart"].extra], ["0", "120/120 dashed"]);
+    assert.equal(c["#emchart"].lines, "0");
+    assert.match(c["#emchart"].extra, /^(\d+(\.\d+)?)\/\1 dashed$/, "one level across the schedule");
+    const top = c["#btchart"].hi * (1 + 0.18 / 0.7);
+    assert.ok(c["#btchart"].hi >= 240, "room for the target");
+    assert.ok(Math.abs((top % 50) - 25) < 1e-6, `the padded top ${top} half a step above a tick`);
+  } finally { await v.close(); }
+});
+
+// A registered name draws cairn's identity avatar, seeded as /names seeds a name; without the module, or for a name
+// nobody holds, its initial on the neutral disc.
+test("name page: cairn's identity avatar for a registered name, seeded by the name; the neutral disc without the module and for a name nobody holds", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, cx: "up" });
+  const av = (v: View) => v.page.evaluate(() => { const a = document.querySelector(".namehdr > :first-child") as any;
+    return { avatar: a.classList.contains("ui-avatar"), seed: a.dataset.seed ?? null, letter: a.textContent, painted: /gradient/.test(a.style.background) }; });
+  try {
+    for (const [avatar, name, want] of [[true, "solo", { avatar: true, seed: "solo", letter: "", painted: true }], [false, "solo", { avatar: false, seed: null, letter: "S", painted: false }],
+      [true, "nobody", { avatar: false, seed: null, letter: "N", painted: false }]] as const) {
+      S.avatar = avatar;
+      const v = await open(`/explorer#/name/${name}`, 1280, () => !!document.querySelector(".namehdr"));
+      try {
+        assert.deepEqual(await av(v), want, `${name}, module ${avatar ? "present" : "absent"}`);
+        assert.deepEqual(v.errors, []);
+      } finally { await v.close(); }
+    }
+  } finally { S.avatar = true; }
+});
+
+// every element.animate() the page asks for, on the element it moves
+const SLIDES = () => { const o = (Element as any).prototype.animate; (Element as any).prototype.animate = function (k: any[], t: any) {
+  ((window as any).__slides ??= []).push({ n: this, what: `${k[0].transform} ${k[0].opacity} to ${k[1].opacity} over ${t.duration} ms` }); return o.call(this, k, t); }; };
+// A CSD/USD figure that moved on a re-read updates as the preview's price: it slides in from the side it moved to with a
+// short tint (reduced motion: the tint only); one that did not move stays still.
+for (const reduced of [false, true]) {
+  test(`market: a price that moved slides in and flashes up${reduced ? " (reduced motion: the flash only)" : ""}; the figures that did not move stay still`, { skip: why || false }, async () => {
+    Object.assign(S, { market: "fresh", thin: false, partial: false, series: true, shell: true });
+    const v = await open("/explorer", 1280, () => !!document.querySelector("#csd-mkt .mkt-fig"), { clock: true, reduced, init: SLIDES });
+    const moving = () => v.page.evaluate(() => [...document.querySelectorAll("#csd-mkt .mkt-fig")].map((f: any) => { const n = f.querySelector(".mkt-n");
+      return [f.dataset.label, [...n.classList].filter((c: string) => /^ex-flash/.test(c)).concat(((window as any).__slides ?? []).filter((x: any) => x.n === n).map((x: any) => x.what))]; })
+      .filter((x: any) => x[1].length));
+    try {
+      assert.deepEqual(await moving(), [], "the first paint moves nothing");
+      PRICE.last = 0.0466;
+      await minutes(v.page, 3); // past the 2 min re-read
+      await until(v.page, () => !!document.querySelector("#csd-mkt .mkt-n.ex-flash-up, #csd-mkt .mkt-n.ex-flash-down"));
+      assert.deepEqual(await moving(), [["price", reduced ? ["ex-flash-up"] : ["ex-flash-up", "translateY(60%) 0 to 1 over 320 ms"]]]);
+      assert.equal((await figures(v.page))[0].value, "0.0466 USD");
+    } finally { await v.close(); PRICE.last = 0.0455; }
+  });
+}
+
+// The block page: a Next link to the block above it, the indexer's tip says so; difficulty as a grouped integer.
+test("block page: Next links the block above, the indexer's tip has none yet; difficulty as a grouped integer", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true });
+  const at = (h: number) => ({ [`/block-height/${h}`]: bhash(h), [`/block/${bhash(h)}`]: block(h), [`/block/${bhash(h)}/txids`]: [] });
+  Object.assign(INDEXER, at(TIP - 2), at(TIP - 1), at(TIP));
+  const key = (v: View, k: string) => v.page.evaluate((k: string) => [...document.querySelectorAll(".kv > div")].find((d: any) => d.textContent === k)!.nextElementSibling.textContent as string, k);
+  try {
+    const mid = await open(`/explorer#/block/${bhash(TIP - 2)}`, 1280, () => !!document.querySelector("#blknext"));
+    try {
+      assert.equal(await mid.page.getAttribute("#blknext a", "href"), `#/block/${bhash(TIP - 1)}`);
+      // bits 0x1b00c636: the target is 0xc636 << 192, so the difficulty is 0xffff·2^208 over it
+      const d = Number((0xffffn * 2n ** 208n * 1000n) / (0xc636n << 192n)) / 1000;
+      assert.equal(await key(mid, "difficulty"), `${Math.round(d).toLocaleString("en-US")} · bits 0x1b00c636`);
+    } finally { await mid.close(); }
+    const top = await open(`/explorer#/block/${bhash(TIP)}`, 1280, () => !!document.querySelector("#blknext"));
+    try { assert.equal(await top.page.textContent("#blknext"), "None yet: this is the indexer's tip"); } finally { await top.close(); }
+  } finally { for (const h of [TIP - 2, TIP - 1, TIP]) for (const k of Object.keys(at(h))) delete INDEXER[k]; }
+});
+
+// Every negative figure carries the one minus sign, U+2212.
+test("address ledger: an amount paid out reads with the minus sign U+2212, never a hyphen", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true });
+  const v = await open(`/explorer#/address/${WALLET}`, 1280, () => !document.querySelector("#txrows td[id^=dir-]") && document.querySelectorAll("#txrows tr").length === 25);
+  try {
+    const amounts: string[] = await v.page.evaluate(() => [...document.querySelectorAll("#txrows td.num:last-child")].map((c: any) => c.textContent));
+    assert.deepEqual([...new Set(amounts)], ["−0.25 CSD"]);
+  } finally { await v.close(); }
+});
+
+// Side by side the two home lists end level: as many rows each, the same row height, the block list capped at what it
+// shows; the activity's View all opens the domain's ledger.
+test("home at 1280 px: latest blocks and the activity show 12 rows each of one height and end level, also after a new block; View all opens the domain", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, cx: "up", records: "on", newer: 0 });
+  INDEXER["/domain/cairnx:v1/proposals"] = PROPS.slice(0, 30);
+  const cols = (page: any) => page.evaluate(() => {
+    const [blocks, acts] = ["#blkfeed tr", "#actfeed tr"].map((sel) => { const rs = [...document.querySelectorAll(sel)].map((r: any) => r.getBoundingClientRect());
+      return { n: rs.length, heights: [...new Set(rs.map((r) => Math.round(r.height)))], end: Math.round(rs.at(-1)!.bottom) }; });
+    return { blocks, acts, more: !!document.querySelector("#actshowmore"), all: document.querySelector("#actcol h2 .h-side > a")?.getAttribute("href") ?? null };
+  });
+  try {
+    const v = await open("/explorer", 1280, () => document.querySelectorAll("#actfeed tr.actrow").length > 0, { clock: true });
+    try {
+      for (const when of ["first paint", "after a new block"]) {
+        const c = await cols(v.page);
+        assert.equal(c.blocks.n, 12, when); assert.equal(c.acts.n, 12, when);
+        assert.equal(c.blocks.heights.length, 1, `${when}: one block row height`);
+        assert.deepEqual(c.acts.heights, c.blocks.heights, `${when}: the same row height in both lists`);
+        assert.equal(c.acts.end, c.blocks.end, `${when}: the two lists end level`);
+        assert.deepEqual([c.more, c.all], [false, "#/domain/cairnx%3Av1"]);
+        S.newer = 1;
+        await v.page.clock.runFor(12_000);
+        await until(v.page, () => document.querySelector("#blkfeed tr")?.getAttribute("data-h") === String(121_801));
+        await sleep(300);
+      }
+      // the record cut to its line keeps its whole text in its title, and a refusal's tag whole after it
+      const cut = await v.page.evaluate(() => { const t = document.querySelector("#actfeed tr:first-child .act-t") as any, tag = t.parentElement.querySelector(".cx-noeffect");
+        return { title: t.title, tag: tag ? tag.getBoundingClientRect().right <= t.closest("td").getBoundingClientRect().right + 0.5 : null }; });
+      assert.match(cut.title, /^Mint request for CAIRN: 100 base units$/);
+      assert.equal(cut.tag, true, "the refusal's tag inside its cell");
+    } finally { await v.close(); }
+  } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; S.newer = 0; }
+});
+
+// A stacked ledger (390 px) keeps its heads on one line: the row's id, the record under it, the figure at the right.
+test("at 390 px the stacked ledgers' heads sit on one line", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, cx: "up", records: "on" });
+  INDEXER["/domain/cairnx:v1/proposals"] = PROPS.slice(0, 3);
+  const heads = (v: View) => v.page.evaluate(() => { const ths = [...document.querySelectorAll("table.stack thead th")].filter((t: any) => t.getBoundingClientRect().width > 0) as any[];
+    return { tops: [...new Set(ths.map((t) => Math.round(t.getBoundingClientRect().top)))].length, text: ths.map((t) => t.textContent) }; });
+  try {
+    for (const [path, ready, text] of [[`/explorer#/address/${WALLET}`, () => document.querySelectorAll("#txrows tr").length > 0, ["Txid", "Record", "Amount"]],
+      ["/explorer#/name/twin", () => /history \(/i.test(document.body.innerText), ["Tx", "Record", "Block"]],
+      ["/explorer#/domain/cairnx%3Av1", () => document.querySelectorAll("#domrows tr").length > 0, ["Proposal", "Record", "Height"]]] as const) {
+      const v = await open(path, 390, ready);
+      try {
+        const h = await heads(v);
+        assert.equal(h.tops, 1, `${path}: ${h.text.join(", ")}`);
+        assert.deepEqual(await v.page.evaluate(() => [...document.querySelectorAll("table.stack thead th")].filter((t: any) => t.getBoundingClientRect().width > 0)
+          .sort((a: any, b: any) => a.getBoundingClientRect().left - b.getBoundingClientRect().left).map((t: any) => t.textContent)), text);
+      } finally { await v.close(); }
+    }
+  } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; }
+});
+
+// A token's trust badge, the design direction's three, from cairn's list of the tokens it lists (bound to their deploys)
+// judged by /trade's rule; with the list unread, no badge rather than a verdict.
+test("token page: Verified for a listed deploy, Look-alike for another deploy of a listed ticker, Unverified when not listed, no badge with the list unread", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, cx: "up", trust: true });
+  const ZED_DEPLOY = "0x" + "de".repeat(32);
+  const look = (v: View) => v.page.evaluate(() => { const b = document.querySelector("h2.ex-title .badge") as any;
+    const row = [...document.querySelectorAll(".kv > div")].find((d: any) => d.textContent === "listing") as any;
+    return { badge: b ? b.textContent : null, cls: b ? b.className : null, said: row ? row.nextElementSibling.textContent : null }; });
+  try {
+    for (const [list, trust, want] of [
+      [{ ZED: { deployId: ZED_DEPLOY } }, true, { badge: "Verified", cls: "badge ok", said: "Listed by Cairn for this deploy. A display convenience, not a consensus claim." }],
+      [{ ZED: { deployId: "0x" + "01".repeat(32) } }, true, { badge: "Look-alike", cls: "badge caution", said: "Same ticker as a listed token, different deploy. Anyone can deploy any ticker." }],
+      [{}, true, { badge: "Unverified", cls: "badge", said: "Not listed. Check the deployer before you buy." }],
+      [{ ZED: { deployId: ZED_DEPLOY } }, false, { badge: null, cls: null, said: null }]] as const) {
+      TRUST_LIST.verified = list as any; S.trust = trust;
+      const v = await open("/explorer#/token/ZED", 1280, () => /metadata/.test(document.body.innerText));
+      try {
+        assert.deepEqual(await look(v), want, JSON.stringify([list, trust]));
+        assert.deepEqual(v.errors, []);
+        assert.deepEqual(await offPalette(v.page), []);
+      } finally { await v.close(); }
+    }
+  } finally { TRUST_LIST.verified = {}; S.trust = true; }
+});
+
+// A sibling read that failed is not kept for the session: the next view asks again. Here the resolver is down while the
+// home opens (no decimals, no address names) and answers by the time a name is opened.
+test("a failed resolver read is asked again by the next view: a token price in its decimals and an address under its name", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, cx: "503" });
+  PRIMARIES[MINER] = "solo";
+  try {
+    const v = await open("/explorer", 1280, () => !!document.querySelector("#pu-hr") && !!document.querySelector(".row a.addrl[data-named]"));
+    try {
+      assert.equal(await v.page.evaluate(() => document.querySelector(".row a.addrl").textContent), `${MINER.slice(0, 8)}…${MINER.slice(-6)}`, "hex while the resolver is down");
+      S.cx = "up";
+      await v.page.evaluate(() => { location.hash = "#/name/twin"; });
+      await until(v.page, () => /for sale/i.test(document.body.innerText) && /history \(/i.test(document.body.innerText));
+      assert.equal(await v.page.textContent(".panel:has(h2:text-is('For sale')) .action"), "Market Listed for 123.45 QTOK · open offer", "the decimals read again");
+      await v.page.evaluate(() => { location.hash = "#/token/ZED"; });
+      await until(v.page, () => /metadata/.test(document.body.innerText) && !!document.querySelector(".kv a.addrl[data-named]"));
+      assert.equal(await v.page.evaluate(() => document.querySelector(".kv a.addrl").textContent), "solo.csd", "the name read again");
+      assert.deepEqual(v.errors, []);
+    } finally { await v.close(); }
+  } finally { S.cx = "up"; delete PRIMARIES[MINER]; }
+});
