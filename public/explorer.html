@@ -92,10 +92,7 @@
   .ex-search input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--ui-ink); font: inherit;
     font-size: var(--ui-text-md); }
   .ex-search input::placeholder { color: var(--ui-muted); }
-  .stats { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ui-space-1) var(--ui-space-4); color: var(--ui-muted);
-    font-size: var(--ui-text-xs); line-height: var(--ui-leading-snug); }
-  .stats b { color: var(--ui-ink-2); font-weight: 500; font-variant-numeric: tabular-nums; }
-  .stats .ui-dot { margin-right: var(--ui-space-1); }
+  #stats { flex: none; }
   .kbd { padding: 2px calc(var(--ui-space-1) + 2px); border: 1px solid var(--ui-line-2); border-bottom-width: 2px; border-radius: calc(var(--ui-radius-sm) - 1px);
     color: var(--ui-muted); font: 500 var(--ui-text-2xs) var(--ui-font-mono); }
 
@@ -214,6 +211,8 @@
   .badge svg.i { width: var(--ui-text-xs); height: var(--ui-text-xs); stroke-width: 2; }
   .badge.ok { border-color: color-mix(in oklab, var(--ui-up) 35%, var(--ui-line)); background: var(--ui-up-tint); color: var(--ui-up); }
   .badge.bad { border-color: color-mix(in oklab, var(--ui-down) 35%, var(--ui-line)); background: var(--ui-down-tint); color: var(--ui-down); }
+  .badge.caution { border-color: color-mix(in oklab, var(--ui-warn) 35%, var(--ui-line)); background: var(--ui-warn-tint); color: var(--ui-warn); }
+  .badge .ui-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
   /* inside a line of text or a table row, the small badge, so the line keeps its height */
   :is(td, .kv .v) .badge { height: calc(var(--ui-space-4) + var(--ui-space-1)); }
 
@@ -257,10 +256,15 @@
   .tok-search::placeholder { color: var(--ui-muted); }
   .tok-search:focus { outline: 0; border-color: var(--ui-ink); box-shadow: 0 0 0 3px color-mix(in oklab, var(--ui-ink) 10%, transparent); }
 
-  .loading { padding: var(--ui-space-5); color: var(--ui-muted); }
   /* loading is live state: the skeleton may pulse */
-  .skel { height: var(--ui-space-3); margin: var(--ui-space-3) 0; border-radius: var(--ui-radius-sm); background: var(--ui-sunken);
+  .skel { display: block; height: var(--ui-space-3); margin: var(--ui-space-3) 0; border-radius: var(--ui-radius-sm); background: var(--ui-sunken);
     animation: ex-skel calc(var(--ui-dur-4) * 3) var(--ui-ease-in-out) infinite alternate; }
+  .pu .skel { height: var(--ui-space-5); margin: calc(var(--ui-space-1) + 2px) 0 0; }
+  .pu .skel:first-child { height: var(--ui-space-3); margin: var(--ui-space-1) 0 0; }
+  .skel.v { height: var(--ui-space-5); }
+  .sk-rows { padding: var(--ui-space-2) var(--ui-space-5) var(--ui-space-5); }
+  .sk-rows .skel { margin: calc(var(--ui-space-5) + 2px) 0; }
+  .kv .skel { margin: var(--ui-space-1) 0; }
   @keyframes ex-skel { to { opacity: 0.45; } }
   /* a block that arrived while the page was open drops in at the top of the list, once */
   .feed-row { animation: ex-row-in var(--ui-dur-4) var(--ui-ease) both; }
@@ -322,7 +326,7 @@
   /* on a phone the block list drops its tx count (on each block's page) so the hash keeps its eight digits */
   @media (max-width: 400px) { .opt-xs { display: none; } }
   @media (max-width: 520px) {
-    .ex-top, .panel, .loading { padding-inline: var(--ui-space-4); }
+    .ex-top, .panel { padding-inline: var(--ui-space-4); }
     .panel > .scroll-x { margin-inline: calc(-1 * var(--ui-space-4)); }
     .pu { padding-inline: var(--ui-space-4); }
     .ex-col > #actmore:not(:empty) { padding-inline: var(--ui-space-4); }
@@ -358,9 +362,10 @@
       <input id="q" aria-label="Search the chain" placeholder="Search a block, transaction, address or name.csd" data-short="Block, tx, address or name.csd" autocomplete="off" enterkeyhint="search"/>
       <span class="kbd" aria-hidden="true">/</span>
     </form>
-    <div class="stats" id="stats" aria-live="polite"><span>connecting…</span></div>
+    <!-- the indexer's state when it is not live: behind the node, an old tip, or not answering; empty while live -->
+    <div id="stats" aria-live="polite" hidden></div>
   </div>
-  <main id="view"><div class="loading">loading…</div></main>
+  <main id="view" aria-busy="true"><div class="panel"><span class="skel" style="width:38%"></span><span class="skel"></span><span class="skel" style="width:72%"></span></div></main>
 </div>
 <!-- cairn's footer, filled by /footer.js through the front door; the paragraph is the standalone disclaimer -->
 <footer id="site-footer" data-note="CSD Explorer is a derived, untrusted view: inclusion is folded in your browser against the indexer's own block header (a consistency check, NOT a PoW/consensus proof; for that, run the L0 light client). Run your own: github.com/InverseAltruism/csd-indexer">
@@ -425,6 +430,11 @@ const addrGroups = (a,full)=>{ const s=String(a||''); if(!/^0x[0-9a-f]{40}$/i.te
 const ICON={ copy:'<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="13" height="13" rx="3"/><path d="M16 8V6a3 3 0 0 0-3-3H6a3 3 0 0 0-3 3v7a3 3 0 0 0 3 3h2"/></svg>',
   check:'<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>',
   x:'<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>' };
+// The loading states: the home's strip and two lists, or a detail page's title and keys, in skeleton bars.
+const skRows=(n)=>`<div class="sk-rows">${'<span class="skel"></span>'.repeat(n)}</div>`;
+const SKEL_HOME=`<div class="pulse">${'<div class="pu"><span class="skel" style="width:40%"></span><span class="skel v" style="width:62%"></span></div>'.repeat(4)}</div>
+  <div class="ex-cols">${'<div class="panel ex-col"><h2><span class="skel" style="width:34%;margin:0"></span></h2>'+skRows(6)+'</div>'}${'<div class="panel ex-col"><h2><span class="skel" style="width:46%;margin:0"></span></h2>'+skRows(6)+'</div>'}</div>`;
+const SKEL_DETAIL=`<div class="panel"><h2 class="ex-title"><span class="skel v" style="width:220px;margin:0"></span></h2><div class="kv">${'<div><span class="skel" style="width:64px"></span></div><div><span class="skel" style="width:70%"></span></div>'.repeat(5)}</div></div>`;
 /** A button that copies `value` (what: the accessible name's object, a constant word). */
 const copyBtn = (value,what)=>`<button type="button" class="copy" data-copy="${esc(value)}" aria-label="Copy ${what}" title="Copy ${what}">${ICON.copy}</button>`;
 const blockLink = (h,n)=>`<a class="mono" href="#/block/${esc(h)}">${hashHtml(h,n)}</a>`;
@@ -443,7 +453,7 @@ const ageOf = (s)=>{ s=Math.max(0,Math.floor(Number(s)||0)); return s<60?'now':s
 const age = (t)=>t?ageOf(Math.max(Math.floor(Date.now()/1000),TIP_TIME)-t):'';
 /** The same age in running text: "now", or "2 min ago". */
 const ago = (t)=>{ const a=age(t); return a&&a!=='now'?a+' ago':a; };
-const j = async(p)=>{const r=await fetch(API+p);if(!r.ok)throw new Error(p+' → '+r.status);return r.json();};
+const j = async(p)=>{const r=await fetch(API+p);if(!r.ok)throw Object.assign(new Error(`${p} answered ${r.status}`),{status:r.status});return r.json();};
 
 // ── client-side merkle fold (SubtleCrypto, no deps). A consistency check against the
 //    indexer's own header, NOT a trustless proof (no PoW/checkpoint verification here). ──
@@ -481,7 +491,7 @@ document.getElementById('view').addEventListener('click',(e)=>{ const b=e.target
 async function route(){
   const h=location.hash.slice(1)||'/';
   document.title = (h==='/'||h==='') ? 'CSD Explorer' : 'CSD Explorer · '+h.slice(1).replace('/',' ');
-  const v=$('#view');dropCharts(v);v.innerHTML='<div class="panel"><div class="skel" style="width:38%"></div><div class="skel"></div><div class="skel" style="width:72%"></div></div>';
+  const v=$('#view');dropCharts(v);v.innerHTML=(h==='/'||h==='')?SKEL_HOME:SKEL_DETAIL;v.setAttribute('aria-busy','true');
   try{
     if(h==='/'||h==='')          await home(v);
     else if(h.startsWith('/block/'))    await blockPage(v,h.slice(7));
@@ -498,7 +508,17 @@ async function route(){
     else if(h.startsWith('/token/'))     await tokenPage(v,decodeURIComponent(h.slice(7)));
     else if(h.startsWith('/name/'))      await namePage(v,decodeURIComponent(h.slice(6)));
     else v.innerHTML='<div class="panel"><h2 class="ex-title">Not found</h2><div class="muted">Nothing lives at this address of the explorer. Search above for a .csd name, block height, txid or address, or go to the <a href="#/">explorer home</a>.</div></div>';
-  }catch(e){v.innerHTML='<div class="panel"><h2 class="red">Nothing found</h2><div class="muted">'+esc(e.message)+'</div><div class="muted" style="margin-top:6px">Check the value, or search above for a .csd name, block height, txid or 0x address. <a href="#/">← back to the explorer</a></div></div>';}
+  }catch(e){
+    // a 4xx is the indexer saying it has no such record (a miss); anything else is a read that failed
+    if(e&&e.status>=400&&e.status<500&&h!=='/'&&h!==''){
+      const what=h.split('/').slice(2).join('/');
+      v.innerHTML=`<div class="panel"><h2 class="ex-title">Nothing found</h2><div class="muted">This indexer has no record at <span class="mono">${esc(decodeURIComponent(what)||h)}</span>. Check the value, or search above for a .csd name, block height, txid or 0x address. <a href="#/">Back to the explorer</a></div></div>`;
+    } else {
+      v.innerHTML=`<div class="panel"><h2 class="ex-title">Could not load this view</h2><div class="muted">The indexer did not answer: ${esc(e&&e.message||'no response')}. Check your connection, then try again.</div><button type="button" class="ex-btn" id="retry">Try again</button></div>`;
+      $('#retry',v).addEventListener('click',()=>{ void route(); });
+    }
+  }
+  v.removeAttribute('aria-busy');
   paintNames(v);
 }
 
@@ -813,8 +833,8 @@ async function marketPanel(box){
 // ── pages ──
 async function home(v){
   void charts();   // the chart module loads alongside the reads, so the hashrate tile usually has its window when drawn
-  const health=await j('/health').catch(()=>null);
-  if(!health){ v.innerHTML='<div class="panel"><h2>Indexer warming up</h2><div class="muted">The indexer is starting or catching up to the chain tip. This page populates as soon as it is ready.</div></div>'; return; }
+  // /health answers whenever the indexer runs, an empty index included: a failed read is the route's failed state
+  const health=await j('/health');
   const [domains,supply,miners,rich,cxprops,series]=await Promise.all([
     j('/domains').catch(()=>[]),
     j('/analytics/supply').catch(()=>null),j('/analytics/miners?window=1d').catch(()=>null),
@@ -840,7 +860,7 @@ async function home(v){
 
   // ── latest blocks and the recent CairnX activity, side by side ──
   const cols=el(`<div class="ex-cols">
-    <div class="panel ex-col"><h2>Latest blocks <span class="h-side" id="livepill"><span class="ui-dot ui-dot-live"></span><span class="lp-t">Live</span></span></h2>
+    <div class="panel ex-col"><h2>Latest blocks <span class="h-side" id="livepill"${STATUS.live?'':' hidden'}><span class="ui-dot ui-dot-live"></span><span class="lp-t">Live</span></span></h2>
       <div class="scroll-x"><table><thead><tr><th>Height</th><th>Age</th><th>Hash</th><th class="num opt-xs">Txs</th></tr></thead><tbody id="blkfeed" aria-live="polite"></tbody></table></div></div>
     <div class="panel ex-col" id="actcol"><h2>Recent CairnX activity</h2></div>
   </div>`);
@@ -1043,7 +1063,7 @@ function subscribeBlocks(tb){
   const iv=setInterval(poll,12000);
   try{ es=new EventSource(API+'/stream/blocks');
     es.addEventListener('block',()=>poll());
-    es.addEventListener('reorg',ev=>{try{const d=JSON.parse(ev.data);const p=$('#livepill');if(p){$('.lp-t',p).textContent='Reorg at block '+fmtInt(d.ancestor);p.classList.add('reorg');}}catch{ /* a malformed reorg event: the poll below still replaces the rows */ }});
+    es.addEventListener('reorg',ev=>{try{const d=JSON.parse(ev.data);const p=$('#livepill');if(p){$('.lp-t',p).textContent='Reorg at block '+fmtInt(d.ancestor);p.classList.add('reorg');p.hidden=false;}}catch{ /* a malformed reorg event: the poll below still replaces the rows */ }});
   }catch{ /* no EventSource here: the 12 s poll keeps the feed current */ }
 }
 
@@ -1347,22 +1367,27 @@ async function contentBadge(badge,hash){
   else set('Content unavailable','pend');
 }
 
-// ── header stats + live ──
+// ── the indexer's state: live (the latest-blocks heading says so), or a badge beside the search saying what is wrong ──
+const STATUS={live:false};
+function showStatus(live,cls,text,title){
+  STATUS.live=live;
+  const s=$('#stats');
+  s.hidden=live;
+  s.innerHTML=live?'':`<span class="badge ${cls}" title="${esc(title)}"><span class="ui-dot"></span>${esc(text)}</span>`;
+  const lp=$('#livepill'); if(lp&&!lp.classList.contains('reorg')) lp.hidden=!live;
+}
 async function refreshStats(){
-  try{const h=await j('/health');
-    const ss=h.seconds_since_tip, lag=Math.max(0,(h.tip_height||0)-(h.indexed_height||0));
-    const fresh=!h.stale&&lag<2&&(ss==null||ss<180);
-    const behind=ss==null?'syncing':ss<60?ss+'s':ss<3600?Math.floor(ss/60)+'m':Math.floor(ss/3600)+'h';
-    // Honest badge: a real indexer LAG (indexed_height < node tip -> catching up) is distinct from a merely
-    // OLD tip (the indexer is AT the tip but blocks are slow, e.g. low hashrate). The latter is NOT the
-    // indexer being "behind", so label it as the age of the newest block instead of blaming the indexer.
-    const dot = lag>=2
-      ? `<span class="amber" title="the indexer is catching up to the node (${lag} blocks)"><span class="ui-dot"></span>${fmtInt(lag)} blocks behind</span>`
-      : fresh
-        ? '<span class="green" title="indexer is at the chain tip"><span class="ui-dot ui-dot-live"></span>live</span>'
-        : `<span class="amber" title="the indexer is at the tip; the newest block is ${behind} old (slow blocks / low hashrate)"><span class="ui-dot"></span>last block ${behind} ago</span>`;
-    $('#stats').innerHTML=`<span>height <b>${fmtInt(h.indexed_height)}</b></span><span>txs <b>${fmtInt(h.txs)}</b></span><span>proposals <b>${fmtInt(h.proposals)}</b></span>${dot}`;
-  }catch{$('#stats').innerHTML='<span class="red"><span class="ui-dot"></span>indexer offline</span>';}
+  let h;
+  try{ h=await j('/health'); }catch{ showStatus(false,'bad','Indexer offline','the indexer did not answer its /health read'); return; }
+  const ss=h.seconds_since_tip, lag=Math.max(0,(h.tip_height||0)-(h.indexed_height||0));
+  const fresh=!h.stale&&lag<2&&(ss==null||ss<180);
+  // A real indexer LAG (indexed_height < node tip, catching up) is distinct from a merely OLD tip (the indexer is AT
+  // the tip but blocks are slow, e.g. low hashrate): the latter is labelled as the newest block's age, not as the
+  // indexer being behind.
+  if(lag>=2) showStatus(false,'caution',`${fmtInt(lag)} blocks behind`,`the indexer is catching up to the node (${lag} blocks)`);
+  else if(fresh) showStatus(true);
+  else { const behind=ss==null?null:ss<60?`${ss} s`:ageOf(ss);
+    showStatus(false,'caution',behind?`Last block ${behind} ago`:'Syncing',`the indexer is at the tip; the newest block is ${behind||'of unknown'} age (slow blocks or low hashrate)`); }
 }
 refreshStats();setInterval(refreshStats,15000);
 setInterval(()=>document.querySelectorAll('[data-ts]').forEach(e=>{const t=+e.getAttribute('data-ts'); if(t)e.textContent=age(t);}),10000);  // tick relative times

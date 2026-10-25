@@ -121,6 +121,9 @@ Through the front door a CairnX record, a fill or a cancel among them, reads by 
 the chain mines a paid fill whose delivery CairnX refuses, and the explorer shows that one as having no effect.
 A record names its effect ("Minted", "Finalized name", "Bought") only when the resolver applied it; a standalone page, or
 one whose verdict read failed, words it as the request it is ("Mint request for", "Fill request on").
+When the indexer is behind the node, its newest block is old, or it does not answer, a badge beside the search says
+which. A record the indexer does not hold reads "Nothing found"; a read that fails reads as a failure, with a way to try
+again.
 
 Served through the cairn front door (https://cairn-substrate.com/explorer) it also shows the CSD price in USD
 with the venue and time beside every figure, and charts of the emission schedule, the CSD/USD price, the network

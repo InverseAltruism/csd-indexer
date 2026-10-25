@@ -8,7 +8,8 @@
 // passed on, no USD text with the market off, never NaN or a 0 USD; the hashrate window from the module in the tile
 // and on the chart; the request cadence; no chart of a replaced view left alive; the verdict reads and their
 // fallback; an Attest on an offer worded by its verdict; the name page's primary badge from the resolver's pick; the
-// proposal page's content check; the home's activity ledger; the design direction's colour rule on every view.
+// proposal page's content check; the indexer's state beside the search; the home's activity ledger; a miss told apart
+// from a failed read; the design direction's colour rule on every view.
 // Needs playwright-core (PLAYWRIGHT_CORE or the devDependency) and a Chromium (PLAYWRIGHT_CHROMIUM or the build that
 // playwright-core installs, chromium_headless_shell-1243); without either the file skips by name, and with
 // EXPLORER_BROWSER_REQUIRED=1 (CI) it fails instead. Run: npx tsx --test test/explorer-browser.test.ts
@@ -92,7 +93,9 @@ const day0 = NOW - (NOW % 86_400);
 const csdSeries = (q: URLSearchParams) => ({ ok: true, pair: "csd-usd", period: q.get("period"), range: q.get("range"), source: "coinpaprika",
   points: Array.from({ length: 30 }, (_, i) => { const c = 0.045 + 0.01 * Math.sin(i / 4); return [day0 - (29 - i) * 86_400, c, c * 1.04, c * 0.96, c, 9000]; }) });
 
-const S = { market: "fresh" as "fresh" | "stale" | "off", thin: false, partial: false, series: true, records: "on" as "on" | "404" | "400" | "500", gates: true, shell: true };
+const S = { market: "fresh" as "fresh" | "stale" | "off", thin: false, partial: false, series: true, records: "on" as "on" | "404" | "400" | "500", gates: true, shell: true,
+  // the indexer's /health as live, at an old tip, behind the node, or not answering; a path prefix the indexer fails with a 500
+  health: "live" as "live" | "old" | "behind" | "down", fail: "" };
 // CairnX proposals in the shapes of /domain/:d/proposals, and the resolver's verdicts for them: one refused mint
 const cxProp = (n: number, uri: object) => ({ txid: "0x" + n.toString(16).padStart(64, "0"), height: TIP - n, proposer: MINER, fee: 25000000, domain: "cairnx:v1", uri: JSON.stringify(uri) });
 const PROPS = Array.from({ length: 130 }, (_, i) => cxProp(i + 1, { v: 1, t: "mint", ticker: "CAIRN", amount: "100" }));
@@ -191,6 +194,12 @@ const server = createServer(async (req, res) => {
   const api = p.startsWith("/explorer/api/") ? p.slice(13) : null;
   if (api !== null || ["/health", "/domains", "/blocks/recent"].includes(p) || p.startsWith("/analytics/") || p.startsWith("/domain/") || p.startsWith("/proposal/")) {
     const k = api ?? p;
+    if (S.fail && k.startsWith(S.fail)) return json(res, 500, { error: "internal" });
+    if (k === "/health" && S.health !== "live") {
+      if (S.health === "down") return json(res, 503, { error: "unavailable" });
+      const h = INDEXER["/health"] as Record<string, unknown>;
+      return json(res, 200, S.health === "old" ? { ...h, seconds_since_tip: 1260, stale: true } : { ...h, tip_height: TIP + 7 });
+    }
     if (k === "/blocks/recent") return json(res, 200, recent(Number(url.searchParams.get("limit") || 12)));
     if (k === "/analytics/series" && !S.series) return json(res, 404, { error: "not found" });
     const addr = ADDRESS(k, url.searchParams);
@@ -938,15 +947,33 @@ test("address page: the address grouped in fours on screen, copied whole by sele
   } finally { await v.close(); }
 });
 
-// The live markers are dots drawn by CSS beside their words: inline in running text they need a box of their own.
-test("the live dot beside \"live\" and the status line's dot have a size", { skip: why || false }, async () => {
-  Object.assign(S, { market: "off", series: true, shell: true });
-  const v = await open("/explorer", 1280, () => !!document.querySelector("#stats .ui-dot") && !!document.querySelector("#livepill .ui-dot"));
-  try {
-    const sizes = await v.page.evaluate(() => ["#stats .ui-dot", "#livepill .ui-dot"].map((s) => { const r = document.querySelector(s).getBoundingClientRect(); return [Math.round(r.width), Math.round(r.height)]; }));
-    for (const [w, h] of sizes) assert.ok(w > 0 && h > 0, `a dot of ${w} by ${h}`);
-  } finally { await v.close(); }
+// The indexer's state, read from /health: live, the latest-blocks heading says so and the search has its row to itself;
+// otherwise one badge beside the search says what is wrong and the heading's "Live" is gone, so the two never disagree.
+// The dots are drawn by CSS beside their words: inline they need a box of their own.
+const state = (page: any) => page.evaluate(() => {
+  const s = document.querySelector("#stats"), lp = document.querySelector("#livepill"), b = s.querySelector(".badge");
+  const [sd, ld] = [s, lp].map((e: any) => e.querySelector(".ui-dot")?.getBoundingClientRect()).map((r: any) => r ? r.width > 0 && r.height > 0 : null);
+  return { stats: s.hidden ? null : { text: s.textContent, cls: b?.className ?? "", dot: sd }, live: lp.hidden ? null : { text: lp.textContent, dot: ld } };
 });
+for (const [health, stats] of [["live", null], ["old", { text: "Last block 21 min ago", cls: "badge caution", dot: true }],
+  ["behind", { text: "7 blocks behind", cls: "badge caution", dot: true }], ["down", { text: "Indexer offline", cls: "badge bad", dot: true }]] as const) {
+  test(`indexer ${health}: ${stats ? `"${stats.text}" beside the search, no "Live" in the latest-blocks heading` : "\"Live\" in the latest-blocks heading, nothing beside the search"}`, { skip: why || false }, async () => {
+    Object.assign(S, { market: "off", series: true, shell: true, health: "live" });
+    // the home view renders on a live /health; the state is then read again on the page's 15 s timer
+    const v = await open("/explorer", 1280, () => !!document.querySelector("#livepill"), { clock: true });
+    try {
+      assert.deepEqual(await state(v.page), { stats: null, live: { text: "Live", dot: true } });
+      S.health = health;
+      await v.page.clock.runFor(15_000);
+      await until(v.page, () => !!document.querySelector("#livepill") && (document.querySelector("#stats").hidden === !document.querySelector("#livepill").hidden));
+      await sleep(300);
+      assert.deepEqual(await state(v.page), { stats, live: stats ? null : { text: "Live", dot: true } });
+      const row = await v.page.evaluate(() => { const s = document.querySelector("form.ex-search").getBoundingClientRect(), top = document.querySelector(".ex-top").getBoundingClientRect();
+        return { inRow: s.top >= top.top && s.bottom <= top.bottom, fills: s.width > 0.8 * top.width }; });
+      assert.deepEqual(row, { inRow: true, fills: true }, "the search keeps its row");
+    } finally { await v.close(); S.health = "live"; }
+  });
+}
 
 // The latest-blocks list: ages in the preview's form, and each hash with its leading zeros and eight digits after them.
 test("latest blocks: ages read \"now\" and \"1 min\"; a hash shows its zeros dimmed and eight digits, the whole hash in its link", { skip: why || false }, async () => {
@@ -1004,6 +1031,32 @@ test("home activity: a ledger of kind, record and transaction; a refused record 
       } finally { await v.close(); }
     }
   } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; }
+});
+
+// A read that fails is not a miss. The indexer's 404 means it holds no such record: "Nothing found", naming the value. A
+// 500 or a dropped connection says nothing about the record: "Could not load this view" with a way to ask again.
+test("a 404 reads \"Nothing found\" with the value; a 500 reads \"Could not load this view\", and Try again loads the view once the indexer answers", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, fail: "" });
+  const h = TIP - 100, b = block(h);
+  try {
+    const miss = await open(`/explorer#/block/${h}`, 1280, () => /Nothing found|Could not load/.test(document.body.innerText));
+    try {
+      assert.equal(await miss.page.textContent("h2.ex-title"), "Nothing found");
+      assert.match(await miss.page.textContent("main"), new RegExp(`no record at ${h}\\.`));
+      assert.equal(await miss.page.locator("#retry").count(), 0);
+    } finally { await miss.close(); }
+    S.fail = "/block-height/";
+    const v = await open(`/explorer#/block/${h}`, 1280, () => /Nothing found|Could not load/.test(document.body.innerText));
+    try {
+      assert.equal(await v.page.textContent("h2.ex-title"), "Could not load this view");
+      assert.match(await v.page.textContent("main"), /answered 500/);
+      Object.assign(INDEXER, { [`/block-height/${h}`]: b.hash, [`/block/${b.hash}`]: b, [`/block/${b.hash}/txids`]: [] });
+      S.fail = "";
+      await v.page.click("#retry");
+      await until(v.page, () => /^Block /.test(document.querySelector("h2.ex-title")?.textContent ?? ""));
+      assert.match(await v.page.textContent("h2.ex-title"), new RegExp(`^Block ${h.toLocaleString("en-US")}`));
+    } finally { await v.close(); }
+  } finally { S.fail = ""; for (const k of [`/block-height/${h}`, `/block/${b.hash}`, `/block/${b.hash}/txids`]) delete INDEXER[k]; }
 });
 
 // The design direction's colour rule, on every view: the neutral ramp, and colour only for up, down and caution (the
