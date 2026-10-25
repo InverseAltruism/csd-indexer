@@ -276,6 +276,7 @@
   .feed-row { animation: ex-row-in var(--ui-dur-4) var(--ui-ease) both; }
   @keyframes ex-row-in { from { opacity: 0; transform: translateY(calc(-1 * (var(--ui-space-3) + 2px))); } }
   @keyframes ex-fade-in { from { opacity: 0; } }
+  /* reduced motion: a fade, no movement; cairn's components.css, where present, shortens every animation to 1 ms */
   @media (prefers-reduced-motion: reduce) { .skel { animation: none; } .feed-row { animation-name: ex-fade-in; } }
 
   /* charts: cairn's chart module through the front door (none standalone); it reads these at mount, and the page

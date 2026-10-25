@@ -1137,13 +1137,15 @@ test("colour on every view: the neutral ramp and the up, down and caution tokens
 
 // A block mined while the page is open enters the latest blocks at the top, once, as the preview's does: it fades in and
 // drops 14 px into place over 460 ms on the shared curve; the rows under it move down without an animation of their own,
-// and a poll that finds nothing new starts none. With reduced motion it only fades.
+// and a poll that finds nothing new starts none. With reduced motion the page's own sheet asks for a fade with no
+// movement; cairn's real components.css (not this file's stand-in) cuts every animation to 1 ms under reduced motion, so
+// through the front door the row appears at once, as the preview's does.
 const arrival = (page: any) => page.evaluate(() => [...document.querySelectorAll("#blkfeed tr")].map((r: any) => r.getAnimations().map((a: any) => {
   const t = a.effect.getTiming(), k = a.effect.getKeyframes();
   return { h: r.dataset.h, name: a.animationName, ms: t.duration, ease: t.easing, from: k[0] ? { opacity: k[0].opacity, transform: k[0].transform ?? null } : null };
 })).flat());
 for (const reduced of [false, true]) {
-  test(`a new block enters the latest blocks once${reduced ? ", with reduced motion as a fade only" : ": a fade and a 14 px drop over 460 ms; the rows under it take no animation"}`, { skip: why || false }, async () => {
+  test(`a new block enters the latest blocks once${reduced ? ", with reduced motion the page's sheet asking for a fade only" : ": a fade and a 14 px drop over 460 ms; the rows under it take no animation"}`, { skip: why || false }, async () => {
     Object.assign(S, { market: "off", series: true, shell: true, newer: 0 });
     const v = await open("/explorer", 1280, () => document.querySelectorAll("#blkfeed tr").length === 12, { clock: true, reduced });
     try {
