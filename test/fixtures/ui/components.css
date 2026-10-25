@@ -1,0 +1,5 @@
+/* A stand-in for cairn's /ui/components.css with the one rule the explorer relies on: the dot's size, which cairn's
+   sheet gives it for a flex badge. */
+@layer components {
+  .ui-dot { width: 7px; height: 7px; flex: none; border-radius: 50%; background: currentColor; }
+}

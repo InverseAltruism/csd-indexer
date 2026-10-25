@@ -30,6 +30,8 @@ globalThis.__chartStubLive = 0;
 export async function mountChart(host, opts) {
   let o = { points: [], staleSecs: null, emptyText: "", ...opts };
   globalThis.__chartStubLive++;
+  // the real module reads its colours from the host's --chart-* tokens once, here, at mount
+  const line = getComputedStyle(host).getPropertyValue("--chart-line").trim();
   const draw = () => {
     host.replaceChildren();
     const root = document.createElement("div");
@@ -59,6 +61,7 @@ export async function mountChart(host, opts) {
       canvas.style.display = "block";
       canvas.dataset.label = o.label ?? "";
       canvas.dataset.points = String(o.points.length);
+      canvas.dataset.line = line;
       box.append(canvas);
       pane.append(box);
       plot.append(table);

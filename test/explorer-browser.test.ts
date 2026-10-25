@@ -23,10 +23,18 @@ import type { AddressInfo } from "node:net";
 
 const EXPLORER = fileURLToPath(new URL("../public/explorer.html", import.meta.url));
 const CHART_STUB = fileURLToPath(new URL("./fixtures/chart-stub.js", import.meta.url));
+// Cairn's shell set (/ui/*, /header.js, /footer.js) is served from test/fixtures/ui/, stand-ins with only what the page and
+// these tests read; with S.shell false every one of them answers 404 as the indexer does on a direct hit.
+const UI = (f: string) => fileURLToPath(new URL(`./fixtures/ui/${f}`, import.meta.url));
+const SHELL: Record<string, [string, string]> = {
+  "/ui/theme-init.js": [UI("theme-init.js"), "text/javascript"], "/ui/theme.js": [UI("theme.js"), "text/javascript"],
+  "/ui/tokens.css": [UI("tokens.css"), "text/css"], "/ui/fonts.css": [UI("empty.css"), "text/css"], "/ui/theme.css": [UI("empty.css"), "text/css"],
+  "/ui/components.css": [UI("components.css"), "text/css"], "/header.js": [UI("header.js"), "text/javascript"],
+};
 
 // playwright-core is loaded untyped, and the page callbacks below run in the browser (this file has no DOM lib):
 // `any` at those two boundaries only.
-declare const document: any, location: any, innerWidth: number;
+declare const document: any, location: any, innerWidth: number, getComputedStyle: any, navigator: any;
 let chromium: any = null, why = "";
 try { chromium = createRequire(import.meta.url)(process.env.PLAYWRIGHT_CORE || "playwright-core").chromium; }
 catch { why = "playwright-core not found (set PLAYWRIGHT_CORE to its path)"; }
@@ -44,7 +52,9 @@ test("a browser is present when EXPLORER_BROWSER_REQUIRED=1", { skip: process.en
 const NOW = Math.floor(Date.now() / 1000), TIP = 121_800, MINER = "0x40379fb123bec901080bb94deeda2f457062b7bd";
 const bt = (h: number) => NOW - (TIP - h) * 121 + ((h % 7) - 3) * 10;
 const iso = (s: number) => new Date(s * 1000).toISOString();
-const block = (h: number) => ({ height: h, hash: "0x" + h.toString(16).padStart(64, "0"), prev: "0x" + (h - 1).toString(16).padStart(64, "0"),
+// a block hash as the chain has them: twelve leading zeros, then digits
+const bhash = (h: number) => "0x" + "0".repeat(12) + createHash("sha256").update(`block ${h}`).digest("hex").slice(0, 52);
+const block = (h: number) => ({ height: h, hash: bhash(h), prev: bhash(h - 1),
   merkle: "0x" + "ab".repeat(32), time: bt(h), bits: 453035574, nonce: 1, version: 1, tx_count: 1, chainwork: String(BigInt(h) * 10n ** 15n), orphaned: 0 });
 const recent = (n: number) => Array.from({ length: n }, (_, i) => block(TIP - i));
 const FROM = TIP - 720;
@@ -82,7 +92,7 @@ const day0 = NOW - (NOW % 86_400);
 const csdSeries = (q: URLSearchParams) => ({ ok: true, pair: "csd-usd", period: q.get("period"), range: q.get("range"), source: "coinpaprika",
   points: Array.from({ length: 30 }, (_, i) => { const c = 0.045 + 0.01 * Math.sin(i / 4); return [day0 - (29 - i) * 86_400, c, c * 1.04, c * 0.96, c, 9000]; }) });
 
-const S = { market: "fresh" as "fresh" | "stale" | "off", thin: false, partial: false, series: true, records: "on" as "on" | "404" | "400" | "500", gates: true };
+const S = { market: "fresh" as "fresh" | "stale" | "off", thin: false, partial: false, series: true, records: "on" as "on" | "404" | "400" | "500", gates: true, shell: true };
 // CairnX proposals in the shapes of /domain/:d/proposals, and the resolver's verdicts for them: one refused mint
 const cxProp = (n: number, uri: object) => ({ txid: "0x" + n.toString(16).padStart(64, "0"), height: TIP - n, proposer: MINER, fee: 25000000, domain: "cairnx:v1", uri: JSON.stringify(uri) });
 const PROPS = Array.from({ length: 130 }, (_, i) => cxProp(i + 1, { v: 1, t: "mint", ticker: "CAIRN", amount: "100" }));
@@ -235,8 +245,13 @@ const server = createServer(async (req, res) => {
   if (p === "/charts/chart.js") {
     res.writeHead(200, { "content-type": "text/javascript" }); return res.end(await readFile(CHART_STUB));
   }
-  // cairn's nav and footer scripts: present and empty, so the page keeps its own placeholders
-  if (p === "/header.js" || p === "/footer.js") { res.writeHead(200, { "content-type": "text/javascript" }); return res.end(""); }
+  if (p in SHELL || p === "/footer.js") {
+    // absent: the indexer's own 404 for a path it does not serve
+    if (!S.shell) { res.writeHead(404, { "content-type": "text/html; charset=utf-8", "x-content-type-options": "nosniff" }); return res.end("<!DOCTYPE html><pre>Cannot GET</pre>"); }
+    // footer.js present and empty: the page keeps its own footer
+    const [file, type] = SHELL[p] ?? ["", "text/javascript"];
+    res.writeHead(200, { "content-type": type }); return res.end(file ? await readFile(file) : "");
+  }
   res.writeHead(404); res.end("not found");
 });
 if (!why) await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
@@ -250,11 +265,11 @@ async function until(page: any, ready: () => boolean, ms = 15_000): Promise<void
   const end = Date.now() + ms;
   while (!(await page.evaluate(ready))) { if (Date.now() > end) throw new Error(`timed out waiting for ${ready.toString().slice(0, 120)}`); await sleep(100); }
 }
-async function open(path: string, width: number, ready: () => boolean, { clock = false, response = "" } = {}): Promise<View> {
-  const ctx = await browser.newContext({ viewport: { width, height: width < 500 ? 844 : 900 }, isMobile: width < 500, hasTouch: width < 500, colorScheme: "dark", serviceWorkers: "block" });
+async function open(path: string, width: number, ready: () => boolean, { clock = false, response = "", scheme = "dark", locale = "en-US", at = 0 } = {}): Promise<View> {
+  const ctx = await browser.newContext({ viewport: { width, height: width < 500 ? 844 : 900 }, isMobile: width < 500, hasTouch: width < 500, colorScheme: scheme, locale, serviceWorkers: "block" });
   await ctx.addInitScript(() => { try { localStorage.setItem("cairn:terms:v4", "2026-10-12T00:00:00.000Z"); } catch { /* no storage */ } });
   const page = await ctx.newPage();
-  if (clock) await page.clock.install();
+  if (clock || at) await page.clock.install(at ? { time: at } : undefined);
   const errors: string[] = [], failed: string[] = [], asked: string[] = [];
   let bytes = 0;
   page.on("request", (r: any) => asked.push(new URL(r.url()).pathname)); // every fetch the page makes, browser cache or not
@@ -517,13 +532,13 @@ test("address page: each page of txs asks /cairnx/records for its own Propose tx
 const sh = (h: string) => h.slice(0, 10) + "\u2026" + h.slice(-6);
 const RESERVED_NOTE = "(open offer, claimed; the purchase completes after a short reorg-safe wait)";
 const ATTEST_LINES: Record<keyof typeof ATTESTS, string> = {
-  refusedFill: `\u{1F91D} Fill request on CAIRN: paid 1.255 CSD, offer ${sh(OFFER.txid)} \u2715 no effect: offer filled`,
-  fill: `\u{1F91D} Bought CAIRN for 1.255 CSD, offer ${sh(OFFER.txid)}`,
-  refusedCancel: `\u2715 Cancel request on an offer: ${sh(OFFER.txid)} \u2715 no effect: offer cancelled`,
-  cancel: `\u2715 Cancelled an offer: ${sh(OFFER.txid)}`,
-  claim: `\u{1F4CC} Reserved CAIRN ${RESERVED_NOTE}, offer ${sh(OFFER.txid)}`,
-  swap: `\u21C4 Token swap fill: took the offer ${sh(SWAP.txid)} (100 base units CAIRN for 123.45 QTOK, paid in tokens; no CSD moves)`,
-  unread: `\u{1F91D} Fill request on CAIRN: paid 1.255 CSD, offer ${sh(OFFER.txid)}`,
+  refusedFill: `Market Fill request on CAIRN: paid 1.255 CSD, offer ${sh(OFFER.txid)} \u2715 no effect: offer filled`,
+  fill: `Market Bought CAIRN for 1.255 CSD, offer ${sh(OFFER.txid)}`,
+  refusedCancel: `Market Cancel request on an offer: ${sh(OFFER.txid)} \u2715 no effect: offer cancelled`,
+  cancel: `Market Cancelled an offer: ${sh(OFFER.txid)}`,
+  claim: `Market Reserved CAIRN ${RESERVED_NOTE}, offer ${sh(OFFER.txid)}`,
+  swap: `Market Token swap fill: took the offer ${sh(SWAP.txid)} (100 base units CAIRN for 123.45 QTOK, paid in tokens; no CSD moves)`,
+  unread: `Market Fill request on CAIRN: paid 1.255 CSD, offer ${sh(OFFER.txid)}`,
 };
 const decoded = () => !/decoding/.test(document.querySelector("#txaction")?.textContent ?? "decoding");
 for (const [which, width] of [...Object.keys(ATTESTS).map((k) => [k, 1280] as const), ["refusedFill", 390] as const]) {
@@ -540,6 +555,10 @@ for (const [which, width] of [...Object.keys(ATTESTS).map((k) => [k, 1280] as co
       assert.doesNotMatch(await v.page.evaluate(() => document.body.innerText), /atomic/i);
       assert.equal(v.asked.filter((x) => x === `/trade/api/cairnx/record/${a.txid}`).length, 1, "the resolver asked for this txid's verdict");
       assert.equal(v.overflow, 0, "horizontal overflow");
+      // an amount cut at its scroll box's edge reads as a smaller amount
+      const cut: string[] = await v.page.evaluate(() => [...document.querySelectorAll(".scroll-x td.num")].filter((c: any) =>
+        c.getBoundingClientRect().right > c.closest(".scroll-x").getBoundingClientRect().right + 0.5).map((c: any) => c.textContent));
+      assert.deepEqual(cut, [], "every amount whole inside its box");
     } finally { await v.close(); }
   });
 }
@@ -564,9 +583,9 @@ for (const width of [390, 1280]) {
     try {
       assert.deepEqual(twin.errors, []);
       assert.equal(await twin.page.locator(".namehdr .badge").count(), 0, "a self-pointing name the resolver did not pick: no badge");
-      assert.equal(await twin.page.textContent(".panel:has(h2:text-is('for sale')) .action"), "\u{1F3F7} Listed for 123.45 QTOK \u00b7 open offer");
+      assert.equal(await twin.page.textContent(".panel:has(h2:text-is('For sale')) .action"), "Market Listed for 123.45 QTOK \u00b7 open offer");
       const hist: string[] = await twin.page.evaluate(() => [...document.querySelectorAll(".panel:has(h2) tbody tr td:first-child")].map((c: any) => c.textContent));
-      assert.deepEqual(hist, ["\u{1F91D} bought / sold (fill) \u2715 no effect: offer filled", "\u{1F91D} bought / sold (fill)"]);
+      assert.deepEqual(hist, ["Market bought / sold (fill) \u2715 no effect: offer filled", "Market bought / sold (fill)"]);
       assert.equal(twin.overflow, 0, "horizontal overflow");
     } finally { await twin.close(); }
     const solo = await open("/explorer#/name/solo", width, () => /resolves to/i.test(document.body.innerText));
@@ -624,8 +643,8 @@ for (const gates of [true, false]) {
       try {
         assert.deepEqual(v.errors, []);
         const acts: string[] = await v.page.evaluate(() => [...document.querySelectorAll("td.act")].map((c: any) => c.textContent));
-        assert.deepEqual(acts, [`\u{1F4DB} ${gates ? "Reserved" : "Revealed"} name alpha.csd`, "\u{1F4DB} Claimed name beta.csd",
-          "\u{1F4DB} Finalized name alpha.csd: registration paid, the lease starts", `\u{1F4DB} ${gates ? "Claimed" : "Revealed"} name gamma.csd`]);
+        assert.deepEqual(acts, [`Name ${gates ? "Reserved" : "Revealed"} name alpha.csd`, "Name Claimed name beta.csd",
+          "Name Finalized name alpha.csd: registration paid, the lease starts", `Name ${gates ? "Claimed" : "Revealed"} name gamma.csd`]);
       } finally { await v.close(); }
     } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; S.gates = true; }
   });
@@ -636,7 +655,7 @@ test("name page: an offer without a price reads \"Listed for sale\", no dash in 
   const v = await open("/explorer#/name/onsale", 1280, () => /for sale/.test(document.body.innerText));
   try {
     assert.deepEqual(v.errors, []);
-    assert.equal(await v.page.textContent(".panel:has(h2:text-is('for sale')) .action"), "\u{1F3F7} Listed for sale \u00b7 open offer");
+    assert.equal(await v.page.textContent(".panel:has(h2:text-is('For sale')) .action"), "Market Listed for sale \u00b7 open offer");
   } finally { await v.close(); }
 });
 
@@ -649,7 +668,7 @@ test("proposal page at 390 px: the attestations table scrolls inside its own box
     const v = await open(`/explorer#/proposal/${prop.txid}`, 390, () => document.querySelectorAll("tbody tr td").length > 3);
     try {
       const m = await v.page.evaluate(() => {
-        const t = [...document.querySelectorAll("h2")].find((h: any) => /^attestations/.test(h.textContent))!.parentElement.querySelector("table");
+        const t = [...document.querySelectorAll("h2")].find((h: any) => /^Attestations/.test(h.textContent))!.parentElement.querySelector("table");
         const box = t.closest(".scroll-x");
         return { boxed: !!box, boxRight: box ? box.getBoundingClientRect().right : Infinity, width: innerWidth, body: document.body.scrollWidth,
           scrolls: box ? box.scrollWidth > box.clientWidth : false };
@@ -681,14 +700,14 @@ test("domain page: record lines separate their parts with a colon or comma, neve
       assert.deepEqual(v.errors, []);
       const acts: string[] = await v.page.evaluate(() => [...document.querySelectorAll("td.act")].map((c: any) => c.textContent));
       assert.deepEqual(acts, [
-        "\u{1FA99} Deployed token ZED: supply 1,000, issuer-mint (fixed)",
-        "\u26CF Minted ZED: 5 base units",
-        "\u{1F3F7} Listed name zed.csd for 1 CSD, open offer",
-        "\u{1F64B} Bid 1 CSD for name zed.csd: non-binding; a seller answers with a reserved offer",
-        "\u{1F512} Sealed a name commitment: the name is revealed later (front-run defense)",
-        "\u267B\uFE0F Renewed the lease on zed.csd for one more year",
-        "\u{1F3F7} Listed name zed.csd for 123.45 QTOK, open offer",
-        "\u{1F3F7} Listed name zed.csd for 500 base units ZED, open offer",
+        "Token Deployed token ZED: supply 1,000, issuer-mint (fixed)",
+        "Token Minted ZED: 5 base units",
+        "Market Listed name zed.csd for 1 CSD, open offer",
+        "Market Bid 1 CSD for name zed.csd: non-binding; a seller answers with a reserved offer",
+        "Name Sealed a name commitment: the name is revealed later (front-run defense)",
+        "Name Renewed the lease on zed.csd for one more year",
+        "Market Listed name zed.csd for 123.45 QTOK, open offer",
+        "Market Listed name zed.csd for 500 base units ZED, open offer",
       ]);
       assert.equal(acts.filter((a) => / - /.test(a)).length, 0);
     } finally { await v.close(); }
@@ -752,3 +771,257 @@ test("token page: the metadata hash is described as what it is, with no claim ab
     assert.equal(row, `0x${"4d".repeat(32)} (the sha256 of the issuer's metadata document; this page does not fetch it)`);
   } finally { await v.close(); }
 });
+
+// Cairn's shell set (Plan 89 P6): the page links /ui/theme-init.js first in <head>, cairn's tokens, fonts, theme and
+// component sheets, and /ui/theme.js before /header.js, all from the cairn origin. Through the front door the page
+// follows the theme those set; on a direct indexer hit they 404 and the page renders on its own fallback tokens.
+const look = (page: any) => page.evaluate(() => ({
+  theme: document.documentElement.getAttribute("data-theme"), initSheets: document.documentElement.dataset.initSheets ?? null,
+  bg: getComputedStyle(document.body).backgroundColor, ink: getComputedStyle(document.body).color,
+  sawTheme: document.querySelector("#site-header")?.dataset.sawTheme ?? null,
+  brand: document.querySelector("#site-header .ex-brand") ? document.querySelector("#site-header .ex-brand").getBoundingClientRect().height > 0 : null,
+  foot: document.querySelector("#site-footer .ex-foot")?.getBoundingClientRect().height ?? 0,
+}));
+for (const scheme of ["light", "dark"] as const) {
+  test(`through the front door, ${scheme}: theme-init.js runs before every style sheet, cairn's tokens win over the fallback, theme.js loads before header.js`, { skip: why || false }, async () => {
+    Object.assign(S, { market: "off", series: true, shell: true });
+    const v = await open("/explorer", 1280, () => !!document.querySelector("#pu-hr"), { scheme });
+    try {
+      assert.deepEqual(v.errors, []);
+      assert.deepEqual(v.failed, ["503 /api/market/csd"]);
+      const l = await look(v.page);
+      assert.deepEqual(l, { theme: scheme, initSheets: "0", bg: scheme === "dark" ? "rgb(16, 16, 20)" : "rgb(250, 250, 240)",
+        ink: scheme === "dark" ? "rgb(238, 238, 238)" : "rgb(17, 17, 17)", sawTheme: "true", brand: null, foot: l.foot });
+    } finally { await v.close(); }
+  });
+}
+
+test("a direct indexer hit, cairn's files absent: the page renders on its fallback tokens with its own brand line and footer", { skip: why || false }, async () => {
+  Object.assign(S, { market: "fresh", series: true, shell: false });
+  try {
+    for (const width of [390, 1280]) {
+      const v = await open("/", width, () => !!document.querySelector("#pu-hr") && !!document.querySelector("#blkfeed tr"));
+      try {
+        // the browser reports each absent file it refuses as text/html (the indexer's 404 page); nothing else
+        assert.deepEqual(v.errors.filter((e) => !/^Refused to (apply style|execute script) from '[^']+\/(ui\/[a-z-]+\.(css|js)|header\.js|footer\.js)[?']/.test(e)), []);
+        assert.deepEqual(v.failed.filter((f) => !/^404 \/(ui\/[a-z-]+\.(css|js)|header\.js|footer\.js)$/.test(f)), [], "no read failed but the shell files");
+        assert.ok(v.failed.includes("404 /ui/theme-init.js"), "the shell files were asked for");
+        const l = await look(v.page);
+        assert.equal(l.theme, null, "no theme-init.js");
+        assert.equal(l.bg, "rgb(244, 244, 241)", "the fallback ground");
+        assert.equal(l.ink, "rgb(12, 12, 11)", "the fallback ink");
+        assert.equal(l.brand, true, "the page's own brand line shown");
+        assert.ok(l.foot > 0, "the standalone disclaimer");
+        assert.equal(await v.page.textContent("#pu-hr .n"), "3.15 TH/s");
+        assert.equal(v.overflow, 0, "horizontal overflow");
+      } finally { await v.close(); }
+    }
+  } finally { S.shell = true; }
+});
+
+test("a theme switch mounts every chart again in the new theme's colours and leaves none behind", { skip: why || false }, async () => {
+  Object.assign(S, { market: "fresh", thin: false, partial: false, series: true, shell: true });
+  const v = await open("/explorer", 1280, withMarket, { scheme: "light" });
+  const lines = () => v.page.evaluate(() => ["#emchart", "#hrchart", "#btchart", "#csdusd-chart"].map((s) => document.querySelector(`${s} canvas`)?.dataset.line ?? ""));
+  try {
+    assert.deepEqual(await lines(), Array(4).fill("#111111"), "light ink at mount");
+    const before = await strayCanvases(v.page);
+    await v.page.evaluate(() => (globalThis as any).CairnTheme.set("dark"));
+    await until(v.page, () => ["#emchart", "#hrchart", "#btchart", "#csdusd-chart"].every((s) => document.querySelector(`${s} canvas`)?.dataset.line === "#EEEEEE"));
+    assert.equal(await v.page.evaluate(() => (globalThis as any).__chartStubLive), 4, "one live mount per chart host");
+    assert.equal(await strayCanvases(v.page), before, "the light charts destroyed");
+    assert.deepEqual(v.errors, []);
+  } finally { await v.close(); }
+});
+
+// The inclusion check folds the served branch in the browser and compares it with the served block's merkle root.
+const dsha = (b: Buffer) => createHash("sha256").update(createHash("sha256").update(b).digest()).digest();
+const hx = (h: string) => Buffer.from(h.slice(2), "hex");
+const PROVEN = "0x" + "e1".repeat(32), UNPROVEN = "0x" + "e2".repeat(32), BRANCH = ["0x" + "12".repeat(32), "0x" + "34".repeat(32)];
+// position 2: the tx is the left child at the first level and the right child at the second
+const ROOT = "0x" + dsha(Buffer.concat([hx(BRANCH[1]!), dsha(Buffer.concat([hx(PROVEN), hx(BRANCH[0]!)]))])).toString("hex");
+for (const [txid, h, merkle] of [[PROVEN, TIP - 3, ROOT], [UNPROVEN, TIP - 4, "0x" + "ab".repeat(32)]] as const) {
+  const b = { ...block(h), merkle };
+  Object.assign(INDEXER, { [`/tx/${txid}`]: { txid, height: h, pos: 2, app_type: "Transfer", signer: MINER, fee: 1000, n_in: 1, n_out: 1, coinbase: false, outputs: [] },
+    [`/tx/${txid}/status`]: { confirmed: true, block_height: h, confirmations: 4, final: false },
+    [`/tx/${txid}/merkle-proof`]: { block_height: h, pos: 2, merkle: BRANCH, merkle_root: merkle }, [`/block-height/${h}`]: b.hash, [`/block/${b.hash}`]: b });
+}
+for (const [which, txid, badge, cls] of [["matching", PROVEN, "\u2713 consistent with indexer header (not PoW-verified)", "badge ok"],
+  ["another", UNPROVEN, "\u2717 inclusion FAILED", "badge bad"]] as const) {
+  test(`transaction page, a branch folding to ${which} root: "${badge}"; each branch hash shown from its start`, { skip: why || false }, async () => {
+    Object.assign(S, { market: "off", series: true, shell: true });
+    const v = await open(`/explorer#/tx/${txid}`, 1280, () => !/verifying/.test(document.querySelector("#inclbadge")?.textContent ?? "verifying"));
+    try {
+      assert.deepEqual(v.errors, []);
+      assert.equal(await v.page.textContent("#inclbadge"), badge);
+      assert.equal(await v.page.getAttribute("#inclbadge", "class"), cls);
+      const branch: string = await v.page.evaluate(() => [...document.querySelectorAll(".kv > div")].find((d: any) => /^branch/.test(d.textContent))!.nextElementSibling.textContent);
+      assert.equal(branch, BRANCH.map((b) => sh(b)).join(" \u00b7 "));
+    } finally { await v.close(); }
+  });
+}
+
+// Numbers read the same under every browser locale, line up in their columns, and a block hash dims its leading zeros
+// by colour only.
+test("a German-locale browser: amounts grouped with commas, numbers right-aligned in tabular figures, one UTC date format, a block hash whole with its zeros dimmed, no emoji", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, records: "on" });
+  INDEXER["/domain/cairnx:v1/proposals"] = [cxProp(931, { v: 1, t: "deploy", ticker: "ZED", supply: "1000000", decimals: 0, mint: "issuer" }),
+    cxProp(932, { v: 1, t: "nrenew", name: "zed" }), cxProp(933, { v: 1, t: "offer", give: { name: "zed" }, want: { value: 100000000 } })];
+  try {
+    const home = await open("/explorer", 1280, () => !!document.querySelector("#actfeed .actrow") && !!document.querySelector("#pu-hr"), { locale: "de-DE" });
+    try {
+      assert.deepEqual(home.errors, []);
+      const cell = await home.page.evaluate(() => { const td = [...document.querySelectorAll("td")].find((c: any) => / CSD$/.test(c.textContent))!;
+        const s = getComputedStyle(td); return { text: td.textContent, align: s.textAlign, nums: s.fontVariantNumeric }; });
+      assert.deepEqual(cell, { text: "3,750,627.06850941 CSD", align: "right", nums: "tabular-nums" });
+      assert.equal(await home.page.textContent(".pu.hot .n"), "121,800");
+      const text: string = await home.page.evaluate(() => document.body.innerText);
+      assert.doesNotMatch(text, /\p{Extended_Pictographic}/u);
+      assert.deepEqual(await home.page.evaluate(() => [...document.querySelectorAll("#actfeed .kind")].map((k: any) => k.textContent)), ["Token", "Name", "Market"]);
+    } finally { await home.close(); }
+    const hash = block(TIP).hash;
+    Object.assign(INDEXER, { [`/block/${hash}`]: block(TIP), [`/block/${hash}/txids`]: [] });
+    const blk = await open(`/explorer#/block/${hash}`, 390, () => /hash/.test(document.querySelector(".kv")?.textContent ?? ""), { locale: "de-DE" });
+    try {
+      const h = await blk.page.evaluate(() => { const v = document.querySelector(".kv > div:nth-child(2)") as any, z = v.querySelector(".lz");
+        return { text: v.textContent, zeros: z.textContent, dim: getComputedStyle(z).color !== getComputedStyle(v).color,
+          time: [...document.querySelectorAll(".kv > div")].find((d: any) => d.textContent === "time")!.nextElementSibling.textContent }; });
+      assert.equal(h.text, hash, "the hash whole");
+      assert.equal(h.zeros, hash.match(/^0x0+/)![0]);
+      assert.ok(h.dim, "the zeros dimmed");
+      assert.match(h.time, /^\d{1,2} (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4}, \d\d:\d\d:\d\d UTC · (now|\d+ (min|h|d) ago)$/);
+      assert.equal(await blk.page.textContent("#blkconfs"), "1 confirmation", "the indexer's tip is this block");
+      assert.equal(blk.overflow, 0, "horizontal overflow");
+    } finally { await blk.close(); }
+    // at the indexer's final depth (6 in the fixture's /health) the badge turns to "up"
+    const deep = block(TIP - 10);
+    Object.assign(INDEXER, { [`/block/${deep.hash}`]: deep, [`/block/${deep.hash}/txids`]: [] });
+    const old = await open(`/explorer#/block/${deep.hash}`, 1280, () => !!document.querySelector("#blkconfs"));
+    try {
+      assert.equal(await old.page.textContent("#blkconfs"), "11 confirmations");
+      assert.equal(await old.page.getAttribute("#blkconfs", "class"), "badge ok");
+    } finally { await old.close(); }
+  } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; }
+});
+
+// The preview's search: "/" outside a field puts the cursor in it; inside a field "/" is a character.
+test("\"/\" focuses the search from anywhere on the page and types normally inside a field", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true });
+  const v = await open("/explorer", 1280, () => !!document.querySelector("#pu-hr"));
+  try {
+    await v.page.keyboard.press("/");
+    assert.equal(await v.page.evaluate(() => document.activeElement?.id), "q");
+    assert.equal(await v.page.inputValue("#q"), "", "the key itself is not typed");
+    await v.page.keyboard.type("a/b");
+    assert.equal(await v.page.inputValue("#q"), "a/b");
+  } finally { await v.close(); }
+});
+
+// An address in a detail view is grouped in fours by spacing only: what a reader copies, by selection or the button, is
+// the address itself.
+test("address page: the address grouped in fours on screen, copied whole by selection and by the copy button", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true });
+  const v = await open(`/explorer#/address/${WALLET}`, 1280, () => !!document.querySelector(".kv .g4"));
+  try {
+    await v.page.context().grantPermissions(["clipboard-read", "clipboard-write"], { origin: ORIGIN });
+    const shown = await v.page.evaluate(() => { const val = document.querySelector(".kv > div:nth-child(2)") as any;
+      return { groups: val.querySelectorAll(".g4").length, text: val.textContent, inner: val.innerText }; });
+    assert.equal(shown.groups, 10, "0x plus nine more groups of four");
+    assert.equal(shown.text, WALLET, "the text carries no spaces");
+    assert.equal(shown.inner.replace(/\s+$/, ""), WALLET, "nor does the rendered text a selection copies");
+    await v.page.click(".kv > div:nth-child(2) button.copy");
+    await until(v.page, () => !!document.querySelector("button.copy.done"));
+    assert.equal(await v.page.evaluate(() => navigator.clipboard.readText()), WALLET);
+    assert.deepEqual(v.errors, []);
+  } finally { await v.close(); }
+});
+
+// The live markers are dots drawn by CSS beside their words: inline in running text they need a box of their own.
+test("the live dot beside \"live\" and the status line's dot have a size", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true });
+  const v = await open("/explorer", 1280, () => !!document.querySelector("#stats .ui-dot") && !!document.querySelector("#livepill .ui-dot"));
+  try {
+    const sizes = await v.page.evaluate(() => ["#stats .ui-dot", "#livepill .ui-dot"].map((s) => { const r = document.querySelector(s).getBoundingClientRect(); return [Math.round(r.width), Math.round(r.height)]; }));
+    for (const [w, h] of sizes) assert.ok(w > 0 && h > 0, `a dot of ${w} by ${h}`);
+  } finally { await v.close(); }
+});
+
+// The latest-blocks list: ages in the preview's form, and each hash with its leading zeros and eight digits after them.
+test("latest blocks: ages read \"now\" and \"1 min\"; a hash shows its zeros dimmed and eight digits, the whole hash in its link", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true });
+  for (const width of [390, 1280]) {
+    // the page's clock at the fixture's NOW, however long the earlier tests took
+    const v = await open("/explorer", width, () => document.querySelectorAll("#blkfeed tr").length > 2, { at: NOW * 1000 });
+    try {
+      const rows = await v.page.evaluate(() => [...document.querySelectorAll("#blkfeed tr")].slice(0, 2).map((r: any) => {
+        const a = r.children[2].querySelector("a"), z = a.querySelector(".lz");
+        return { age: r.children[1].textContent, zeros: z.textContent, digits: a.textContent.slice(z.textContent.length).replace(/…$/, ""),
+          href: a.getAttribute("href"), title: a.title, cut: a.getBoundingClientRect().right > r.closest(".scroll-x").getBoundingClientRect().right + 0.5 }; }));
+      assert.deepEqual(rows.map((r: { age: string }) => r.age), ["now", "1 min"], "the fixture's newest blocks are 30 s and 91 s old");
+      for (const [i, r] of rows.entries()) {
+        const hash = bhash(TIP - i);
+        assert.equal(r.zeros, "0x000000000000");
+        assert.equal(r.digits, hash.slice(14, 22), "eight significant digits");
+        assert.equal(r.href, `#/block/${hash}`);
+        assert.equal(r.title, hash);
+        assert.equal(r.cut, false, `the hash inside its box at ${width} px`);
+      }
+      // every cell of the list inside its box, with the fixture's older rows (ages up to "22 min") setting the widths
+      const cut: string[] = await v.page.evaluate(() => [...document.querySelectorAll("#blkfeed td")].filter((c: any) =>
+        c.getBoundingClientRect().right > c.closest(".scroll-x").getBoundingClientRect().right + 0.5).map((c: any) => c.textContent));
+      assert.deepEqual(cut, [], `no cell past the box at ${width} px`);
+      // on a phone the list drops its tx count rather than squeeze the hash
+      assert.equal(await v.page.evaluate(() => getComputedStyle(document.querySelector("#blkfeed td:last-child")).display), width < 400 ? "none" : "table-cell");
+      assert.equal(v.overflow, 0);
+    } finally { await v.close(); }
+  }
+});
+
+// One gutter: a heading, the table or list under it and the panel's other content start at the same x, at every width. A
+// "box:" selector is measured at its border edge (a field or a pill lines up by its outline), the others at their text.
+const gutter = (page: any, pairs: [string, string][]) => page.evaluate((pairs: [string, string][]) => pairs.map(([a, b]) => ({ a, b,
+  at: [a, b].map((sel) => { const e = document.querySelector(sel.replace(/^box:/, "")); if (!e) return null;
+    const r = e.getBoundingClientRect(), s = getComputedStyle(e);
+    return Math.round(r.left + (sel.startsWith("box:") ? 0 : parseFloat(s.paddingLeft) + parseFloat(s.borderLeftWidth))); }) }))
+  .filter((x) => x.at[0] === null || x.at[0] !== x.at[1]), pairs);
+for (const width of [390, 1280]) {
+  test(`one gutter at ${width} px: headings line up with the rows, lists and fields under them`, { skip: why || false }, async () => {
+    Object.assign(S, { market: "off", series: true, shell: true, records: "on" });
+    INDEXER["/domain/cairnx:v1/proposals"] = PROPS.slice(0, 3);
+    try {
+      const home = await open("/explorer", width, () => !!document.querySelector("#actfeed .actrow") && !!document.querySelector("#blkfeed tr"));
+      try {
+        assert.deepEqual(await gutter(home.page, [
+          [".ex-col:first-child > h2", "#blkfeed tr:first-child td:first-child"],
+          ["#actcol > h2", "#actfeed .actrow:first-child"],
+          ["#actcol > h2", "box:#actcol > .tabs"],
+          [".ex-col:first-child > h2", ".pulse > .pu:first-child"],
+          [".ex-col:first-child > h2", "box:form.search"],
+          [".row .panel:has(table) > h2", ".row .panel:has(table) tbody tr:first-child td:first-child"],
+          ["#csd-mkt ~ .muted, .panel:has(#emchart) > h2", ".panel:has(#emchart) .figs"],
+        ]), []);
+      } finally { await home.close(); }
+      const hash = block(TIP - 2).hash;
+      Object.assign(INDEXER, { [`/block/${hash}`]: block(TIP - 2), [`/block/${hash}/txids`]: ["0x" + "e1".repeat(32)] });
+      const blk = await open(`/explorer#/block/${hash}`, width, () => !!document.querySelector("#blkconfs") && document.querySelectorAll("tbody tr").length > 0);
+      try {
+        assert.deepEqual(await gutter(blk.page, [["h2.ex-title", ".kv > div:first-child"], ["main > .panel:nth-child(2) > h2", "main > .panel:nth-child(2) tbody tr:first-child td:first-child"]]), []);
+      } finally { await blk.close(); }
+    } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; }
+  });
+}
+
+// The search's placeholder fits its field, measured in the field's own font: the short form on a phone, the long one on a desktop.
+for (const width of [360, 390, 1280]) {
+  test(`the search placeholder fits its field at ${width} px`, { skip: why || false }, async () => {
+    Object.assign(S, { market: "off", series: true, shell: true });
+    const v = await open("/explorer", width, () => !!document.querySelector("#pu-hr"));
+    try {
+      const m = await v.page.evaluate(() => { const q = document.querySelector("#q") as any, s = getComputedStyle(q), c = document.createElement("canvas").getContext("2d") as any;
+        c.font = `${s.fontWeight} ${s.fontSize} ${s.fontFamily}`;
+        return { text: q.placeholder, need: Math.ceil(c.measureText(q.placeholder).width), room: q.clientWidth - parseFloat(s.paddingLeft) - parseFloat(s.paddingRight) }; });
+      assert.ok(m.need <= m.room, `"${m.text}" needs ${m.need} px, the field has ${m.room}`);
+      assert.equal(m.text, width < 480 ? "Block, tx, address or name.csd" : "Search a block, transaction, address or name.csd");
+    } finally { await v.close(); }
+  });
+}
