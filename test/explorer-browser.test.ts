@@ -178,7 +178,10 @@ const json = (res: ServerResponse, status: number, body: unknown, extra: Record<
   res.writeHead(status, { "content-type": "application/json", ...extra }); res.end(JSON.stringify(body));
 };
 const server = createServer(async (req, res) => {
-  const url = new URL(req.url ?? "/", "http://x"), p = decodeURIComponent(url.pathname);
+  const url = new URL(req.url ?? "/", "http://x");
+  let p: string;
+  // a malformed escape: the indexer's express answers 400
+  try { p = decodeURIComponent(url.pathname); } catch { return json(res, 400, { error: "bad request" }); }
   REQS.push(p);
   if (p === "/explorer" || p === "/") {
     // as cairn src/server.ts serves /explorer: the first <script> stamped with a per-response nonce, and this CSP
@@ -826,6 +829,8 @@ test("a direct indexer hit, cairn's files absent: the page renders on its fallba
         assert.equal(l.brand, true, "the page's own brand line shown");
         assert.ok(l.foot > 0, "the standalone disclaimer");
         assert.equal(await v.page.textContent("#pu-hr .n"), "3.15 TH/s");
+        const dot = await v.page.evaluate(() => { const r = document.querySelector("#livepill .ui-dot").getBoundingClientRect(); return [Math.round(r.width), Math.round(r.height)]; });
+        assert.deepEqual(dot, [7, 7], "the live marker's dot, drawn by the page's own sheet");
         assert.equal(v.overflow, 0, "horizontal overflow");
       } finally { await v.close(); }
     }
@@ -1047,11 +1052,18 @@ test("a 404 reads \"Nothing found\" with the value; a 500 reads \"Could not load
       assert.match(await miss.page.textContent("main"), new RegExp(`no record at ${h}\\.`));
       assert.equal(await miss.page.locator("#retry").count(), 0);
     } finally { await miss.close(); }
+    // a pasted value with a malformed escape: still a miss, named as typed, never a view left loading
+    const odd = await open("/explorer#/block/0x%E0%A4%A", 1280, () => /Nothing found|Could not load/.test(document.body.innerText));
+    try {
+      assert.deepEqual(odd.errors, []);
+      assert.equal(await odd.page.textContent("h2.ex-title"), "Nothing found");
+      assert.match(await odd.page.textContent("main"), /no record at 0x%E0%A4%A\./);
+    } finally { await odd.close(); }
     S.fail = "/block-height/";
     const v = await open(`/explorer#/block/${h}`, 1280, () => /Nothing found|Could not load/.test(document.body.innerText));
     try {
       assert.equal(await v.page.textContent("h2.ex-title"), "Could not load this view");
-      assert.match(await v.page.textContent("main"), /answered 500/);
+      assert.match(await v.page.textContent("main"), /A read from the indexer failed \(\/block-height\/\d+ answered 500\)/);
       Object.assign(INDEXER, { [`/block-height/${h}`]: b.hash, [`/block/${b.hash}`]: b, [`/block/${b.hash}/txids`]: [] });
       S.fail = "";
       await v.page.click("#retry");
@@ -1136,7 +1148,7 @@ const gutter = (page: any, pairs: [string, string][]) => page.evaluate((pairs: [
     return Math.round(r.left + (sel.startsWith("box:") ? 0 : parseFloat(s.paddingLeft) + parseFloat(s.borderLeftWidth))); }) }))
   .filter((x) => x.at[0] === null || x.at[0] !== x.at[1]), pairs);
 for (const width of [390, 1280]) {
-  test(`one gutter at ${width} px: headings line up with the rows, lists and fields under them`, { skip: why || false }, async () => {
+  test(`one gutter at ${width} px: headings line up with the rows, lists and fields under them; a block's two key columns start level`, { skip: why || false }, async () => {
     Object.assign(S, { market: "off", series: true, shell: true, records: "on" });
     INDEXER["/domain/cairnx:v1/proposals"] = PROPS.slice(0, 3);
     try {
@@ -1156,6 +1168,9 @@ for (const width of [390, 1280]) {
       const blk = await open(`/explorer#/block/${hash}`, width, () => !!document.querySelector("#blkconfs") && document.querySelectorAll("tbody tr").length > 0);
       try {
         assert.deepEqual(await gutter(blk.page, [["h2.ex-title", ".kv > div:first-child"], ["main > .panel:nth-child(2) > h2", "main > .panel:nth-child(2) tbody tr:first-child td:first-child"]]), []);
+        const [a, b] = await blk.page.evaluate(() => [...document.querySelectorAll(".ex-detail > .kv")].map((k: any) => { const r = k.getBoundingClientRect(); return { top: Math.round(r.top), left: Math.round(r.left), end: Math.round(r.bottom) }; }));
+        if (width > 860) assert.equal(b.top, a.top, "side by side, the second key column starts level with the first");
+        else assert.ok(b.left === a.left && b.top > a.end, "stacked, the second key list follows the first");
       } finally { await blk.close(); }
     } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; }
   });

@@ -41,11 +41,12 @@
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%23050505'/%3E%3Crect x='3' y='3' width='4.4' height='4.4' rx='1' fill='%2357d977'/%3E%3Crect x='8.6' y='3' width='4.4' height='4.4' rx='1' fill='%23173b22'/%3E%3Crect x='3' y='8.6' width='4.4' height='4.4' rx='1' fill='%23173b22'/%3E%3Crect x='8.6' y='8.6' width='4.4' height='4.4' rx='1' fill='%23ffd24a'/%3E%3C/svg%3E" />
 <style>
 @layer page {
-  /* Measured against the approved preview's #explorer (compare.mjs). Every value is a --ui-* token; raw px are only
-     hairlines (1px), the focus ring, and 1 or 2 px nudges on a token where the preview sits between two steps (as
-     components.css does for its table cells). Font sizes the scale lacks (the preview's 13.5, 12.5, 11.5 and 10.5 px)
-     take the nearest token and are listed in the wave report, never written as literals. This sheet is the page's own
-     and complete: on a direct indexer hit cairn's components.css is absent, so the page cannot lean on it. */
+  /* Measured against the approved preview's #explorer (compare.mjs). Colours, type, spacing, radii and durations are
+     --ui-* tokens; the raw px are hairlines (1px), the focus ring, 1 or 2 px nudges on a token where the preview sits
+     between two steps (as components.css does for its table cells), the 7 px status dot components.css also draws, and
+     the preview's layout widths (the 120 px key column, the 1200 px measure, field, card and column minimums). Font
+     sizes the scale lacks (the preview's 13.5, 12.5, 11.5 and 10.5 px) take the nearest token. This sheet is the page's
+     own and complete: on a direct indexer hit cairn's components.css is absent, so the page cannot lean on it. */
   [hidden] { display: none !important; }
   *, *::before, *::after { box-sizing: border-box; }
   /* clip, not hidden: clip makes no scroll container, so the site header's position:sticky keeps working */
@@ -72,7 +73,8 @@
   .g4 + .g4, .g4 + .gx, .gx + .g4 { margin-left: 0.4em; }
   /* an address shown as its .csd name is a name, so it reads in Geist */
   a.addrl.hasname { font-family: var(--ui-font-sans); font-size: inherit; }
-  .ui-dot { display: inline-block; vertical-align: 1px; }
+  /* the status dot as components.css draws it, inline in text (standalone that sheet is absent) */
+  .ui-dot { display: inline-block; flex: none; width: 7px; height: 7px; border-radius: 50%; background: currentColor; vertical-align: 1px; }
 
   /* standalone: cairn's header.js is absent and #site-header keeps this page's own brand line */
   #site-header:empty { display: none; }
@@ -187,6 +189,8 @@
   .kv > div:nth-child(odd)::first-letter { text-transform: uppercase; }
   .kv > .v { min-width: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
   .kv + .kv { margin-top: calc(var(--ui-space-3) - 2px); }
+  /* side by side in a detail grid the two lists start level (its row gap spaces them once they stack) */
+  .ex-detail > .kv + .kv { margin-top: 0; }
   /* a detail page's head: the title, the record in words, then its keys */
   :is(.flow, .action) + .kv { margin-top: var(--ui-space-5); }
   .ex-detail { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--ui-space-2) calc(var(--ui-space-5) + var(--ui-space-4)); margin-top: var(--ui-space-4); }
@@ -212,7 +216,6 @@
   .badge.ok { border-color: color-mix(in oklab, var(--ui-up) 35%, var(--ui-line)); background: var(--ui-up-tint); color: var(--ui-up); }
   .badge.bad { border-color: color-mix(in oklab, var(--ui-down) 35%, var(--ui-line)); background: var(--ui-down-tint); color: var(--ui-down); }
   .badge.caution { border-color: color-mix(in oklab, var(--ui-warn) 35%, var(--ui-line)); background: var(--ui-warn-tint); color: var(--ui-warn); }
-  .badge .ui-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
   /* inside a line of text or a table row, the small badge, so the line keeps its height */
   :is(td, .kv .v) .badge { height: calc(var(--ui-space-4) + var(--ui-space-1)); }
 
@@ -513,9 +516,10 @@ async function route(){
     // a 4xx is the indexer saying it has no such record (a miss); anything else is a read that failed
     if(e&&e.status>=400&&e.status<500&&h!=='/'&&h!==''){
       const what=h.split('/').slice(2).join('/');
-      v.innerHTML=`<div class="panel"><h2 class="ex-title">Nothing found</h2><div class="muted">This indexer has no record at <span class="mono">${esc(decodeURIComponent(what)||h)}</span>. Check the value, or search above for a .csd name, block height, txid or 0x address. <a href="#/">Back to the explorer</a></div></div>`;
+      let shown=what; try{ shown=decodeURIComponent(what); }catch{ /* a malformed escape: the value as typed */ }
+      v.innerHTML=`<div class="panel"><h2 class="ex-title">Nothing found</h2><div class="muted">This indexer has no record at <span class="mono">${esc(shown||h)}</span>. Check the value, or search above for a .csd name, block height, txid or 0x address. <a href="#/">Back to the explorer</a></div></div>`;
     } else {
-      v.innerHTML=`<div class="panel"><h2 class="ex-title">Could not load this view</h2><div class="muted">The indexer did not answer: ${esc(e&&e.message||'no response')}. Check your connection, then try again.</div><button type="button" class="ex-btn" id="retry">Try again</button></div>`;
+      v.innerHTML=`<div class="panel"><h2 class="ex-title">Could not load this view</h2><div class="muted">A read from the indexer failed (${esc(e&&e.message||'no response')}). Check your connection, then try again.</div><button type="button" class="ex-btn" id="retry">Try again</button></div>`;
       $('#retry',v).addEventListener('click',()=>{ void route(); });
     }
   }
