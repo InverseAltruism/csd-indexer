@@ -192,7 +192,10 @@
   /* side by side in a detail grid the two lists start level (its row gap spaces them once they stack) */
   .ex-detail > .kv + .kv { margin-top: 0; }
   /* a detail page's head: the title, the record in words, then its keys */
-  :is(.flow, .action) + .kv { margin-top: var(--ui-space-5); }
+  h2.ex-title + .kv { margin-top: var(--ui-space-4); }
+  .flow + .kv { margin-top: var(--ui-space-5); }
+  /* the record line keeps its own 12 px under it: 24 px to the keys, as after the flow line */
+  .action + .kv { margin-top: var(--ui-space-3); }
   .ex-detail { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--ui-space-2) calc(var(--ui-space-5) + var(--ui-space-4)); margin-top: var(--ui-space-4); }
   .copy { display: inline-grid; place-items: center; width: calc(var(--ui-space-5) + 2px); height: calc(var(--ui-space-5) + 2px); margin-left: var(--ui-space-1);
     padding: 1px calc(var(--ui-space-1) + 2px); border: 0; border-radius: calc(var(--ui-radius-sm) + 1px); background: transparent; color: var(--ui-muted); vertical-align: middle; cursor: pointer;
@@ -325,7 +328,7 @@
     table.stack .act, table.acts .act { grid-column: 1 / -1; grid-row: 2; min-width: 0; }
     table.acts thead { display: none; }
     table.acts td.k { width: auto; }
-    table.acts td.empty { grid-column: 1 / -1; }
+    :is(table.stack, table.acts) td.empty { grid-column: 1 / -1; }
   }
   /* on a phone the block list drops its tx count (on each block's page) so the hash keeps its eight digits */
   @media (max-width: 400px) { .opt-xs { display: none; } }
@@ -1315,8 +1318,8 @@ async function namePage(v,label){
   }
   const evs=((hist&&hist.events)||[]).slice().reverse();
   await warmVerdicts(evs.slice(0,40).map((ev)=>ev.txid));
-  if(evs.length) v.appendChild(el(`<div class="panel"><h2>History (${fmtInt(evs.length)})</h2><div class="scroll-x"><table><thead><tr><th>Record</th><th>Tx</th><th class="opt num">Block</th></tr></thead>
-    <tbody>${evs.slice(0,40).map(ev=>`<tr><td class="act">${cxVerdict(kindLabel(ev.kind),VER[String(ev.txid).toLowerCase()])}</td><td>${txidLink(ev.txid)}</td><td class="opt num">${ev.height?link('/block/'+ev.height,fmtInt(ev.height)):''}</td></tr>`).join('')}</tbody></table></div></div>`));
+  if(evs.length) v.appendChild(el(`<div class="panel"><h2>History (${fmtInt(evs.length)})</h2><div class="scroll-x"><table class="stack"><thead><tr><th class="act">Record</th><th>Tx</th><th class="num">Block</th></tr></thead>
+    <tbody>${evs.slice(0,40).map(ev=>`<tr><td class="act">${cxVerdict(kindLabel(ev.kind),VER[String(ev.txid).toLowerCase()])}</td><td>${txidLink(ev.txid)}</td><td class="num">${ev.height?link('/block/'+ev.height,fmtInt(ev.height)):''}</td></tr>`).join('')}</tbody></table></div></div>`));
   paintNames(v);
 }
 async function domainPage(v,d){
@@ -1324,9 +1327,9 @@ async function domainPage(v,d){
   await Promise.all([warmCx(), warmVerdicts(props.map((p)=>p.txid))]);
   v.innerHTML='';
   v.appendChild(el(`<div class="panel"><h2 class="ex-title">Domain <span class="mono">${esc(d)}</span></h2>
-    <div class="muted">${fmtInt(props.length)} proposal(s). Rankings are a derived, recomputable view, not consensus-signed.</div>
-    <div class="scroll-x"><table><thead><tr><th>Proposal</th><th>Record</th><th class="opt">Proposer</th><th class="opt num">Fee</th><th class="num">Height</th></tr></thead>
-    <tbody>${props.map(p=>`<tr><td>${link('/proposal/'+p.txid,short(p.txid,10),'mono')}</td><td class="act">${describeDomainRecord(d,p.uri,VER&&VER[p.txid.toLowerCase()],p.height)||'<span class="dim">-</span>'}</td><td class="opt">${addrLink(p.proposer)}</td><td class="opt num">${fmtCSD(p.fee)}</td><td class="num">${link('/block/'+p.height,fmtInt(p.height))}</td></tr>`).join('')||'<tr><td colspan="5" class="empty">No proposals in this domain</td></tr>'}</tbody></table></div></div>`));
+    <div class="muted">${fmtInt(props.length)} ${props.length===1?'proposal':'proposals'}. Rankings are a derived, recomputable view, not consensus-signed.</div>
+    <div class="scroll-x"><table class="stack"><thead><tr><th>Proposal</th><th class="act">Record</th><th class="opt">Proposer</th><th class="opt num">Fee</th><th class="num">Height</th></tr></thead>
+    <tbody>${props.map(p=>`<tr><td><a class="mono" href="#/proposal/${esc(p.txid)}">${hashHtml(p.txid,10)}</a></td><td class="act">${describeDomainRecord(d,p.uri,VER&&VER[p.txid.toLowerCase()],p.height)||'<span class="dim">-</span>'}</td><td class="opt">${addrLink(p.proposer)}</td><td class="opt num">${fmtCSD(p.fee)}</td><td class="num">${link('/block/'+p.height,fmtInt(p.height))}</td></tr>`).join('')||'<tr><td colspan="5" class="empty">No proposals in this domain</td></tr>'}</tbody></table></div></div>`));
 }
 
 async function proposalPage(v,id){

@@ -490,7 +490,7 @@ for (const records of ["on", "404", "400"] as const) {
     INDEXER["/domain/cairnx:v1/proposals"] = PROPS;
     RECORD_READS.length = 0;
     try {
-      const v = await open("/explorer#/domain/cairnx%3Av1", 1280, () => !!document.querySelector(".cx-noeffect") || /proposal\(s\)/.test(document.body.innerText));
+      const v = await open("/explorer#/domain/cairnx%3Av1", 1280, () => !!document.querySelector(".cx-noeffect") || /\d proposals?\./.test(document.body.innerText));
       try {
         assert.deepEqual(v.errors, []);
         const row: string = await v.page.evaluate((id: string) => [...document.querySelectorAll("tr")].find((r: any) => r.innerHTML.includes(id))?.textContent ?? "", REFUSED);
@@ -655,7 +655,7 @@ for (const gates of [true, false]) {
     ];
     applied(...INDEXER["/domain/cairnx:v1/proposals"] as any[]);
     try {
-      const v = await open("/explorer#/domain/cairnx%3Av1", 1280, () => /proposal\(s\)/.test(document.body.innerText));
+      const v = await open("/explorer#/domain/cairnx%3Av1", 1280, () => /\d proposals?\./.test(document.body.innerText));
       try {
         assert.deepEqual(v.errors, []);
         const acts: string[] = await v.page.evaluate(() => [...document.querySelectorAll("td.act")].map((c: any) => c.textContent));
@@ -711,7 +711,7 @@ test("domain page: record lines separate their parts with a colon or comma, neve
   ];
   applied(...INDEXER["/domain/cairnx:v1/proposals"] as any[]);
   try {
-    const v = await open("/explorer#/domain/cairnx%3Av1", 1280, () => /proposal\(s\)/.test(document.body.innerText));
+    const v = await open("/explorer#/domain/cairnx%3Av1", 1280, () => /\d proposals?\./.test(document.body.innerText));
     try {
       assert.deepEqual(v.errors, []);
       const acts: string[] = await v.page.evaluate(() => [...document.querySelectorAll("td.act")].map((c: any) => c.textContent));
@@ -750,7 +750,7 @@ test("domain page: a Propose reads as a request unless the resolver applied it",
         struck: await v.page.locator(".cx-void").count() };
     } finally { await v.close(); }
   };
-  const loaded = () => /proposal\(s\)/.test(document.body.innerText);
+  const loaded = () => /\d proposals?\./.test(document.body.innerText);
   INDEXER["/domain/cairnx:v1/proposals"] = props;
   try {
     Object.assign(S, { market: "off", series: true, gates: true, records: "on" });
@@ -776,6 +776,30 @@ test("domain page: a Propose reads as a request unless the resolver applied it",
     assert.deepEqual(refused.acts.slice(1), done.acts.slice(1));
     assert.equal(refused.struck, 1);
   } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; S.records = "on"; for (const p of props) delete VERDICTS[p.txid]; }
+});
+
+// The name page's history and a domain's proposals are ledgers like the address page's: on a phone each row stacks, the
+// transaction (and its block) on one line and the record under them at full width, instead of a record squeezed between
+// two columns; on a desktop each row is one line. Each transaction or proposal id dims its 0x as every hash does.
+test("name history and a domain's proposals: one line per row at 1280 px, the record under its transaction at 390 px; ids with their 0x dimmed", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, records: "on" });
+  INDEXER["/domain/cairnx:v1/proposals"] = PROPS.slice(0, 3);
+  const stacked = (page: any) => page.evaluate(() => [...document.querySelectorAll("table.stack tbody tr")].map((r: any) => {
+    const rec = r.querySelector("td.act").getBoundingClientRect(), id = r.querySelector("td:not(.act) a.mono"), tx = id.getBoundingClientRect();
+    return [rec.top >= tx.bottom - 1, /^0x0*$/.test(id.querySelector(".lz")?.textContent ?? "")]; }));
+  try {
+    for (const width of [1280, 390]) {
+      for (const [path, ready, rows] of [["/explorer#/name/twin", () => /history \(/i.test(document.body.innerText), 2],
+        ["/explorer#/domain/cairnx%3Av1", () => /\d proposals?\./.test(document.body.innerText), 3]] as const) {
+        const v = await open(path, width, ready);
+        try {
+          assert.deepEqual(v.errors, []);
+          assert.equal(v.overflow, 0, "horizontal overflow");
+          assert.deepEqual(await stacked(v.page), Array(rows).fill([width < 720, true]), `${path} at ${width} px`);
+        } finally { await v.close(); }
+      }
+    }
+  } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; }
 });
 
 test("token page: the metadata hash is described as what it is, with no claim about a content swarm", { skip: why || false }, async () => {
@@ -1148,7 +1172,7 @@ const gutter = (page: any, pairs: [string, string][]) => page.evaluate((pairs: [
     return Math.round(r.left + (sel.startsWith("box:") ? 0 : parseFloat(s.paddingLeft) + parseFloat(s.borderLeftWidth))); }) }))
   .filter((x) => x.at[0] === null || x.at[0] !== x.at[1]), pairs);
 for (const width of [390, 1280]) {
-  test(`one gutter at ${width} px: headings line up with the rows, lists and fields under them; a block's two key columns start level`, { skip: why || false }, async () => {
+  test(`one gutter at ${width} px: headings line up with the rows, lists and fields under them; a block's two key columns start level; keys 16 px under a detail title`, { skip: why || false }, async () => {
     Object.assign(S, { market: "off", series: true, shell: true, records: "on" });
     INDEXER["/domain/cairnx:v1/proposals"] = PROPS.slice(0, 3);
     try {
@@ -1172,6 +1196,15 @@ for (const width of [390, 1280]) {
         if (width > 860) assert.equal(b.top, a.top, "side by side, the second key column starts level with the first");
         else assert.ok(b.left === a.left && b.top > a.end, "stacked, the second key list follows the first");
       } finally { await blk.close(); }
+      // a detail page's keys start 16 px under its title, as the preview's block, whatever follows the title
+      const gaps: number[] = [];
+      for (const path of [`/explorer#/block/${hash}`, "/explorer#/token/ZED", `/explorer#/address/${BUYER}`]) {
+        const d = await open(path, width, () => !!document.querySelector("h2.ex-title + .kv, h2.ex-title + .ex-detail"));
+        try {
+          gaps.push(await d.page.evaluate(() => { const h = document.querySelector("h2.ex-title"); return Math.round(h.nextElementSibling.getBoundingClientRect().top - h.getBoundingClientRect().bottom); }));
+        } finally { await d.close(); }
+      }
+      assert.deepEqual(gaps, [16, 16, 16], "title to keys on the block, token and address pages");
     } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; }
   });
 }
