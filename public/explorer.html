@@ -16,7 +16,7 @@
       --ui-font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
       --ui-font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       --ui-text-2xs: 11px; --ui-text-xs: 13px; --ui-text-sm: 14px; --ui-text-md: 16px; --ui-text-lg: 18px; --ui-text-xl: 22px;
-      --ui-text-2xl: 28px;
+      --ui-text-2xl: 28px; --ui-text-subhead: 15px; --ui-text-stat: 20px;
       --ui-leading-tight: 1.1; --ui-leading-snug: 1.3; --ui-leading-body: 1.55;
       --ui-track-heading: -0.03em; --ui-track-snug: -0.015em; --ui-track-label: 0.08em;
       --ui-space-1: 4px; --ui-space-2: 8px; --ui-space-3: 12px; --ui-space-4: 16px; --ui-space-5: 24px; --ui-space-6: 32px;
@@ -25,7 +25,7 @@
       --ui-ease: cubic-bezier(0.16, 1, 0.3, 1); --ui-ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
       --ui-dur-1: 120ms; --ui-dur-2: 200ms; --ui-dur-3: 320ms; --ui-dur-4: 460ms;
       --ui-bg: #F4F4F1; --ui-surface: #FFFFFF; --ui-sunken: #EBEBE7; --ui-line: #E0E0DB; --ui-line-2: #C9C9C3;
-      --ui-line-strong: #8A8A85; --ui-muted: #686864; --ui-ink-2: #3B3B38; --ui-ink: #0C0C0B; --ui-on-ink: #FFFFFF;
+      --ui-line-strong: #8A8A85; --ui-faint: #B3B3AD; --ui-muted: #686864; --ui-ink-2: #3B3B38; --ui-ink: #0C0C0B; --ui-on-ink: #FFFFFF;
       --ui-up: #0A6B3D; --ui-down: #AB3027; --ui-warn: #895100;
       --ui-up-tint: rgba(10, 107, 61, 0.12); --ui-down-tint: rgba(171, 48, 39, 0.12); --ui-warn-tint: rgba(137, 81, 0, 0.12);
       --ui-shadow-1: 0 1px 2px rgba(12, 12, 11, 0.06);
@@ -41,9 +41,11 @@
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%23050505'/%3E%3Crect x='3' y='3' width='4.4' height='4.4' rx='1' fill='%2357d977'/%3E%3Crect x='8.6' y='3' width='4.4' height='4.4' rx='1' fill='%23173b22'/%3E%3Crect x='3' y='8.6' width='4.4' height='4.4' rx='1' fill='%23173b22'/%3E%3Crect x='8.6' y='8.6' width='4.4' height='4.4' rx='1' fill='%23ffd24a'/%3E%3C/svg%3E" />
 <style>
 @layer page {
-  /* Measured against the approved preview's #explorer. Raw px below: hairlines (1px), the focus ring and nudges (2px), and
-     the preview's layout widths (the key column, the content measure, field and card minimums). Sizes the token scale
-     lacks take the nearest token and are listed as token additions in the wave report. */
+  /* Measured against the approved preview's #explorer (compare.mjs). Every value is a --ui-* token; raw px are only
+     hairlines (1px), the focus ring, and 1 or 2 px nudges on a token where the preview sits between two steps (as
+     components.css does for its table cells). Font sizes the scale lacks (the preview's 13.5, 12.5, 11.5 and 10.5 px)
+     take the nearest token and are listed in the wave report, never written as literals. This sheet is the page's own
+     and complete: on a direct indexer hit cairn's components.css is absent, so the page cannot lean on it. */
   [hidden] { display: none !important; }
   *, *::before, *::after { box-sizing: border-box; }
   /* clip, not hidden: clip makes no scroll container, so the site header's position:sticky keeps working */
@@ -54,20 +56,23 @@
   a:hover { text-decoration: underline; }
   :focus-visible { outline: 2px solid var(--ui-ink); outline-offset: 2px; border-radius: var(--ui-radius-sm); }
   b { font-weight: 500; }
+  button { font: inherit; color: inherit; }
   svg.i { width: var(--ui-text-lg); height: var(--ui-text-lg); flex: none; fill: none; stroke: currentColor; stroke-width: 1.6;
     stroke-linecap: round; stroke-linejoin: round; }
-  /* mono only for hashes, addresses, heights and amounts in tables */
+  /* Geist Mono only for hashes, addresses, heights and table figures */
   .mono, .num { font-family: var(--ui-font-mono); font-size: var(--ui-text-xs); }
-  .num { font-variant-numeric: tabular-nums; }
-  .num { text-align: right; }
+  .num { font-variant-numeric: tabular-nums; text-align: right; }
   .dim, .muted { color: var(--ui-muted); }
   .green { color: var(--ui-up); }
   .red { color: var(--ui-down); }
   .amber { color: var(--ui-warn); }
-  /* a hash's 0x and leading zeros: colour only, the hash stays whole and selectable */
-  .lz { color: var(--ui-muted); }
+  /* a hash's 0x and leading zeros, the preview's faint: colour only, the hash stays whole and selectable */
+  .lz { color: var(--ui-faint); }
   /* an address in groups of four, by spacing only: a copy of it carries no spaces */
   .g4 + .g4, .g4 + .gx, .gx + .g4 { margin-left: 0.4em; }
+  /* an address shown as its .csd name is a name, so it reads in Geist */
+  a.addrl.hasname { font-family: var(--ui-font-sans); font-size: inherit; }
+  .ui-dot { display: inline-block; vertical-align: 1px; }
 
   /* standalone: cairn's header.js is absent and #site-header keeps this page's own brand line */
   #site-header:empty { display: none; }
@@ -77,34 +82,36 @@
 
   /* 1200 px: the content measure the site's other pages use */
   .ex-wrap { max-width: 1200px; margin: 0 auto; }
-  .ex-top { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ui-space-4); padding: var(--ui-space-4) var(--ui-space-5);
-    border-bottom: 1px solid var(--ui-line); }
-  form.search { flex: 1 1 420px; min-width: 0; display: flex; align-items: center; gap: var(--ui-space-2); height: var(--ui-space-7);
-    padding: 0 var(--ui-space-3); border: 1px solid var(--ui-line); border-radius: var(--ui-radius-md); background: var(--ui-surface);
+  .ex-top { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ui-space-4);
+    padding: calc(var(--ui-space-4) + 2px) var(--ui-space-5); border-bottom: 1px solid var(--ui-line); }
+  .ex-search { flex: 1 1 320px; min-width: 0; display: flex; align-items: center; gap: var(--ui-space-2); height: calc(var(--ui-space-6) + var(--ui-space-3));
+    padding: 0 calc(var(--ui-space-3) + 2px); border: 1px solid var(--ui-line); border-radius: var(--ui-radius-md); background: var(--ui-surface);
     transition: border-color var(--ui-dur-2) var(--ui-ease), box-shadow var(--ui-dur-2) var(--ui-ease); }
-  form.search > svg.i { color: var(--ui-muted); }
-  form.search:focus-within { border-color: var(--ui-ink); box-shadow: 0 0 0 3px color-mix(in oklab, var(--ui-ink) 10%, transparent); }
-  form.search input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--ui-ink); font: inherit;
+  .ex-search > svg.i { color: var(--ui-muted); }
+  .ex-search:focus-within { border-color: var(--ui-ink); box-shadow: 0 0 0 3px color-mix(in oklab, var(--ui-ink) 10%, transparent); }
+  .ex-search input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--ui-ink); font: inherit;
     font-size: var(--ui-text-md); }
-  form.search input::placeholder { color: var(--ui-muted); }
-  .kbd { padding: 2px var(--ui-space-1); border: 1px solid var(--ui-line-2); border-bottom-width: 2px; border-radius: var(--ui-radius-sm);
-    color: var(--ui-muted); font: 500 var(--ui-text-2xs) var(--ui-font-mono); }
+  .ex-search input::placeholder { color: var(--ui-muted); }
   .stats { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ui-space-1) var(--ui-space-4); color: var(--ui-muted);
     font-size: var(--ui-text-xs); line-height: var(--ui-leading-snug); }
   .stats b { color: var(--ui-ink-2); font-weight: 500; font-variant-numeric: tabular-nums; }
-  /* components.css sizes .ui-dot for a flex badge; in running text it needs a box of its own */
-  .ui-dot { display: inline-block; vertical-align: 1px; }
-  .stats .ui-dot, .pill .ui-dot { margin-right: var(--ui-space-1); }
+  .stats .ui-dot { margin-right: var(--ui-space-1); }
+  .kbd { padding: 2px calc(var(--ui-space-1) + 2px); border: 1px solid var(--ui-line-2); border-bottom-width: 2px; border-radius: calc(var(--ui-radius-sm) - 1px);
+    color: var(--ui-muted); font: 500 var(--ui-text-2xs) var(--ui-font-mono); }
 
   main { padding-bottom: var(--ui-space-6); }
   #view > :first-child { border-top: 0; }
   .panel { position: relative; min-width: 0; padding: var(--ui-space-5); border-top: 1px solid var(--ui-line); }
   /* a table runs to the panel's edges; its cells carry the inset */
   .panel > .scroll-x { margin-inline: calc(-1 * var(--ui-space-5)); }
-  h2 { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ui-space-2); margin: 0 0 var(--ui-space-3); color: var(--ui-ink);
-    font: 500 var(--ui-text-md) / var(--ui-leading-body) var(--ui-font-sans); letter-spacing: normal; }
-  h2.ex-title { gap: var(--ui-space-3); margin-bottom: var(--ui-space-2); font-size: var(--ui-text-xl); letter-spacing: var(--ui-track-snug); }
-  h2.ex-title .badge, h2 .badge { letter-spacing: normal; }
+  /* a section heading, with its side note (a count, a window, the live marker or a filter) at the right */
+  h2 { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--ui-space-1) var(--ui-space-3);
+    min-height: var(--ui-space-5); margin: 0 0 var(--ui-space-3); color: var(--ui-ink);
+    font: 500 var(--ui-text-subhead) / var(--ui-leading-body) var(--ui-font-sans); letter-spacing: normal; }
+  .h-side { display: inline-flex; align-items: center; gap: var(--ui-space-2); color: var(--ui-muted); font-size: var(--ui-text-xs); font-weight: 500; }
+  /* a detail page's title, as the preview's block heading: the title and its status badge side by side */
+  h2.ex-title { justify-content: flex-start; gap: var(--ui-space-3); margin-bottom: var(--ui-space-2); font-size: var(--ui-text-stat); letter-spacing: var(--ui-track-snug); }
+  h2 .badge { letter-spacing: normal; }
   .row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .row > .panel + .panel { border-left: 1px solid var(--ui-line); }
 
@@ -112,139 +119,143 @@
   .pulse { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-bottom: 1px solid var(--ui-line); }
   .pu { min-width: 0; padding: var(--ui-space-4) var(--ui-space-5); border-right: 1px solid var(--ui-line); }
   .pu:last-child { border-right: 0; }
-  .pu .l { display: inline-block; color: var(--ui-muted); font: 500 var(--ui-text-2xs) / var(--ui-leading-body) var(--ui-font-mono);
+  .pu .l, .facts dt, .mkt-l { display: block; color: var(--ui-muted); font: 500 var(--ui-text-2xs) / var(--ui-leading-body) var(--ui-font-mono);
     letter-spacing: var(--ui-track-label); text-transform: uppercase; }
-  .pu .n { margin-top: var(--ui-space-1); font: 500 var(--ui-text-xl) / var(--ui-leading-snug) var(--ui-font-sans); letter-spacing: var(--ui-track-snug);
-    font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  .pu .n { margin-top: calc(var(--ui-space-1) + 2px); font: 500 var(--ui-text-stat) / var(--ui-leading-tight) var(--ui-font-sans);
+    letter-spacing: var(--ui-track-snug); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 
   /* latest blocks and the CairnX activity, side by side */
   .ex-cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border-bottom: 1px solid var(--ui-line); }
   .ex-col { min-width: 0; padding: 0; border-top: 0; }
   .ex-col + .ex-col { border-left: 1px solid var(--ui-line); }
-  .ex-col > h2 { justify-content: space-between; margin: 0; padding: var(--ui-space-4) var(--ui-space-5) var(--ui-space-1); }
+  .ex-col > h2 { margin: 0; padding: var(--ui-space-4) var(--ui-space-5) calc(var(--ui-space-1) + 2px); }
   .ex-col > .scroll-x { margin: 0; }
-  .ex-col > .tabs, .ex-col > #actmore { margin-inline: var(--ui-space-5); }
-  .ex-col > #actmore { padding-bottom: var(--ui-space-4); }
+  .ex-col > #actmore:not(:empty) { padding: 0 var(--ui-space-5) var(--ui-space-4); }
   .ex-cols + .panel { border-top: 0; }
+  /* the activity filter: quiet pill tabs in the heading, the choice on the sunken ground */
+  .tab { height: var(--ui-space-5); padding: 0 var(--ui-space-2); border: 0; border-radius: var(--ui-radius-pill); background: transparent;
+    color: var(--ui-muted); font: 500 var(--ui-text-xs) / 1 var(--ui-font-sans); cursor: pointer;
+    transition: color var(--ui-dur-1) var(--ui-ease), background-color var(--ui-dur-2) var(--ui-ease); }
+  .tab:hover { color: var(--ui-ink); }
+  .tab[aria-pressed="true"] { background: var(--ui-sunken); color: var(--ui-ink); }
+  #livepill.reorg { color: var(--ui-down); }
+  #livepill .ui-dot { color: var(--ui-up); }
+  #livepill.reorg .ui-dot { color: var(--ui-down); animation: none; }
 
-  .figs { display: flex; flex-wrap: wrap; gap: var(--ui-space-2) var(--ui-space-5); margin-bottom: var(--ui-space-3); color: var(--ui-muted);
-    font-size: var(--ui-text-sm); }
-  .figs b { color: var(--ui-ink); font-weight: 500; font-variant-numeric: tabular-nums; }
+  /* figures under a section heading: label over value (the preview's facts) */
+  .facts { display: flex; flex-wrap: wrap; gap: var(--ui-space-4) calc(var(--ui-space-5) + var(--ui-space-4)); margin: 0 0 var(--ui-space-4); }
+  .facts dd { margin: calc(var(--ui-space-1) + 2px) 0 0; font: 500 var(--ui-text-lg) / var(--ui-leading-snug) var(--ui-font-sans); letter-spacing: var(--ui-track-snug);
+    font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  .facts > div { min-width: 0; }
   .bar { height: var(--ui-space-1); overflow: hidden; border-radius: var(--ui-radius-pill); background: var(--ui-sunken); }
   .bar i { display: block; height: 100%; background: var(--ui-ink); }
 
+  /* a token card: the one card on the page, since it opens the token */
   .coins { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: var(--ui-space-3); }
   .coin { display: block; padding: var(--ui-space-4); border: 1px solid var(--ui-line); border-radius: var(--ui-radius-lg); background: var(--ui-surface);
     color: inherit; transition: border-color var(--ui-dur-2) var(--ui-ease); }
   .coin:hover { border-color: var(--ui-line-2); text-decoration: none; }
-  .coin .tk { font-weight: 600; }
+  .coin .tk { font-weight: 500; }
   .coin .nm { margin-left: var(--ui-space-2); color: var(--ui-muted); font-size: var(--ui-text-xs); }
   .coin .meta { display: flex; flex-wrap: wrap; gap: var(--ui-space-1) var(--ui-space-4); margin: var(--ui-space-2) 0 var(--ui-space-3); color: var(--ui-muted);
     font-size: var(--ui-text-xs); }
   .coin .meta b { color: var(--ui-ink); font-weight: 500; font-variant-numeric: tabular-nums; }
 
-  /* tables read like a ledger */
+  /* tables read like a ledger (the preview's .tbl): mono labels, hairline rows, figures right-aligned in tabular digits */
   table { width: 100%; border-collapse: collapse; font-size: var(--ui-text-sm); line-height: normal; }
-  th { padding: var(--ui-space-3) var(--ui-space-5) var(--ui-space-2); border-bottom: 1px solid var(--ui-line); color: var(--ui-muted); text-align: left;
-    font: 500 var(--ui-text-2xs) / var(--ui-leading-snug) var(--ui-font-mono); letter-spacing: var(--ui-track-label); text-transform: uppercase; white-space: nowrap; }
-  td { padding: var(--ui-space-3) var(--ui-space-5); border-bottom: 1px solid var(--ui-line); text-align: left; white-space: nowrap; vertical-align: baseline; }
+  th { padding: var(--ui-space-3) var(--ui-space-5) calc(var(--ui-space-3) - 2px); border-bottom: 1px solid var(--ui-line); color: var(--ui-muted);
+    text-align: left; font: 500 var(--ui-text-2xs) / var(--ui-leading-tight) var(--ui-font-mono); letter-spacing: var(--ui-track-label);
+    text-transform: uppercase; white-space: nowrap; }
+  td { padding: calc(var(--ui-space-3) - 1px) var(--ui-space-5); border-bottom: 1px solid var(--ui-line); text-align: left; white-space: nowrap;
+    vertical-align: baseline; }
+  td.m { font-family: var(--ui-font-mono); font-size: var(--ui-text-xs); }
+  th.r, td.r { text-align: right; font-variant-numeric: tabular-nums; }
   tbody tr:last-child td { border-bottom: 0; }
-  tbody tr { transition: background var(--ui-dur-1); }
+  tbody tr { transition: background-color var(--ui-dur-1) var(--ui-ease); }
   tbody tr:hover { background: var(--ui-sunken); }
   th.num { font-size: var(--ui-text-2xs); }
   th.num:first-child, td.num:first-child { width: 1%; }
   td.act { min-width: 260px; white-space: normal; overflow-wrap: anywhere; }
+  td.empty { color: var(--ui-muted); white-space: normal; }
   .scroll-x { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  /* the home's activity ledger: kind, the record, the transaction */
+  /* the record takes the room the preview's short amounts leave: no second inset between the label and the record */
+  table.acts td.k { width: 1%; padding-right: 0; }
+  table.acts td.act { min-width: 0; }
 
   /* key and value: the preview's 120 px key column */
-  .kv { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: var(--ui-space-2) var(--ui-space-4); align-items: baseline; min-width: 0;
+  .kv { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: calc(var(--ui-space-3) - 2px) var(--ui-space-4); align-items: baseline; align-content: start; min-width: 0;
     font-size: var(--ui-text-sm); }
   .kv > div:nth-child(odd) { color: var(--ui-muted); font-size: var(--ui-text-xs); }
   .kv > div:nth-child(odd)::first-letter { text-transform: uppercase; }
   .kv > .v { min-width: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
-  .ex-detail { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--ui-space-2) var(--ui-space-7); margin-top: var(--ui-space-4); }
-  .copy { display: inline-grid; place-items: center; width: var(--ui-space-5); height: var(--ui-space-5); margin-left: var(--ui-space-1); padding: 0;
-    border: 0; border-radius: var(--ui-radius-sm); background: transparent; color: var(--ui-muted); vertical-align: middle; cursor: pointer;
-    transition: background var(--ui-dur-1), color var(--ui-dur-1); }
+  .kv + .kv { margin-top: calc(var(--ui-space-3) - 2px); }
+  /* a detail page's head: the title, the record in words, then its keys */
+  :is(.flow, .action) + .kv { margin-top: var(--ui-space-5); }
+  .ex-detail { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--ui-space-2) calc(var(--ui-space-5) + var(--ui-space-4)); margin-top: var(--ui-space-4); }
+  .copy { display: inline-grid; place-items: center; width: calc(var(--ui-space-5) + 2px); height: calc(var(--ui-space-5) + 2px); margin-left: var(--ui-space-1);
+    padding: 1px calc(var(--ui-space-1) + 2px); border: 0; border-radius: calc(var(--ui-radius-sm) + 1px); background: transparent; color: var(--ui-muted); vertical-align: middle; cursor: pointer;
+    transition: background-color var(--ui-dur-1) var(--ui-ease), color var(--ui-dur-1) var(--ui-ease); }
   .copy:hover { background: var(--ui-sunken); color: var(--ui-ink); }
-  .copy svg.i { width: var(--ui-text-sm); height: var(--ui-text-sm); }
+  .copy svg.i { width: var(--ui-text-subhead); height: var(--ui-text-subhead); }
   .copy.done { color: var(--ui-up); }
 
   /* the family label of a record */
   .kind { display: inline-flex; align-items: center; justify-content: center; min-width: var(--ui-space-8); margin-right: var(--ui-space-1);
     height: calc(var(--ui-text-2xs) * 2); padding: 0 var(--ui-space-2); border-radius: var(--ui-radius-sm); background: var(--ui-sunken); color: var(--ui-ink-2);
     font: 500 var(--ui-text-2xs) var(--ui-font-sans); vertical-align: 1px; text-decoration: none; white-space: nowrap; }
-  .chip, .pill { display: inline-block; padding: 0 var(--ui-space-2); border: 1px solid var(--ui-line); border-radius: var(--ui-radius-sm);
-    color: var(--ui-muted); font: 500 var(--ui-text-2xs) / 1.7 var(--ui-font-mono); white-space: nowrap; vertical-align: 1px; }
-  .chip { margin-left: var(--ui-space-1); }
-  .badge { display: inline-flex; align-items: center; gap: var(--ui-space-1); height: var(--ui-space-5); padding: 0 var(--ui-space-2);
+  td.k .kind { margin-right: 0; }
+  /* a known operational address's name, after the address */
+  .chip { margin-left: var(--ui-space-2); color: var(--ui-muted); font-size: var(--ui-text-xs); white-space: nowrap; }
+  /* a status badge, as the preview's: a pill on the surface; the tinted kinds carry state only */
+  .badge { display: inline-flex; align-items: center; gap: calc(var(--ui-space-1) + 2px); height: var(--ui-space-5); padding: 0 calc(var(--ui-space-2) + 1px);
     border: 1px solid var(--ui-line); border-radius: var(--ui-radius-pill); background: var(--ui-surface); color: var(--ui-ink-2);
-    font: 500 var(--ui-text-2xs) / 1 var(--ui-font-sans); white-space: nowrap; }
+    font: 500 var(--ui-text-2xs) / 1 var(--ui-font-sans); white-space: nowrap; vertical-align: 1px; }
   .badge svg.i { width: var(--ui-text-xs); height: var(--ui-text-xs); stroke-width: 2; }
   .badge.ok { border-color: color-mix(in oklab, var(--ui-up) 35%, var(--ui-line)); background: var(--ui-up-tint); color: var(--ui-up); }
   .badge.bad { border-color: color-mix(in oklab, var(--ui-down) 35%, var(--ui-line)); background: var(--ui-down-tint); color: var(--ui-down); }
+  /* inside a line of text or a table row, the small badge, so the line keeps its height */
+  :is(td, .kv .v) .badge { height: calc(var(--ui-space-4) + var(--ui-space-1)); }
 
   .action { padding: 0 0 var(--ui-space-3); font-size: var(--ui-text-md); line-height: var(--ui-leading-body); }
   .action .what { color: var(--ui-ink); }
   /* an amount or a name in a record line stays on one line: a break inside a number reads as two numbers */
   .action b, td.act b { white-space: nowrap; }
-  /* a CairnX record the resolver refused: struck and tagged "no effect", so it never reads as an effect */
+  /* a CairnX record the resolver refused: struck and tagged "No effect", so it never reads as an effect */
   .cx-void { color: var(--ui-muted); text-decoration: line-through; text-decoration-color: var(--ui-down); }
   .cx-void .what, .cx-void b, .cx-void a { color: inherit; }
-  .cx-noeffect { display: inline-block; margin-left: var(--ui-space-1); padding: 0 var(--ui-space-2); border-radius: var(--ui-radius-sm);
-    background: var(--ui-down-tint); color: var(--ui-down); font: 500 var(--ui-text-2xs) / 1.8 var(--ui-font-sans); text-decoration: none;
-    vertical-align: 1px; cursor: help; white-space: nowrap; }
+  .cx-noeffect { display: inline-flex; align-items: center; gap: var(--ui-space-1); margin-left: var(--ui-space-1); padding: 0 var(--ui-space-2);
+    border-radius: var(--ui-radius-sm); background: var(--ui-down-tint); color: var(--ui-down); font: 500 var(--ui-text-2xs) / 1.8 var(--ui-font-sans);
+    text-decoration: none; vertical-align: 1px; cursor: help; white-space: nowrap; }
+  .cx-noeffect svg.i { width: var(--ui-text-2xs); height: var(--ui-text-2xs); stroke-width: 2; }
   .flow { display: flex; flex-wrap: wrap; gap: var(--ui-space-2) var(--ui-space-5); padding: var(--ui-space-1) 0 0; color: var(--ui-muted);
     font-size: var(--ui-text-sm); }
   .flow b { color: var(--ui-ink); font-weight: 500; font-variant-numeric: tabular-nums; }
   .flow .out b { color: var(--ui-down); }
   .flow .in b { color: var(--ui-up); }
   .muted { font-size: var(--ui-text-xs); }
-  div.muted { margin-top: var(--ui-space-3); max-width: 80ch; }
+  div.muted { margin-top: var(--ui-space-3); max-width: 80ch; line-height: var(--ui-leading-body); }
   div.muted + .kv, div.muted + .scroll-x { margin-top: var(--ui-space-4); }
   div.muted a { text-decoration: underline; text-decoration-color: var(--ui-line-strong); }
-  .cxbal { display: flex; flex-wrap: wrap; gap: var(--ui-space-2); margin-top: var(--ui-space-4); }
-  .cxbal .tk, .cxbal .nm { padding: var(--ui-space-1) var(--ui-space-3); border: 1px solid var(--ui-line); border-radius: var(--ui-radius-md);
-    font-size: var(--ui-text-sm); }
-  .cxbal .tk b { font-weight: 500; font-variant-numeric: tabular-nums; }
-  .addrl.hasname { font-weight: 500; }
 
   .namehdr { display: flex; align-items: center; gap: var(--ui-space-4); }
   .namehdr h2.ex-title { margin: 0; }
-  /* an identity avatar, the one coloured element: its hue from the name (--hue), its lightness from the theme */
-  .navatar { display: inline-grid; place-items: center; flex: none; width: var(--ui-space-7); height: var(--ui-space-7); border: 1px solid;
-    border-radius: var(--ui-radius-lg); font: 600 var(--ui-text-xl) / 1 var(--ui-font-sans);
-    background: hsl(var(--hue) 45% 88%); border-color: hsl(var(--hue) 35% 72%); color: hsl(var(--hue) 55% 24%); }
-  :root[data-theme="dark"] .navatar { background: hsl(var(--hue) 40% 18%); border-color: hsl(var(--hue) 40% 34%); color: hsl(var(--hue) 60% 86%); }
+  .namehdr .nm-l { white-space: nowrap; }
+  /* the name's monogram on a neutral disc (no hue: identity colour belongs to cairn's avatar module) */
+  .navatar { display: inline-grid; place-items: center; flex: none; width: var(--ui-space-7); height: var(--ui-space-7); border-radius: 50%;
+    background: var(--ui-sunken); box-shadow: inset 0 0 0 1px var(--ui-line); color: var(--ui-ink-2); font: 500 var(--ui-text-xl) / 1 var(--ui-font-sans); }
 
-  /* filter tabs: the segmented control's look; the inset is that of components.css .ui-seg */
-  .tabs { display: inline-flex; gap: 2px; margin: 0 0 var(--ui-space-3); padding: 2px; border: 1px solid var(--ui-line); border-radius: var(--ui-radius-pill);
-    background: var(--ui-sunken); }
-  .tab { padding: var(--ui-space-1) var(--ui-space-3); border: 0; border-radius: var(--ui-radius-pill); background: transparent; color: var(--ui-muted);
-    font: 500 var(--ui-text-xs) / var(--ui-leading-snug) var(--ui-font-sans); cursor: pointer;
-    transition: color var(--ui-dur-1) var(--ui-ease), background-color var(--ui-dur-2) var(--ui-ease); }
-  .tab:hover { color: var(--ui-ink); }
-  .tab.on { background: var(--ui-surface); color: var(--ui-ink); box-shadow: var(--ui-shadow-1), 0 0 0 1px var(--ui-line); }
-  .ex-btn { display: inline-flex; align-items: center; min-height: var(--ui-space-6); margin-top: var(--ui-space-3); padding: 0 var(--ui-space-3);
-    border: 1px solid var(--ui-line-2); border-radius: var(--ui-radius-pill); background: var(--ui-surface); color: var(--ui-ink);
+  /* the preview's small secondary button */
+  .ex-btn { display: inline-flex; align-items: center; height: var(--ui-space-6); margin-top: var(--ui-space-3); padding: 0 var(--ui-space-3);
+    border: 1px solid var(--ui-line-2); border-radius: var(--ui-radius-pill); background: transparent; color: var(--ui-ink);
     font: 500 var(--ui-text-xs) / 1 var(--ui-font-sans); cursor: pointer; transition: border-color var(--ui-dur-2) var(--ui-ease), transform var(--ui-dur-1) var(--ui-ease); }
   .ex-btn:hover:not(:disabled) { border-color: var(--ui-ink); }
   .ex-btn:active:not(:disabled) { transform: scale(0.97); }
   .ex-btn:disabled { color: var(--ui-muted); cursor: progress; }
-  .tok-search { width: 100%; margin-top: var(--ui-space-3); padding: var(--ui-space-2) var(--ui-space-3); border: 1px solid var(--ui-line);
-    border-radius: var(--ui-radius-md); background: var(--ui-surface); color: var(--ui-ink); font: 400 var(--ui-text-md) var(--ui-font-sans); }
-  .tok-search:focus { outline: 0; border-color: var(--ui-ink); }
-
-  .actrow { display: flex; justify-content: space-between; align-items: baseline; gap: var(--ui-space-4); padding: var(--ui-space-3) var(--ui-space-5);
-    border-bottom: 1px solid var(--ui-line); font-size: var(--ui-text-sm); transition: background var(--ui-dur-1); }
-  .actrow:hover { background: var(--ui-sunken); }
-  .actrow:last-child { border-bottom: 0; }
-  .actrow > .action { min-width: 0; padding: 0; font-size: var(--ui-text-sm); overflow-wrap: anywhere; }
-  .actrow .meta { flex: none; color: var(--ui-muted); font-size: var(--ui-text-xs); text-align: right; white-space: nowrap; }
-  .actrow .meta a { color: var(--ui-muted); }
-  .actrow .meta .addrl.hasname { font-weight: 400; }
-  .ex-col .actrow { flex-direction: column; gap: var(--ui-space-1); }
-  .ex-col .actrow .meta { text-align: left; white-space: normal; }
+  .tok-search { width: 100%; height: calc(var(--ui-space-6) + var(--ui-space-3)); margin-top: var(--ui-space-3); padding: 0 calc(var(--ui-space-3) + 2px);
+    border: 1px solid var(--ui-line); border-radius: var(--ui-radius-md); background: var(--ui-surface); color: var(--ui-ink); font: 400 var(--ui-text-md) var(--ui-font-sans); }
+  .tok-search::placeholder { color: var(--ui-muted); }
+  .tok-search:focus { outline: 0; border-color: var(--ui-ink); box-shadow: 0 0 0 3px color-mix(in oklab, var(--ui-ink) 10%, transparent); }
 
   .loading { padding: var(--ui-space-5); color: var(--ui-muted); }
   /* loading is live state: the skeleton may pulse */
@@ -271,9 +282,8 @@
   .mkt-sub a, .mkt-s a { color: inherit; text-decoration: underline; }
   .mkt-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: var(--ui-space-4) var(--ui-space-5); margin: var(--ui-space-3) 0 var(--ui-space-4); }
   .mkt-fig { min-width: 0; }
-  .mkt-l { color: var(--ui-muted); font: 500 var(--ui-text-2xs) / var(--ui-leading-body) var(--ui-font-mono); letter-spacing: var(--ui-track-label);
-    text-transform: uppercase; }
-  .mkt-v { margin-top: var(--ui-space-1); font: 500 var(--ui-text-lg) var(--ui-font-sans); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+  .mkt-v { margin-top: calc(var(--ui-space-1) + 2px); font: 500 var(--ui-text-lg) / var(--ui-leading-snug) var(--ui-font-sans); letter-spacing: var(--ui-track-snug);
+    font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
   .mkt-u { color: var(--ui-ink-2); font-size: var(--ui-text-xs); }
   .mkt-s { margin-top: var(--ui-space-1); color: var(--ui-muted); font-size: var(--ui-text-2xs); line-height: var(--ui-leading-snug); overflow-wrap: anywhere; }
 
@@ -291,27 +301,31 @@
   }
   @media (max-width: 720px) {
     .kbd { display: none; }
-    .actrow { flex-wrap: wrap; }
-    .actrow .meta { text-align: left; white-space: normal; }
     .cx-noeffect { white-space: normal; }
     /* text cells wrap, so a row fits the screen and an amount is not cut at the scroll box's edge */
     td { white-space: normal; }
-    td.num, td.age { white-space: nowrap; }
+    td.num, td.age, td.r, td a.mono { white-space: nowrap; }
     td.opt, th.opt { display: none; }
     td.act { min-width: 8em; }
-    /* the address page's rows stack: txid and the delta on one line, the action under them at full width */
-    table.stack tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--ui-space-1) var(--ui-space-3);
+    /* stacked ledgers: the address page's txid and amount, the activity's kind and transaction, on one line; the record
+       under them at full width */
+    table.stack tr, table.acts tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--ui-space-1) var(--ui-space-3);
       padding: var(--ui-space-2) var(--ui-space-5); border-bottom: 1px solid var(--ui-line); }
-    table.stack th, table.stack td { padding: 0; border: 0; }
-    table.stack .act { grid-column: 1 / -1; grid-row: 2; min-width: 0; }
+    table.acts tr { align-items: baseline; }
+    table.stack tbody tr:last-child, table.acts tbody tr:last-child { border-bottom: 0; }
+    table.stack th, table.stack td, table.acts th, table.acts td { padding: 0; border: 0; }
+    table.stack .act, table.acts .act { grid-column: 1 / -1; grid-row: 2; min-width: 0; }
+    table.acts thead { display: none; }
+    table.acts td.k { width: auto; }
+    table.acts td.empty { grid-column: 1 / -1; }
   }
   /* on a phone the block list drops its tx count (on each block's page) so the hash keeps its eight digits */
   @media (max-width: 400px) { .opt-xs { display: none; } }
   @media (max-width: 520px) {
     .ex-top, .panel, .loading { padding-inline: var(--ui-space-4); }
     .panel > .scroll-x { margin-inline: calc(-1 * var(--ui-space-4)); }
-    .pu, .actrow { padding-inline: var(--ui-space-4); }
-    .ex-col > .tabs, .ex-col > #actmore { margin-inline: var(--ui-space-4); }
+    .pu { padding-inline: var(--ui-space-4); }
+    .ex-col > #actmore:not(:empty) { padding-inline: var(--ui-space-4); }
     th, td { padding-inline: var(--ui-space-3); }
     /* the latest-blocks list keeps its 16 px edges and tightens between columns */
     .ex-col th, .ex-col td { padding-inline: var(--ui-space-2); }
@@ -321,9 +335,10 @@
     .ex-col > h2 { padding-inline: var(--ui-space-4); }
     th:first-child, td:first-child { padding-left: var(--ui-space-4); }
     th:last-child, td:last-child { padding-right: var(--ui-space-4); }
-    table.stack tr { padding-inline: var(--ui-space-4); }
+    table.stack tr, table.acts tr { padding-inline: var(--ui-space-4); }
     .kv { grid-template-columns: minmax(0, 1fr); gap: 2px 0; }
     .kv > .v { margin-bottom: var(--ui-space-2); }
+    .kv + .kv { margin-top: 0; }
   }
 }
 </style>
@@ -338,9 +353,9 @@
   <div class="ex-top">
     <!-- submit is bound in the script with addEventListener: through the front door the CSP's nonce never authorizes an
          inline handler attribute -->
-    <form class="search" id="search-form" role="search">
+    <form class="ex-search" id="search-form" role="search">
       <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.6-3.6"/></svg>
-      <input id="q" aria-label="search the chain" placeholder="Search a block, transaction, address or name.csd" data-short="Block, tx, address or name.csd" autocomplete="off" enterkeyhint="search"/>
+      <input id="q" aria-label="Search the chain" placeholder="Search a block, transaction, address or name.csd" data-short="Block, tx, address or name.csd" autocomplete="off" enterkeyhint="search"/>
       <span class="kbd" aria-hidden="true">/</span>
     </form>
     <div class="stats" id="stats" aria-live="polite"><span>connecting…</span></div>
@@ -408,7 +423,8 @@ const addrGroups = (a,full)=>{ const s=String(a||''); if(!/^0x[0-9a-f]{40}$/i.te
   const g=(x)=>x.match(/.{4}/g).map((p)=>`<span class="g4">${p}</span>`).join(''), b=s.slice(2);
   return full ? `<span class="g4">0x${b.slice(0,4)}</span>${g(b.slice(4))}` : `<span class="g4">0x${b.slice(0,4)}</span>${g(b.slice(4,8))}<span class="gx">…</span>${g(b.slice(32))}`; };
 const ICON={ copy:'<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="13" height="13" rx="3"/><path d="M16 8V6a3 3 0 0 0-3-3H6a3 3 0 0 0-3 3v7a3 3 0 0 0 3 3h2"/></svg>',
-  check:'<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>' };
+  check:'<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>',
+  x:'<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>' };
 /** A button that copies `value` (what: the accessible name's object, a constant word). */
 const copyBtn = (value,what)=>`<button type="button" class="copy" data-copy="${esc(value)}" aria-label="Copy ${what}" title="Copy ${what}">${ICON.copy}</button>`;
 const blockLink = (h,n)=>`<a class="mono" href="#/block/${esc(h)}">${hashHtml(h,n)}</a>`;
@@ -481,7 +497,7 @@ async function route(){
     else if(h.startsWith('/proposal/')) await proposalPage(v,h.slice(10));
     else if(h.startsWith('/token/'))     await tokenPage(v,decodeURIComponent(h.slice(7)));
     else if(h.startsWith('/name/'))      await namePage(v,decodeURIComponent(h.slice(6)));
-    else v.innerHTML='<div class="panel"><h2>Not found</h2><div class="muted">Nothing lives at this route. Search above for a .csd name, block height, txid or address, or go <a href="#/">home</a>.</div></div>';
+    else v.innerHTML='<div class="panel"><h2 class="ex-title">Not found</h2><div class="muted">Nothing lives at this address of the explorer. Search above for a .csd name, block height, txid or address, or go to the <a href="#/">explorer home</a>.</div></div>';
   }catch(e){v.innerHTML='<div class="panel"><h2 class="red">Nothing found</h2><div class="muted">'+esc(e.message)+'</div><div class="muted" style="margin-top:6px">Check the value, or search above for a .csd name, block height, txid or 0x address. <a href="#/">← back to the explorer</a></div></div>';}
   paintNames(v);
 }
@@ -548,13 +564,12 @@ async function paintNames(root){
 // ── .csd name page helpers ──
 // 1 epoch = 30 blocks ≈ 1 hour, so an epoch count reads as hours; roll up to days/months.
 const epochsToHuman=(e)=>{e=Math.max(0,Math.round(e));if(e<48)return e+'h';if(e<24*60)return Math.round(e/24)+'d';return Math.round(e/24/30.4)+'mo';};
-const KIND_LABEL={ncommit:['Name','sealed a commitment'],name:['Name','claimed'],nfinalize:['Name','finalized'],nset:['Name','set address'],
-  nxfer:['Name','transferred'],nrenew:['Name','renewed lease'],offer:['Market','listed for sale'],ocancel:['Market','cancelled listing'],bid:['Market','bid'],
-  claim:['Market','reserved (open offer)'],fill:['Market','bought / sold (fill)'],cancel:['Market','cancelled']};
+const KIND_LABEL={ncommit:['Name','Sealed a commitment'],name:['Name','Claimed'],nfinalize:['Name','Finalized'],nset:['Name','Set address'],
+  nxfer:['Name','Transferred'],nrenew:['Name','Renewed lease'],offer:['Market','Listed for sale'],ocancel:['Market','Cancelled listing'],bid:['Market','Bid'],
+  claim:['Market','Reserved (open offer)'],fill:['Market','Bought / sold (fill)'],cancel:['Market','Cancelled']};
 const kindLabel=(k)=>{ const l=Object.hasOwn(KIND_LABEL,k)?KIND_LABEL[k]:null; return l?kind(l[0])+l[1]:esc(k||'record'); };
-// deterministic name-hash colour + initial, so a name has a recognisable "face" (cheap, no deps)
-const nameHue=(s)=>{let h=0;for(let i=0;i<s.length;i++)h=(h*31+s.charCodeAt(i))>>>0;return h%360;};
-const nameAvatar=(label)=>`<span class="navatar" style="--hue:${nameHue(label)}">${esc((label[0]||'?').toUpperCase())}</span>`;
+// the name's initial on a neutral disc
+const nameAvatar=(label)=>`<span class="navatar" aria-hidden="true">${esc((label[0]||'?').toUpperCase())}</span>`;
 // deterministic CSD emission curve (50 CSD initial reward, halving every 1,051,200 blocks)
 const HALVE=1051200;
 function emittedAt(H){let total=0,reward=50e8,h=0;while(h<H&&reward>0){const end=Math.min(H,h+HALVE);total+=(end-h)*reward;h=end;reward=Math.floor(reward/2);}return total;}
@@ -649,7 +664,7 @@ async function verdictsFromLog(){ const log=await jx(SIB.cairnx,'/log?limit=5000
 function cxVerdict(body,verdict){
   if(body==null) return body;
   if(verdict&&verdict.applied===false)
-    return `<span class="cx-void">${body}</span> <span class="cx-noeffect" title="The CairnX resolver REJECTED this record. It has no effect on token state, and anyone re-running the open resolver gets the same result. The transaction is real and paid its anchor fee; only the CairnX action was a no-op.">✕ no effect${verdict.note?`: ${esc(verdict.note)}`:''}</span>`;
+    return `<span class="cx-void">${body}</span> <span class="cx-noeffect" title="The CairnX resolver REJECTED this record. It has no effect on token state, and anyone re-running the open resolver gets the same result. The transaction is real and paid its anchor fee; only the CairnX action was a no-op.">${ICON.x}No effect${verdict.note?`: ${esc(verdict.note)}`:''}</span>`;
   return body;
 }
 // An effect word (Minted, Finalized name...) needs the resolver's applied verdict; without one the line is the request
@@ -730,11 +745,11 @@ function flowHtml(tx){
     else { toOthers+=o.value; outs.push(o); }
   }
   const parts=[];
-  if(tx.coinbase) parts.push(`<span class="f in">mined <b>+${fmtCSD((tx.outputs||[]).reduce((s,o)=>s+o.value,0))}</b> (block reward)</span>`);
+  if(tx.coinbase) parts.push(`<span class="f in">Mined <b>+${fmtCSD((tx.outputs||[]).reduce((s,o)=>s+o.value,0))}</b> (block reward)</span>`);
   else{
-    if(outs.length) parts.push(`<span class="f out">sent <b>−${fmtCSD(toOthers)}</b> ${outs.length===1?`to ${addrLink(outs[0].addr)}`:`to ${outs.length} recipients`}</span>`);
-    parts.push(`<span class="f out">fee <b>−${fmtCSD(tx.fee)}</b></span>`);
-    if(change) parts.push(`<span class="f">change back <b>${fmtCSD(change)}</b></span>`);
+    if(outs.length) parts.push(`<span class="f out">Sent <b>−${fmtCSD(toOthers)}</b> ${outs.length===1?`to ${addrLink(outs[0].addr)}`:`to ${outs.length} recipients`}</span>`);
+    parts.push(`<span class="f out">Fee <b>−${fmtCSD(tx.fee)}</b></span>`);
+    if(change) parts.push(`<span class="f">Change back <b>${fmtCSD(change)}</b></span>`);
   }
   return `<div class="flow">${parts.join('')}</div>`;
 }
@@ -818,15 +833,15 @@ async function home(v){
   v.appendChild(el(`<div class="pulse">
     <div class="pu hot"><div class="l">Height</div><div class="n">${fmtInt(health.indexed_height)}</div></div>
     <div class="pu"><div class="l">Avg block time, 24h</div><div class="n">${miners?Math.round(miners.avg_interval_secs):'-'} <span class="u">s</span></div></div>
-    <div class="pu" id="pu-hr" title="${esc(hrSpan)}"><div class="l">hashrate<span data-hrwin="tile"></span></div><div class="n">${hr?`${hr.val} <span class="u">${hr.unit}</span>`:'-'}</div></div>
+    <div class="pu" id="pu-hr" title="${esc(hrSpan)}"><div class="l">Hashrate<span data-hrwin="tile"></span></div><div class="n">${hr?`${hr.val} <span class="u">${hr.unit}</span>`:'-'}</div></div>
     <div class="pu"><div class="l">Circulating</div><div class="n">${supply?fmtCSD(supply.emitted_supply).replace(' CSD',''):'-'} <span class="u">CSD</span></div></div>
   </div>`));
   if(!paintHrWin(v,miners,series)) charts().then(()=>{ if(v.isConnected) paintHrWin(v,miners,series); });
 
   // ── latest blocks and the recent CairnX activity, side by side ──
   const cols=el(`<div class="ex-cols">
-    <div class="panel ex-col"><h2>Latest blocks <span class="pill" id="livepill"><span class="ui-dot ui-dot-live green"></span>live</span></h2>
-      <div class="scroll-x"><table><thead><tr><th>height</th><th>age</th><th>hash</th><th class="num opt-xs">txs</th></tr></thead><tbody id="blkfeed" aria-live="polite"></tbody></table></div></div>
+    <div class="panel ex-col"><h2>Latest blocks <span class="h-side" id="livepill"><span class="ui-dot ui-dot-live"></span><span class="lp-t">Live</span></span></h2>
+      <div class="scroll-x"><table><thead><tr><th>Height</th><th>Age</th><th>Hash</th><th class="num opt-xs">Txs</th></tr></thead><tbody id="blkfeed" aria-live="polite"></tbody></table></div></div>
     <div class="panel ex-col" id="actcol"><h2>Recent CairnX activity</h2></div>
   </div>`);
   v.appendChild(cols);
@@ -840,36 +855,42 @@ async function home(v){
   const acts=(cxprops||[]).map(p=>{ let rec=null; try{rec=JSON.parse(p.uri);}catch{ /* not JSON: no record kind, the row shows under all */ }
       const html=describeDomainRecord('cairnx:v1',p.uri,VER&&VER[p.txid.toLowerCase()],p.height); return html?{p,html,name:!!(rec&&NAME_KINDS.has(rec.t))}:null; })
     .filter(Boolean);
+  // a ledger as the preview's latest transactions: the family label, the record in words, the transaction
   const act=$('#actcol',cols);
-  if(!acts.length) act.insertAdjacentHTML('beforeend','<div class="actrow"><div class="muted">No CairnX records in this indexer yet.</div></div>');
+  const actTable=(rows)=>`<div class="scroll-x"><table class="acts"><thead><tr><th>Kind</th><th>Record</th><th class="r">Transaction</th></tr></thead><tbody id="actfeed">${rows}</tbody></table></div>`;
+  if(!acts.length) act.insertAdjacentHTML('beforeend',actTable('<tr><td colspan="3" class="empty">No CairnX records in this indexer yet.</td></tr>'));
   else {
     // age from height distance (blocks target ~2min): honest "~" display, no per-row block fetch
     const avgSecs=(miners&&miners.avg_interval_secs)||120, tipH=health.indexed_height||0;
     const hAgo=(hh)=>{ if(!hh||!tipH||hh>tipH) return ''; const a=ageOf(Math.round((tipH-hh)*avgSecs)); return a==='now'?'now':'~'+a+' ago'; };
-    act.insertAdjacentHTML('beforeend',`<div class="tabs" role="group" aria-label="filter"><button class="tab on" data-f="all" aria-pressed="true">All</button><button class="tab" data-f="name" aria-pressed="false">Names</button><button class="tab" data-f="dex" aria-pressed="false">DEX</button></div>
-      <div id="actfeed"></div><div id="actmore"></div>`);
+    $('h2',act).insertAdjacentHTML('beforeend',`<span class="h-side" role="group" aria-label="Filter"><button type="button" class="tab" data-f="all" aria-pressed="true">All</button><button type="button" class="tab" data-f="name" aria-pressed="false">Names</button><button type="button" class="tab" data-f="dex" aria-pressed="false">DEX</button></span>`);
+    act.insertAdjacentHTML('beforeend',actTable('')+'<div id="actmore"></div>');
     let shown=12, filt='all';
-    const render=()=>{ const all=acts.filter(a=>filt==='all'||(filt==='name'?a.name:!a.name)), list=all.slice(0,shown);
-      $('#actfeed',act).innerHTML=list.length?list.map(a=>`<div class="actrow"><div class="action">${a.html}</div>
-        <div class="meta">by ${addrLink(a.p.proposer)} · ${link('/block/'+a.p.height,hAgo(a.p.height)||('block '+fmtInt(a.p.height)),'dim')} · <a class="dim mono" href="#/tx/${esc(a.p.txid)}">${hashHtml(a.p.txid,6)}</a></div></div>`).join(''):'<div class="actrow"><div class="muted">nothing here yet</div></div>';
-      $('#actmore',act).innerHTML=all.length>shown?`<button class="ex-btn" id="actshowmore">Show ${Math.min(24,all.length-shown)} more</button>`:'';
+    // the record's family label leads its line; here it moves to its own column, out of a refused record's strike
+    const row=(a)=>{ const r=el(`<tr class="actrow"><td class="k"></td><td class="act">${a.html}</td>
+      <td class="r m"><a href="#/tx/${esc(a.p.txid)}" title="${esc(`block ${fmtInt(a.p.height)}${hAgo(a.p.height)?', '+hAgo(a.p.height):''}, by ${a.p.proposer}`)}">${hashHtml(a.p.txid,6)}</a></td></tr>`);
+      const k=r.querySelector('td.act .kind'); if(k) r.firstElementChild.append(k);
+      return r; };
+    const render=()=>{ const all=acts.filter(a=>filt==='all'||(filt==='name'?a.name:!a.name)), list=all.slice(0,shown), feed=$('#actfeed',act);
+      if(list.length) feed.replaceChildren(...list.map(row)); else feed.innerHTML='<tr><td colspan="3" class="empty">No records of this kind yet.</td></tr>';
+      $('#actmore',act).innerHTML=all.length>shown?`<button type="button" class="ex-btn" id="actshowmore">Show ${Math.min(24,all.length-shown)} more</button>`:'';
       const mb=$('#actshowmore',act); if(mb) mb.onclick=()=>{shown+=24;render();};
-      paintNames($('#actfeed',act)); };
-    act.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{act.querySelectorAll('.tab').forEach(x=>{x.classList.toggle('on',x===b);x.setAttribute('aria-pressed',String(x===b));});filt=b.dataset.f;shown=12;render();});
+      paintNames(feed); };
+    act.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{act.querySelectorAll('.tab').forEach(x=>x.setAttribute('aria-pressed',String(x===b)));filt=b.dataset.f;shown=12;render();});
     render();
   }
 
   // ── Section: CSD, the native coin (+ emission-schedule chart) ──
-  const csdPanel=el(`<div class="panel"><h2>CSD <span class="pill">the native coin</span></h2>
-    <div class="figs">
-      <span>circulating <b>${supply?fmtCSD(supply.emitted_supply):'-'}</b></span>
-      <span>max supply <b>${supply?fmtCSD(supply.max_supply):'-'}</b></span>
-      <span>block reward <b>${supply?fmtCSD(supply.block_reward):'-'}</b></span>
-      <span>emitted <b>${supply?supply.pct_emitted.toFixed(2)+'%':'-'}</b></span>
-      <span>first halving in <b>${halvDays!=null?'~'+Math.round(halvDays/365*10)/10+' yr':'-'}</b></span></div>
+  const csdPanel=el(`<div class="panel"><h2>CSD <span class="h-side">The native coin</span></h2>
+    <dl class="facts">
+      <div><dt>Circulating</dt><dd>${supply?fmtCSD(supply.emitted_supply):'-'}</dd></div>
+      <div><dt>Max supply</dt><dd>${supply?fmtCSD(supply.max_supply):'-'}</dd></div>
+      <div><dt>Block reward</dt><dd>${supply?fmtCSD(supply.block_reward):'-'}</dd></div>
+      <div><dt>Emitted</dt><dd>${supply?supply.pct_emitted.toFixed(2)+'%':'-'}</dd></div>
+      <div><dt>First halving in</dt><dd>${halvDays!=null?'~'+Math.round(halvDays/365*10)/10+' yr':'-'}</dd></div></dl>
     <div class="bar"><i style="width:${supply?Math.max(1,supply.pct_emitted):0}%"></i></div>
     <div class="mkt" id="csd-mkt" hidden></div>
-    <div class="muted">emission schedule: 50 CSD/block, halving every 1,051,200 blocks (~4 years), secured by SHA-NI proof-of-work</div>
+    <div class="muted">Emission schedule: 50 CSD/block, halving every 1,051,200 blocks (~4 years), secured by SHA-NI proof-of-work</div>
     <div id="emchart" class="xchart" hidden></div></div>`);
   v.appendChild(csdPanel);
   marketPanel($('#csd-mkt',csdPanel));
@@ -883,11 +904,11 @@ async function home(v){
   })();
 
   // ── Section: tokens on CairnX (top 3 highlighted + searchable/collapsible full list) ──
-  const tokPanel=el(`<div class="panel"><h2>Tokens on CairnX <span class="pill" id="tok-count"></span></h2>
+  const tokPanel=el(`<div class="panel"><h2>Tokens on CairnX <span class="h-side" id="tok-count"></span></h2>
     <div id="tok-top" class="coins"></div>
-    <button class="ex-btn" id="tok-toggle" style="display:none" aria-expanded="false"></button>
+    <button type="button" class="ex-btn" id="tok-toggle" style="display:none" aria-expanded="false"></button>
     <div id="tok-rest-wrap" style="display:none">
-      <input id="tok-search" class="tok-search" aria-label="search tokens" placeholder="Search tokens by ticker or name" autocomplete="off"/>
+      <input id="tok-search" class="tok-search" aria-label="Search tokens" placeholder="Search tokens by ticker or name" autocomplete="off"/>
       <div id="tok-rest" class="scroll-x"></div></div>
     <div class="muted" id="tok-note"></div></div>`);
   v.appendChild(tokPanel);
@@ -907,15 +928,15 @@ async function home(v){
       toggle.style.display=''; toggle.textContent=`Browse all ${toks.length} tokens`;
       toggle.onclick=()=>{const open=wrap.style.display!=='none';wrap.style.display=open?'none':'';toggle.setAttribute('aria-expanded',String(!open));toggle.textContent=(open?'Browse all ':'Hide ')+`${toks.length} tokens`;if(!open)$('#tok-search',tokPanel).focus();};
       const renderRest=(q)=>{const f=rest.filter(t=>!q||t.ticker.toLowerCase().includes(q)||String(t.name||'').toLowerCase().includes(q));
-        $('#tok-rest',tokPanel).innerHTML=`<table><thead><tr><th>token</th><th>name</th><th class="opt num">minted</th></tr></thead><tbody>${f.slice(0,300).map(t=>`<tr><td>${link('/token/'+encodeURIComponent(t.ticker),t.ticker,'mono')}</td><td class="dim">${esc(t.name||'')}</td><td class="opt num">${fmtAmt(t.minted,t.decimals)}</td></tr>`).join('')||'<tr><td colspan="3" class="dim">no matches</td></tr>'}</tbody></table>`;};
+        $('#tok-rest',tokPanel).innerHTML=`<table><thead><tr><th>Token</th><th>Name</th><th class="opt num">Minted</th></tr></thead><tbody>${f.slice(0,300).map(t=>`<tr><td>${link('/token/'+encodeURIComponent(t.ticker),t.ticker)}</td><td class="dim">${esc(t.name||'')}</td><td class="opt num">${fmtAmt(t.minted,t.decimals)}</td></tr>`).join('')||'<tr><td colspan="3" class="empty">No matches</td></tr>'}</tbody></table>`;};
       renderRest(''); $('#tok-search',tokPanel).addEventListener('input',(e)=>renderRest(e.target.value.trim().toLowerCase()));
     }
     $('#tok-note',tokPanel).innerHTML=`Every token is <b>CairnX</b>: records carried inside ordinary chain transactions (the Ordinals/Runes class). The chain carries a fill's payment and the CairnX resolver decides its delivery, so a paid fill can be refused (shown here as no effect). ${names?`<b>${fmtInt(names.length)}</b> .csd names registered. `:''}Trade at <a href="https://cairn-substrate.com/trade" target="_blank">/trade</a> · <a href="https://cairn-substrate.com/docs" target="_blank">docs</a>.`;
   })();
 
   v.appendChild(el(`<div class="row">
-    <div class="panel"><h2>App activity, on-chain domains</h2><div class="scroll-x"><table><thead><tr><th>domain</th><th class="num">proposals</th></tr></thead>
-      <tbody>${domains.slice(0,8).map(d=>`<tr><td>${link('/domain/'+encodeURIComponent(d.domain),domainLabel(d.domain))}</td><td class="num">${fmtInt(d.proposals)}</td></tr>`).join('')||'<tr><td colspan="2" class="dim">no domain records yet</td></tr>'}</tbody></table></div></div>
+    <div class="panel"><h2>App activity, on-chain domains</h2><div class="scroll-x"><table><thead><tr><th>Domain</th><th class="num">Proposals</th></tr></thead>
+      <tbody>${domains.slice(0,8).map(d=>`<tr><td>${link('/domain/'+encodeURIComponent(d.domain),domainLabel(d.domain))}</td><td class="num">${fmtInt(d.proposals)}</td></tr>`).join('')||'<tr><td colspan="2" class="empty">No domain records yet</td></tr>'}</tbody></table></div></div>
     <div class="panel"><h2>Chain records</h2><div class="kv">
       <div>blocks indexed</div><div class="v">${fmtInt(health.blocks)}</div>
       <div>transactions</div><div class="v">${fmtInt(health.txs)}</div>
@@ -927,12 +948,12 @@ async function home(v){
 
   // ── miners (24h) + top holders ──
   v.appendChild(el(`<div class="row">
-    <div class="panel"><h2>Miners, 24h${miners?` <span class="pill">${fmtInt(miners.miner_count)} ${miners.miner_count===1?'miner':'miners'}</span>`:''}${miners&&miners.concentration?` <span class="pill" title="Herfindahl-Hirschman index of block share, lower = more decentralised">HHI ${Math.round(miners.concentration.hhi*10000)}</span>`:''}</h2>
-      <div class="scroll-x"><table><thead><tr><th class="num">#</th><th>miner</th><th class="num">blocks</th><th class="opt num">share</th></tr></thead><tbody>${
-        ((miners&&miners.miners)||[]).slice(0,5).map((m,i)=>`<tr><td class="num dim">${i+1}</td><td>${addrLink(m.addr)}</td><td class="num">${fmtInt(m.blocks)}</td><td class="opt num dim">${(m.share*100).toFixed(1)}%</td></tr>`).join('')||'<tr><td colspan="4" class="dim">no recent miners</td></tr>'}</tbody></table></div></div>
+    <div class="panel"><h2>Miners, 24h${miners?` <span class="h-side"><span>${fmtInt(miners.miner_count)} ${miners.miner_count===1?'miner':'miners'}</span>${miners.concentration?`<span title="Herfindahl-Hirschman index of block share, lower = more decentralised">HHI ${Math.round(miners.concentration.hhi*10000)}</span>`:''}</span>`:''}</h2>
+      <div class="scroll-x"><table><thead><tr><th class="num">#</th><th>Miner</th><th class="num">Blocks</th><th class="opt num">Share</th></tr></thead><tbody>${
+        ((miners&&miners.miners)||[]).slice(0,5).map((m,i)=>`<tr><td class="num dim">${i+1}</td><td>${addrLink(m.addr)}</td><td class="num">${fmtInt(m.blocks)}</td><td class="opt num dim">${(m.share*100).toFixed(1)}%</td></tr>`).join('')||'<tr><td colspan="4" class="empty">No recent miners</td></tr>'}</tbody></table></div></div>
     <div class="panel"><h2>Top holders</h2>
-      <div class="scroll-x"><table><thead><tr><th class="num">#</th><th>address</th><th class="num">balance</th><th class="opt num">share</th></tr></thead><tbody>${
-        ((rich&&rich.holders)||[]).slice(0,5).map(hh=>`<tr><td class="num dim">${hh.rank}</td><td>${addrLink(hh.addr)}</td><td class="num">${fmtCSD(hh.balance)}</td><td class="opt num dim">${(hh.pct_of_emitted).toFixed(2)}%</td></tr>`).join('')||'<tr><td colspan="4" class="dim">indexing…</td></tr>'}</tbody></table></div></div>
+      <div class="scroll-x"><table><thead><tr><th class="num">#</th><th>Address</th><th class="num">Balance</th><th class="opt num">Share</th></tr></thead><tbody>${
+        ((rich&&rich.holders)||[]).slice(0,5).map(hh=>`<tr><td class="num dim">${hh.rank}</td><td>${addrLink(hh.addr)}</td><td class="num">${fmtCSD(hh.balance)}</td><td class="opt num dim">${(hh.pct_of_emitted).toFixed(2)}%</td></tr>`).join('')||'<tr><td colspan="4" class="empty">Indexing…</td></tr>'}</tbody></table></div></div>
   </div>`));
 
   // ── network hashrate (the indexer's series over the hero tile's window) and block times (the last ~30
@@ -946,10 +967,10 @@ async function home(v){
     const bt=[]; for(const x of iv) bt.push([bt.length&&x.t<=bt[bt.length-1][0]?bt[bt.length-1][0]+1:x.t,x.dt]);
     const avg=iv.length?Math.round(iv.reduce((a,b)=>a+b.dt,0)/iv.length):null;
     const row=el(`<div class="row">
-      <div class="panel"><h2>Network hashrate <span class="pill" data-hrwin="pill" hidden></span></h2><div id="hrchart" class="xchart" hidden></div>
+      <div class="panel"><h2>Network hashrate <span class="h-side" data-hrwin="pill" hidden></span></h2><div id="hrchart" class="xchart" hidden></div>
         <div class="muted">Δchainwork ÷ Δtime, ${hp.length} points · from this indexer</div></div>
-      <div class="panel"><h2>Block times <span class="pill">last ${iv.length} blocks</span></h2><div id="btchart" class="xchart" hidden></div>
-        <div class="muted">seconds between consecutive blocks · target ~120s${avg!=null?` · avg <b>${avg}s</b>`:''} <span id="btpick"></span></div></div>
+      <div class="panel"><h2>Block times <span class="h-side">last ${iv.length} blocks</span></h2><div id="btchart" class="xchart" hidden></div>
+        <div class="muted">Seconds between consecutive blocks · target ~120s${avg!=null?` · avg <b>${avg}s</b>`:''} <span id="btpick"></span></div></div>
     </div>`);
     v.appendChild(row);
     charts().then(()=>plot($('#hrchart',row),hp,{kind:'area',label:'network hashrate',range:paintHrWin(row,miners,series),format:(x)=>{const f=fmtHashrate(x*1e9);return f.val+' '+f.unit;},emptyText:'no hashrate series from this indexer'}));
@@ -963,7 +984,7 @@ async function home(v){
 // ── token page: one CairnX coin, humanly ──
 async function tokenPage(v,ticker){
   const t=await jx(SIB.cairnx,'/token/'+encodeURIComponent(ticker));
-  if(!t){v.innerHTML='<div class="panel"><h2>Token</h2><div class="muted">Token data needs the cairn front door (cairn-substrate.com/explorer).</div></div>';return;}
+  if(!t){v.innerHTML='<div class="panel"><h2 class="ex-title">Token</h2><div class="muted">Token data needs the cairn front door (cairn-substrate.com/explorer).</div></div>';return;}
   const holders=Object.entries(t.holders||{}).map(([a,b])=>({a,av:BigInt(b.available),lk:BigInt(b.locked)}))
     .sort((x,y)=>(y.av+y.lk)>(x.av+x.lk)?1:-1);
   const total=holders.reduce((s,h)=>s+h.av+h.lk,0n)||1n;
@@ -971,18 +992,18 @@ async function tokenPage(v,ticker){
   const pct=Number(t.supply)>0?Number(BigInt(t.minted)*100n/BigInt(t.supply)):0;
   v.appendChild(el(`<div class="panel"><h2 class="ex-title">Token ${esc(t.ticker)} <span class="dim">${esc(t.name||'CairnX token')}</span></h2>
     <div class="kv">
-      <div>kind</div><div class="v">${t.mint==='issuer'?'fixed supply: only the issuer could mint (no dilution)':'open mint (up to '+fmtAmt(t.mintLimit||'0',t.decimals)+' per mint)'}</div>
+      <div>kind</div><div class="v">${t.mint==='issuer'?'Fixed supply: only the issuer could mint (no dilution)':'Open mint (up to '+fmtAmt(t.mintLimit||'0',t.decimals)+' per mint)'}</div>
       <div>minted / max</div><div class="v"><b>${fmtAmt(t.minted,t.decimals)}</b> / ${fmtAmt(t.supply,t.decimals)} <span class="dim">(${pct.toFixed(1)}%)</span></div>
       <div>decimals</div><div class="v">${esc(t.decimals)}</div>
       <div>deployed</div><div class="v">block ${link('/block/'+t.height,fmtInt(t.height))} by ${addrLinkG(t.deployer)} <span class="dim">· tx ${txidLink(t.deployId)}</span></div>
-      ${t.tmeta?`<div>metadata</div><div class="v mono dim">${esc(t.tmeta)} <span class="dim">(the sha256 of the issuer's metadata document; this page does not fetch it)</span></div>`:''}
+      ${t.tmeta?`<div>metadata</div><div class="v"><span class="mono dim">${esc(t.tmeta)}</span> <span class="dim">(the sha256 of the issuer's metadata document; this page does not fetch it)</span></div>`:''}
       <div>holders</div><div class="v">${fmtInt(holders.length)}</div>
-      <div>trade</div><div class="v"><a href="https://cairn-substrate.com/trade" target="_blank">cairn-substrate.com/trade ↗</a></div>
+      <div>trade</div><div class="v"><a href="https://cairn-substrate.com/trade" target="_blank" rel="noopener">cairn-substrate.com/trade</a></div>
     </div></div>`));
-  v.appendChild(el(`<div class="panel"><h2>Holders</h2><div class="scroll-x"><table><thead><tr><th class="num">#</th><th>address</th><th class="num">balance</th><th class="opt num">locked in offers</th><th class="opt num">share</th></tr></thead>
+  v.appendChild(el(`<div class="panel"><h2>Holders</h2><div class="scroll-x"><table><thead><tr><th class="num">#</th><th>Address</th><th class="num">Balance</th><th class="opt num">Locked in offers</th><th class="opt num">Share</th></tr></thead>
     <tbody>${holders.slice(0,50).map((h,i)=>`<tr><td class="num dim">${i+1}</td><td>${addrLink(h.a)}</td><td class="num">${fmtAmt(h.av.toString(),t.decimals)}</td>
       <td class="opt num dim">${h.lk?fmtAmt(h.lk.toString(),t.decimals):''}</td>
-      <td class="opt num dim">${(Number((h.av+h.lk)*1000n/total)/10).toFixed(1)}%</td></tr>`).join('')||'<tr><td colspan="5" class="dim">no holders</td></tr>'}</tbody></table></div></div>`));
+      <td class="opt num dim">${(Number((h.av+h.lk)*1000n/total)/10).toFixed(1)}%</td></tr>`).join('')||'<tr><td colspan="5" class="empty">No holders</td></tr>'}</tbody></table></div></div>`));
 }
 function blockRow(b,live){
   if(b.time) TIP_TIME=Math.max(TIP_TIME,b.time);   // keep the age reference current with the chain tip
@@ -1022,7 +1043,7 @@ function subscribeBlocks(tb){
   const iv=setInterval(poll,12000);
   try{ es=new EventSource(API+'/stream/blocks');
     es.addEventListener('block',()=>poll());
-    es.addEventListener('reorg',ev=>{try{const d=JSON.parse(ev.data);const p=$('#livepill');if(p){p.textContent='reorg at block '+fmtInt(d.ancestor);p.classList.add('red');}}catch{ /* a malformed reorg event: the poll below still replaces the rows */ }});
+    es.addEventListener('reorg',ev=>{try{const d=JSON.parse(ev.data);const p=$('#livepill');if(p){$('.lp-t',p).textContent='Reorg at block '+fmtInt(d.ancestor);p.classList.add('reorg');}}catch{ /* a malformed reorg event: the poll below still replaces the rows */ }});
   }catch{ /* no EventSource here: the 12 s poll keeps the feed current */ }
 }
 
@@ -1055,18 +1076,28 @@ async function blockPage(v,id){
     m.innerHTML=addrLinkG(addr)+(addr?copyBtn(addr,'address'):'');
     rw.textContent=fmtCSD((cb.outputs||[]).reduce((s,o)=>s+o.value,0));
     paintNames(m); })();
-  v.appendChild(el(`<div class="panel"><h2>Transactions (${fmtInt(txids.length)})</h2><div class="scroll-x"><table><thead><tr><th class="num">#</th><th>txid</th></tr></thead>
-    <tbody>${txids.map((t,i)=>`<tr><td class="num dim">${i}</td><td>${txidLink(t)}</td></tr>`).join('')||'<tr><td colspan="2" class="dim">no transactions</td></tr>'}</tbody></table></div></div>`));
+  v.appendChild(el(`<div class="panel"><h2>Transactions (${fmtInt(txids.length)})</h2><div class="scroll-x"><table><thead><tr><th class="num">#</th><th>Txid</th></tr></thead>
+    <tbody>${txids.map((t,i)=>`<tr><td class="num dim">${i}</td><td>${txidLink(t)}</td></tr>`).join('')||'<tr><td colspan="2" class="empty">No transactions</td></tr>'}</tbody></table></div></div>`));
 }
 
 async function txPage(v,id){
   await warmCx();
   const [tx,status,proof]=await Promise.all([j('/tx/'+id),j('/tx/'+id+'/status').catch(()=>null),j('/tx/'+id+'/merkle-proof').catch(()=>null)]);
   v.innerHTML='';
-  const typeBadge = tx.app_type==='Propose'?'<span class="pill">Propose</span>':tx.app_type==='Attest'?'<span class="pill">Attest</span>':tx.coinbase?'<span class="pill">coinbase</span>':'<span class="pill">transfer</span>';
+  const typeBadge = `<span class="kind">${tx.app_type==='Propose'?'Propose':tx.app_type==='Attest'?'Attest':tx.coinbase?'Coinbase':'Transfer'}</span>`;
 
-  // ── what happened, in human terms ──
-  const human=el(`<div class="panel"><h2>What happened</h2><div class="action" id="txaction"><span class="dim">decoding…</span></div>${flowHtml(tx)}</div>`);
+  // ── the title, what happened in human terms, then the details, as the preview's block heading ──
+  const human=el(`<div class="panel"><h2 class="ex-title">Transaction ${typeBadge} <span id="inclbadge" class="badge pend">Verifying inclusion…</span></h2>
+    <div class="action" id="txaction"><span class="dim">Decoding…</span></div>${flowHtml(tx)}
+    <div class="kv">
+      <div>txid</div><div class="v mono">${hashHtml(tx.txid)}${copyBtn(tx.txid,'transaction id')}</div>
+      <div>block</div><div class="v">${link('/block/'+tx.height,fmtInt(tx.height))} ${status?`<span class="dim">· ${fmtInt(status.confirmations)} ${status.confirmations===1?'confirmation':'confirmations'}</span> ${status.final?`<span class="badge ok">${ICON.check}Final</span>`:'<span class="badge pend">Maturing</span>'}`:''}</div>
+      <div>time</div><div class="v" id="txtime"><span class="dim">…</span></div>
+      <div>position</div><div class="v">${esc(tx.pos)}</div>
+      <div>signer</div><div class="v">${addrLinkG(tx.signer)}</div>
+      <div>fee</div><div class="v">${fmtCSD(tx.fee)}</div>
+      <div>inputs / outputs</div><div class="v">${esc(tx.n_in)} / ${esc(tx.n_out)}</div>
+    </div></div>`);
   v.appendChild(human);
   (async()=>{
     const slot=$('#txaction',human);
@@ -1099,27 +1130,17 @@ async function txPage(v,id){
       const outs=(tx.outputs||[]).filter(o=>(o.addr||'').toLowerCase()!==me);
       line=`${kind('CSD')}<span class="what">${addrLink(tx.signer)} sent CSD</span>${outs.length===1?` to ${addrLink(outs[0].addr)}`:` to ${outs.length} recipients`}`;
     }
-    slot.innerHTML=line||'<span class="dim">a plain chain transaction</span>';
+    slot.innerHTML=line||'<span class="dim">A plain chain transaction</span>';
     paintNames(human);
   })();
 
-  v.appendChild(el(`<div class="panel"><h2>Transaction ${typeBadge} <span id="inclbadge" class="badge pend">verifying inclusion…</span></h2>
-    <div class="kv">
-      <div>txid</div><div class="v mono">${hashHtml(tx.txid)}${copyBtn(tx.txid,'transaction id')}</div>
-      <div>block</div><div class="v">${link('/block/'+tx.height,fmtInt(tx.height))} ${status?`· ${fmtInt(status.confirmations)} confs ${status.final?'<span class="badge ok">final</span>':'<span class="badge pend">maturing</span>'}`:''}</div>
-      <div>time</div><div class="v" id="txtime"><span class="dim">…</span></div>
-      <div>position</div><div class="v">${esc(tx.pos)}</div>
-      <div>signer</div><div class="v">${addrLinkG(tx.signer)}</div>
-      <div>fee</div><div class="v">${fmtCSD(tx.fee)}</div>
-      <div>inputs / outputs</div><div class="v">${esc(tx.n_in)} / ${esc(tx.n_out)}</div>
-    </div></div>`));
   // when the tx was mined (one block-header lookup, display only)
   (async()=>{ const t=$('#txtime'); if(!t) return;
     const blk=await j('/block/'+await j('/block-height/'+tx.height).catch(()=>null)).catch(()=>null);
     t.innerHTML=blk&&blk.time?`${fmtDate(blk.time)} <span class="dim">· ${ago(blk.time)}</span>`:'<span class="dim">-</span>'; })();
-  v.appendChild(el(`<div class="panel"><h2>Outputs</h2><div class="scroll-x"><table><thead><tr><th class="num">#</th><th>address</th><th class="num">value</th><th class="opt">status</th></tr></thead>
+  v.appendChild(el(`<div class="panel"><h2>Outputs</h2><div class="scroll-x"><table><thead><tr><th class="num">#</th><th>Address</th><th class="num">Value</th><th class="opt">Status</th></tr></thead>
     <tbody>${(tx.outputs||[]).map(o=>`<tr><td class="num dim">${esc(o.vout)}</td><td>${addrLink(o.addr)}</td><td class="num">${fmtCSD(o.value)}</td>
-      <td class="opt">${o.spent_txid?`<span class="dim">spent by ${txidLink(o.spent_txid)}</span>`:'<span class="badge ok">unspent</span>'}</td></tr>`).join('')}</tbody></table></div></div>`));
+      <td class="opt">${o.spent_txid?`<span class="dim">Spent by ${txidLink(o.spent_txid)}</span>`:'<span class="dim">Unspent</span>'}</td></tr>`).join('')||'<tr><td colspan="4" class="empty">No outputs</td></tr>'}</tbody></table></div></div>`));
   if(proof){
     v.appendChild(el(`<div class="panel"><h2>Merkle inclusion proof</h2>
       <div class="muted">This proof is served by an <i>untrusted</i> indexer, and so is the block header below. Your browser folds the branch and checks it equals the indexer's stated merkle root: a <b>consistency check</b> that the proof matches the header this same indexer reports. It is <b>NOT</b> a PoW/consensus proof: nothing here verifies the header's proof-of-work or that it is on the canonical chain. For a trustless inclusion proof, fold against a header obtained from the L0 light client (which checks PoW + checkpoints).</div>
@@ -1127,7 +1148,7 @@ async function txPage(v,id){
         <div>block height</div><div class="v">${fmtInt(proof.block_height)}</div>
         <div>position</div><div class="v">${esc(proof.pos)}</div>
         <div>merkle root</div><div class="v mono">${esc(proof.merkle_root)}</div>
-        <div>branch (${proof.merkle.length})</div><div class="v mono">${proof.merkle.map((x)=>short(x)).join(' · ')||'<i>single-tx block</i>'}</div>
+        <div>branch (${proof.merkle.length})</div><div class="v">${proof.merkle.length?`<span class="mono">${proof.merkle.map((x)=>short(x)).join(' · ')}</span>`:'<span class="dim">None: a single-tx block</span>'}</div>
       </div></div>`));
     // Fold the branch against the block's merkle root. NOTE: that root comes from the SAME
     // untrusted indexer (no PoW/header verification here), so a matching fold proves only that
@@ -1135,9 +1156,9 @@ async function txPage(v,id){
     try{
       const blk=await j('/block/'+await j('/block-height/'+proof.block_height));
       const ok=await verifyInclusion(tx.txid,proof.pos,proof.merkle,blk.merkle);
-      const b=$('#inclbadge');b.textContent=ok?'✓ consistent with indexer header (not PoW-verified)':'✗ inclusion FAILED';b.className='badge '+(ok?'ok':'bad');
-    }catch(e){const b=$('#inclbadge');b.textContent='inclusion: '+e.message;b.className='badge bad';}
-  } else {$('#inclbadge').textContent='no proof';$('#inclbadge').className='badge pend';}
+      const b=$('#inclbadge');b.innerHTML=ok?`${ICON.check}Consistent with indexer header (not PoW-verified)`:`${ICON.x}Inclusion failed`;b.className='badge '+(ok?'ok':'bad');
+    }catch(e){const b=$('#inclbadge');b.innerHTML=`${ICON.x}Inclusion not checked: ${esc(e.message)}`;b.className='badge bad';}
+  } else {$('#inclbadge').textContent='No proof';$('#inclbadge').className='badge pend';}
 }
 
 async function addrPage(v,a){
@@ -1146,14 +1167,14 @@ async function addrPage(v,a){
   const s=info.chain_stats;
   v.innerHTML='';
   const lbl=labelOf(a);
-  v.appendChild(el(`<div class="panel"><h2 class="ex-title">Address${lbl?` <span class="chip">${esc(lbl)}</span>`:''}</h2><div class="kv">
+  v.appendChild(el(`<div class="panel"><h2 class="ex-title">Address${lbl?` <span class="h-side">${esc(lbl)}</span>`:''}</h2><div class="kv">
     <div>address</div><div class="v mono">${addrGroups(a,true)}${copyBtn(a,'address')}</div>
     <div>balance</div><div class="v"><b>${fmtCSD(s.balance)}</b></div>
     <div>received</div><div class="v">${fmtCSD(s.funded)}</div>
     <div>spent</div><div class="v">${fmtCSD(s.spent)}</div>
     <div>tx count</div><div class="v">${fmtInt(s.tx_count)}</div>
     <div>UTXOs</div><div class="v">${fmtInt(utxos.length)}</div>
-  </div><div id="cxpanel"></div></div>`));
+  </div><div class="kv" id="cxpanel" hidden></div></div>`));
 
   // ── CairnX holdings (token balances + .csd names), cairn front door only ──
   (async()=>{
@@ -1163,9 +1184,11 @@ async function addrPage(v,a){
     const toks=Object.entries(cx.balances||{});
     const names=cx.names||[];
     if(!toks.length&&!names.length) return;
-    $('#cxpanel').innerHTML=`<div class="cxbal">${
-      toks.map(([t,b])=>`<span class="tk"><b>${esc(t)}</b> ${fmtAmt(b.available,dec[t]??0)}${Number(b.locked)?` <span class="dim">(+${fmtAmt(b.locked,dec[t]??0)} locked in offers)</span>`:''}</span>`).join('')}${
-      names.map(n=>`<span class="nm">${esc(n)}.csd</span>`).join('')}</div>`;
+    // CairnX holdings as more of the address's rows: each token amount with its ticker, each name a link to its page
+    const cxp=$('#cxpanel');
+    cxp.innerHTML=(toks.length?`<div>tokens</div><div class="v">${toks.map(([t,b])=>`<span>${fmtAmt(b.available,dec[t]??0)} ${link('/token/'+encodeURIComponent(t),t)}${Number(b.locked)?` <span class="dim">(+${fmtAmt(b.locked,dec[t]??0)} locked in offers)</span>`:''}</span>`).join('<span class="dim"> · </span>')}</div>`:'')
+      +(names.length?`<div>names</div><div class="v">${names.map(n=>link('/name/'+encodeURIComponent(n),n+'.csd')).join('<span class="dim"> · </span>')}</div>`:'');
+    cxp.hidden=false;
   })();
 
   // tx table with a human ACTION column + direction relative to THIS address.
@@ -1174,20 +1197,20 @@ async function addrPage(v,a){
   // capped at its latest 25 txs.
   const me=a.toLowerCase();
   const PAGE=25;
-  v.appendChild(el(`<div class="panel"><h2>Transactions (${fmtInt(s.tx_count)})</h2><div class="scroll-x"><table class="stack"><thead><tr><th>txid</th><th class="act">action</th><th class="opt num">block</th><th class="num">Δ for this address</th></tr></thead>
+  v.appendChild(el(`<div class="panel"><h2>Transactions (${fmtInt(s.tx_count)})</h2><div class="scroll-x"><table class="stack"><thead><tr><th>Txid</th><th class="act">Record</th><th class="opt num">Block</th><th class="num">Amount</th></tr></thead>
     <tbody id="txrows"></tbody></table></div><div id="txmore"></div></div>`));
   let loaded=0, lastTxid=null;
   const appendTxPage=async(page,later=true)=>{
-    if(!Array.isArray(page)||!page.length){const m=$('#txmore'); if(m) m.innerHTML=loaded?'':'<div class="muted">no transactions</div>'; return;}
+    if(!Array.isArray(page)||!page.length){const m=$('#txmore'); if(m) m.innerHTML=loaded?'':'<div class="muted">No transactions</div>'; return;}
     await warmVerdicts(page.filter((t)=>t.app_type==='Propose'||t.app_type==='Attest').map((t)=>t.txid),later);
     const start=loaded;
     $('#txrows').insertAdjacentHTML('beforeend',page.map((t,k)=>{const i=start+k;return `<tr><td>${txidLink(t.txid)}</td><td class="act" id="act-${i}"><span class="dim">${esc(t.app_type)}</span></td><td class="opt num">${link('/block/'+t.height,fmtInt(t.height))}</td><td id="dir-${i}" class="num dim">…</td></tr>`;}).join(''));
     loaded+=page.length; lastTxid=page[page.length-1].txid;
     page.forEach((t,k)=>{decodeTxRow(t,start+k);});
     const more=$('#txmore');
-    if(more) more.innerHTML=(page.length===PAGE&&loaded<s.tx_count)?`<button class="ex-btn" id="txloadmore">Load more (${fmtInt(loaded)} of ${fmtInt(s.tx_count)})</button>`:'';
+    if(more) more.innerHTML=(page.length===PAGE&&loaded<s.tx_count)?`<button type="button" class="ex-btn" id="txloadmore">Load more (${fmtInt(loaded)} of ${fmtInt(s.tx_count)})</button>`:'';
     const btn=$('#txloadmore');
-    if(btn) btn.onclick=async()=>{btn.disabled=true;btn.textContent='loading…';await appendTxPage(await j('/address/'+a+'/txs/chain/'+lastTxid).catch(()=>[]));};
+    if(btn) btn.onclick=async()=>{btn.disabled=true;btn.textContent='Loading…';await appendTxPage(await j('/address/'+a+'/txs/chain/'+lastTxid).catch(()=>[]));};
   };
 
   // decode one row (each is a cheap local lookup)
@@ -1216,8 +1239,8 @@ async function addrPage(v,a){
             const slot=$('#act-'+i);
             if(slot) slot.innerHTML=describeOfferAttest(full,nf.tx.app,pidHex,rec,VER&&VER[t.txid.toLowerCase()]);
           }}
-      } else if(full.coinbase){const slot=$('#act-'+i); if(slot) slot.innerHTML=`${kind('CSD')}block reward`;}
-      else if(full.app_type==='Transfer'||full.app_type==='None'){const slot=$('#act-'+i); if(slot) slot.innerHTML=`${kind('CSD')}CSD transfer`;}
+      } else if(full.coinbase){const slot=$('#act-'+i); if(slot) slot.innerHTML=`${kind('CSD')}Block reward`;}
+      else if(full.app_type==='Transfer'||full.app_type==='None'){const slot=$('#act-'+i); if(slot) slot.innerHTML=`${kind('CSD')}Transfer`;}
       paintNames($('#act-'+i));
     }catch{ /* a failed read leaves this row's placeholders; the other rows decode on their own */ }
   }
@@ -1228,13 +1251,13 @@ async function addrPage(v,a){
 // ── .csd name profile page (the name-service centerpiece), front-door only ──
 async function namePage(v,label){
   label=String(label||'').toLowerCase().replace(/\.csd$/,'');
-  if(!SIB.cairnx){ v.innerHTML='<div class="panel"><h2>Name</h2><div class="muted">.csd name pages need the cairn front door (cairn-substrate.com/explorer). This standalone view has no name resolver.</div></div>'; return; }
+  if(!SIB.cairnx){ v.innerHTML='<div class="panel"><h2 class="ex-title">Name</h2><div class="muted">.csd name pages need the cairn front door (cairn-substrate.com/explorer). This standalone view has no name resolver.</div></div>'; return; }
   const n=await jx(SIB.cairnx,'/name/'+encodeURIComponent(label));
   v.innerHTML='';
   if(!n||n.ok===false){
-    v.appendChild(el(`<div class="panel namehdr"><div>${nameAvatar(label)}</div>
-      <div><h2 class="ex-title">${esc(label)}<span class="dim">.csd</span></h2>
-      <div class="muted">not registered. <a href="https://cairn-substrate.com/names" target="_blank" rel="noopener">register it ↗</a></div></div></div>`));
+    v.appendChild(el(`<div class="panel"><div class="namehdr">${nameAvatar(label)}
+      <div><h2 class="ex-title"><span class="nm-l">${esc(label)}<span class="dim">.csd</span></span></h2>
+      <div class="muted">Not registered. <a href="https://cairn-substrate.com/names" target="_blank" rel="noopener">Register it on /names</a></div></div></div></div>`));
     return;
   }
   const owner=n.owner, target=n.addr||n.owner, via=n.addr?'address record (nset)':'owner (no record set)';
@@ -1244,28 +1267,30 @@ async function namePage(v,label){
     jx(SIB.cairnx,'/name-history/'+encodeURIComponent(label)),warmCx()]);
   const isPrimary=!!pri&&pri.name===label;
   const L=n.lease||{};
-  const leaseLine = !L.leased ? '<span class="dim">no lease (legacy registration)</span>'
-    : L.lapsed ? '<span class="red">lapsed</span> · in recapture window'
-    : L.inGrace ? `<span class="amber">in grace</span> · ~${epochsToHuman(L.graceEpochsLeft)} to recapture`
-    : `<span class="green">active</span> · ~${epochsToHuman(L.epochsLeft)} remaining`;
-  v.appendChild(el(`<div class="panel namehdr"><div>${nameAvatar(label)}</div>
-    <div><h2 class="ex-title">${esc(label)}<span class="dim">.csd</span>${isPrimary?' <span class="badge ok">★ primary</span>':''}</h2>
-      <div class="muted">${n.locked?'<span class="amber">locked in an open offer</span>':'a .csd name on Compute Substrate'}${n.viaFill?' · acquired via a marketplace fill':''}</div></div></div>`));
-  v.appendChild(el(`<div class="panel"><h2>Record</h2><div class="kv">
+  const leaseLine = !L.leased ? '<span class="dim">No lease (legacy registration)</span>'
+    : L.lapsed ? '<span class="red">Lapsed</span> · in recapture window'
+    : L.inGrace ? `<span class="amber">In grace</span> · ~${epochsToHuman(L.graceEpochsLeft)} to recapture`
+    : `<span class="green">Active</span> · ~${epochsToHuman(L.epochsLeft)} remaining`;
+  // the name's heading and its record, as the preview's block heading and keys
+  v.appendChild(el(`<div class="panel"><div class="namehdr">${nameAvatar(label)}
+    <div><h2 class="ex-title"><span class="nm-l">${esc(label)}<span class="dim">.csd</span></span>${isPrimary?' <span class="badge">Primary</span>':''}</h2>
+      <div class="muted">${n.locked?'<span class="amber">Locked in an open offer</span>':'A .csd name on Compute Substrate'}${n.viaFill?' · acquired via a marketplace fill':''}</div></div></div>
+    <div class="ex-detail"><div class="kv">
     <div>owner</div><div class="v">${addrLinkG(owner)}</div>
     <div>resolves to</div><div class="v">${addrLinkG(target)} <span class="dim">(${via})</span></div>
+    </div><div class="kv">
     <div>lease</div><div class="v">${leaseLine}</div>
     <div>claimed</div><div class="v">block ${link('/block/'+n.height,fmtInt(n.height))} <span class="dim">· effective at block ${fmtInt(n.effectiveHeight)}</span></div>
-  </div></div>`));
+  </div></div></div>`));
   const prof=n.profile||{}, pk=Object.keys(prof).filter(k=>prof[k]);
   if(pk.length) v.appendChild(el(`<div class="panel"><h2>Profile</h2><div class="kv">${pk.map(k=>`<div>${esc(k)}</div><div class="v">${esc(String(prof[k]))}</div>`).join('')}</div></div>`));
   if(n.offer){ const o=n.offer, price=o.want&&o.want.value!=null?fmtCSD(o.want.value):(o.want?`${amt(o.want.amount,o.want.ticker)} ${esc(o.want.ticker)}`:null);
     v.appendChild(el(`<div class="panel"><h2>For sale</h2><div class="action">${kind('Market')}<span class="what">Listed ${price?`for <b>${price}</b>`:'for sale'}</span>${o.taker?' · reserved (RFQ)':' · open offer'}</div>
-      <div class="muted">Buy at <a href="https://cairn-substrate.com/names" target="_blank" rel="noopener">/names ↗</a></div></div>`));
+      <div class="muted">Buy at <a href="https://cairn-substrate.com/names" target="_blank" rel="noopener">/names</a></div></div>`));
   }
   const evs=((hist&&hist.events)||[]).slice().reverse();
   await warmVerdicts(evs.slice(0,40).map((ev)=>ev.txid));
-  if(evs.length) v.appendChild(el(`<div class="panel"><h2>History (${fmtInt(evs.length)})</h2><div class="scroll-x"><table><thead><tr><th>action</th><th>tx</th><th class="opt num">block</th></tr></thead>
+  if(evs.length) v.appendChild(el(`<div class="panel"><h2>History (${fmtInt(evs.length)})</h2><div class="scroll-x"><table><thead><tr><th>Record</th><th>Tx</th><th class="opt num">Block</th></tr></thead>
     <tbody>${evs.slice(0,40).map(ev=>`<tr><td class="act">${cxVerdict(kindLabel(ev.kind),VER[String(ev.txid).toLowerCase()])}</td><td>${txidLink(ev.txid)}</td><td class="opt num">${ev.height?link('/block/'+ev.height,fmtInt(ev.height)):''}</td></tr>`).join('')}</tbody></table></div></div>`));
   paintNames(v);
 }
@@ -1275,8 +1300,8 @@ async function domainPage(v,d){
   v.innerHTML='';
   v.appendChild(el(`<div class="panel"><h2 class="ex-title">Domain <span class="mono">${esc(d)}</span></h2>
     <div class="muted">${fmtInt(props.length)} proposal(s). Rankings are a derived, recomputable view, not consensus-signed.</div>
-    <div class="scroll-x"><table><thead><tr><th>proposal</th><th>action</th><th class="opt">proposer</th><th class="opt num">fee</th><th class="num">height</th></tr></thead>
-    <tbody>${props.map(p=>`<tr><td>${link('/proposal/'+p.txid,short(p.txid,10),'mono')}</td><td class="act">${describeDomainRecord(d,p.uri,VER&&VER[p.txid.toLowerCase()],p.height)||'<span class="dim">-</span>'}</td><td class="opt">${addrLink(p.proposer)}</td><td class="opt num">${fmtCSD(p.fee)}</td><td class="num">${link('/block/'+p.height,fmtInt(p.height))}</td></tr>`).join('')||'<tr><td colspan="5" class="dim">no proposals in this domain</td></tr>'}</tbody></table></div></div>`));
+    <div class="scroll-x"><table><thead><tr><th>Proposal</th><th>Record</th><th class="opt">Proposer</th><th class="opt num">Fee</th><th class="num">Height</th></tr></thead>
+    <tbody>${props.map(p=>`<tr><td>${link('/proposal/'+p.txid,short(p.txid,10),'mono')}</td><td class="act">${describeDomainRecord(d,p.uri,VER&&VER[p.txid.toLowerCase()],p.height)||'<span class="dim">-</span>'}</td><td class="opt">${addrLink(p.proposer)}</td><td class="opt num">${fmtCSD(p.fee)}</td><td class="num">${link('/block/'+p.height,fmtInt(p.height))}</td></tr>`).join('')||'<tr><td colspan="5" class="empty">No proposals in this domain</td></tr>'}</tbody></table></div></div>`));
 }
 
 async function proposalPage(v,id){
@@ -1285,20 +1310,19 @@ async function proposalPage(v,id){
   v.innerHTML='';
   const vr=await jx(SIB.cairnx,'/record/'+id).catch(()=>null);
   const human=describeDomainRecord(p.domain,p.uri,vr&&typeof vr.applied==='boolean'?vr:null,p.height);
-  if(human) v.appendChild(el(`<div class="panel"><h2>What happened</h2><div class="action">${human}</div></div>`));
-  v.appendChild(el(`<div class="panel"><h2>Proposal <span id="cibadge" class="badge pend">checking content…</span></h2><div class="kv">
+  v.appendChild(el(`<div class="panel"><h2 class="ex-title">Proposal <span id="cibadge" class="badge pend">Checking content…</span></h2>${human?`<div class="action">${human}</div>`:''}<div class="kv">
     <div>txid</div><div class="v mono">${hashHtml(p.txid)}${copyBtn(p.txid,'transaction id')}</div>
     <div>domain</div><div class="v">${link('/domain/'+encodeURIComponent(p.domain),p.domain)}</div>
     <div>payload hash</div><div class="v mono">${esc(p.payload_hash)}</div>
-    <div>uri</div><div class="v mono">${p.uri?esc(p.uri):'-'}</div>
+    <div>URI</div><div class="v mono">${p.uri?esc(p.uri):'-'}</div>
     <div>proposer</div><div class="v">${addrLinkG(p.proposer)}</div>
     <div>fee</div><div class="v">${fmtCSD(p.fee)}</div>
     <div>expires</div><div class="v">epoch ${esc(p.expires_epoch)} <span class="dim">(~block ${fmtInt(Number(p.expires_epoch)*30)})</span></div>
     <div>attestations</div><div class="v">${fmtInt(p.attestation_count)}</div>
   </div></div>`));
-  v.appendChild(el(`<div class="panel"><h2>Attestations (${(p.attestations||[]).length}) <span class="pill">per-attester, not on-chain aggregate</span></h2>
-    <div class="scroll-x"><table><thead><tr><th>attester</th><th class="num">score</th><th class="num">confidence</th><th class="num">fee</th><th>tx</th></tr></thead>
-    <tbody>${(p.attestations||[]).map(a=>`<tr><td>${addrLink(a.attester)}</td><td class="num">${fmtInt(a.score)}</td><td class="num">${fmtInt(a.confidence)}</td><td class="num">${fmtCSD(a.fee)}</td><td>${txidLink(a.txid)}</td></tr>`).join('')||'<tr><td colspan=5 class="dim">none yet</td></tr>'}</tbody></table></div></div>`));
+  v.appendChild(el(`<div class="panel"><h2>Attestations (${(p.attestations||[]).length}) <span class="h-side">Per attester, not the on-chain aggregate</span></h2>
+    <div class="scroll-x"><table><thead><tr><th>Attester</th><th class="num">Score</th><th class="num">Confidence</th><th class="num">Fee</th><th>Tx</th></tr></thead>
+    <tbody>${(p.attestations||[]).map(a=>`<tr><td>${addrLink(a.attester)}</td><td class="num">${fmtInt(a.score)}</td><td class="num">${fmtInt(a.confidence)}</td><td class="num">${fmtCSD(a.fee)}</td><td>${txidLink(a.txid)}</td></tr>`).join('')||'<tr><td colspan=5 class="empty">None yet</td></tr>'}</tbody></table></div></div>`));
   await contentBadge($('#cibadge'),p.payload_hash);
 }
 // The proposal's content, from cairn's /content (same origin, front door only): served bytes are hashed here, as
@@ -1306,21 +1330,21 @@ async function proposalPage(v,id){
 // only when cairn's own X-CSD-Payload-Hash header names this hash; any other 200 (an edge error or challenge page,
 // an app-shell fallback) is not cairn's answer, so it reads as unavailable.
 async function contentBadge(badge,hash){
-  const set=(text,cls)=>{ badge.textContent=text; badge.className='badge '+cls; };
-  if(!SIB.content){ set('content check needs the cairn front door','pend'); return; }
-  if(!/^0x[0-9a-f]{64}$/i.test(String(hash))){ set('no content hash','pend'); return; }
+  const set=(text,cls,icon='')=>{ badge.innerHTML=icon+esc(text); badge.className='badge '+cls; };
+  if(!SIB.content){ set('Content check needs the cairn front door','pend'); return; }
+  if(!/^0x[0-9a-f]{64}$/i.test(String(hash))){ set('No content hash','pend'); return; }
   const want=hash.toLowerCase();
   let bytes, named;
   try{
     const r=await fetch(SIB.content+want);
-    if(r.status===404){ set('content not held by this front door','pend'); return; }
-    if(!r.ok){ set('content unavailable','pend'); return; }
+    if(r.status===404){ set('Content not held by this front door','pend'); return; }
+    if(!r.ok){ set('Content unavailable','pend'); return; }
     named=String(r.headers.get('X-CSD-Payload-Hash')||'').toLowerCase()===want;
     bytes=new Uint8Array(await r.arrayBuffer());
-  }catch{ set('content unavailable','pend'); return; }   // network error or an aborted body: nothing was checked
-  if(bytesToHex(await sha256(bytes))===want) set('✓ content integrity verified','ok');
-  else if(named) set('✗ content MISMATCH','bad');
-  else set('content unavailable','pend');
+  }catch{ set('Content unavailable','pend'); return; }   // network error or an aborted body: nothing was checked
+  if(bytesToHex(await sha256(bytes))===want) set('Content integrity verified','ok',ICON.check);
+  else if(named) set('Content mismatch','bad',ICON.x);
+  else set('Content unavailable','pend');
 }
 
 // ── header stats + live ──

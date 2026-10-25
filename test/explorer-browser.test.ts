@@ -8,7 +8,7 @@
 // passed on, no USD text with the market off, never NaN or a 0 USD; the hashrate window from the module in the tile
 // and on the chart; the request cadence; no chart of a replaced view left alive; the verdict reads and their
 // fallback; an Attest on an offer worded by its verdict; the name page's primary badge from the resolver's pick; the
-// proposal page's content check.
+// proposal page's content check; the home's activity ledger; the design direction's colour rule on every view.
 // Needs playwright-core (PLAYWRIGHT_CORE or the devDependency) and a Chromium (PLAYWRIGHT_CHROMIUM or the build that
 // playwright-core installs, chromium_headless_shell-1243); without either the file skips by name, and with
 // EXPLORER_BROWSER_REQUIRED=1 (CI) it fails instead. Run: npx tsx --test test/explorer-browser.test.ts
@@ -226,6 +226,8 @@ const server = createServer(async (req, res) => {
     if (k === "/token/ZED") return json(res, 200, { ticker: "ZED", name: "Zed", decimals: 0, supply: "1000", minted: "10", mint: "issuer", height: TIP - 5,
       deployer: MINER, deployId: "0x" + "de".repeat(32), tmeta: "0x" + "4d".repeat(32), holders: {} });
     if (k === "/name/onsale") return json(res, 200, { ok: true, owner: MINER, height: TIP - 9, effectiveHeight: TIP - 9, lease: {}, offer: { give: { name: "onsale" }, want: null } });
+    // the resolver's answer for a name nobody holds
+    if (k.startsWith("/name/")) return json(res, 404, { ok: false, error: "unregistered name", name: k.slice(6) });
     if (k === "/log" && S.records === "500") return json(res, 500, { ok: false, error: "resolver down" });
     if (k === "/log") return json(res, 200, Object.entries(VERDICTS).map(([id, v]) => ({ id, ok: v.applied, note: v.note, height: v.height })));
     return json(res, 200, k === "/primaries" ? { ok: true, primaries: {} } : []);
@@ -306,8 +308,8 @@ for (const market of ["fresh", "stale", "off"] as const) for (const width of [39
       assert.deepEqual(v.failed, market === "off" ? ["503 /api/market/csd"] : []);
       assert.equal(v.overflow, 0, "horizontal overflow");
       assert.equal(await v.page.textContent("#pu-hr .n"), "3.15 TH/s", "the indexer's figure over the window");
-      assert.equal(await v.page.textContent("#pu-hr .l"), "hashrate · series of 56 points", "the module's window text for the 1d series, in the tile");
-      assert.equal(await v.page.textContent(".panel:has(#hrchart) .pill"), "series of 56 points", "the same window on the chart");
+      assert.equal(await v.page.textContent("#pu-hr .l"), "Hashrate · series of 56 points", "the module's window text for the 1d series, in the tile");
+      assert.equal(await v.page.textContent(".panel:has(#hrchart) .h-side"), "series of 56 points", "the same window on the chart");
       assert.equal(await v.page.getAttribute("#hrchart canvas", "data-points"), "56", "the series' 56 points handed to the chart");
       assert.equal(await v.page.evaluate(() => (globalThis as any).__chartStubLive), market === "off" ? 3 : 4, "one live mount per chart host");
       // the library lays its pane out in the first row of a table, whose cells this page's own td rules once capped
@@ -370,7 +372,7 @@ test("the indexer without /analytics/series (404): the tile names the blocks, th
   try {
     assert.deepEqual(v.errors, []);
     assert.deepEqual(v.failed.sort(), ["404 /explorer/api/analytics/series", "503 /api/market/csd"]);
-    assert.equal(await v.page.textContent("#pu-hr .l"), "hashrate · blocks 121080 to 121800", "the module's window text from the miners read");
+    assert.equal(await v.page.textContent("#pu-hr .l"), "Hashrate · blocks 121080 to 121800", "the module's window text from the miners read");
     assert.equal(await v.page.textContent("#hrchart .cc-empty"), "no hashrate series from this indexer");
   } finally { await v.close(); S.series = true; }
 });
@@ -386,7 +388,7 @@ test("standalone (the page at /): no market read, no chart module, the figures w
     assert.equal(await v.page.locator("#hrchart").count(), 0, "no chart panels standalone");
     assert.equal(await v.page.textContent("#pu-hr .n"), "3.15 TH/s");
     // the window text is the chart module's, which a standalone page has not: the label is bare, the title names the blocks
-    assert.equal(await v.page.textContent("#pu-hr .l"), "hashrate");
+    assert.equal(await v.page.textContent("#pu-hr .l"), "Hashrate");
     assert.match(await v.page.getAttribute("#pu-hr", "title"), /over blocks 121,080 to 121,800, from the indexer/);
   } finally { await v.close(); }
 });
@@ -478,8 +480,8 @@ for (const records of ["on", "404", "400"] as const) {
       try {
         assert.deepEqual(v.errors, []);
         const row: string = await v.page.evaluate((id: string) => [...document.querySelectorAll("tr")].find((r: any) => r.innerHTML.includes(id))?.textContent ?? "", REFUSED);
-        assert.match(row, /no effect/);
-        assert.match(row, /no effect: mint past supply/);
+        assert.match(row, /No effect/);
+        assert.match(row, /No effect: mint past supply/);
         const logReads = v.asked.filter((x) => x === "/trade/api/cairnx/log").length;
         if (records === "on") {
           assert.deepEqual(RECORD_READS.sort((a, b) => b - a), [100, 30]);
@@ -520,7 +522,7 @@ test("address page: each page of txs asks /cairnx/records for its own Propose tx
     await until(v.page, () => !!document.querySelector("#act-25 .what") && !!document.querySelector("#act-49 .what"));
     assert.deepEqual(RECORD_READS, [25, 25], "the second page's 25, not the first again");
     assert.equal(v.asked.filter((x) => x === "/trade/api/cairnx/log").length, 0);
-    assert.match(await v.page.textContent("#act-25"), /no effect.*mint past supply/s);
+    assert.match(await v.page.textContent("#act-25"), /No effect: mint past supply/);
     assert.equal(await v.page.locator(".cx-noeffect").count(), 1);
     assert.deepEqual(v.errors, []);
   } finally { await v.close(); }
@@ -532,9 +534,9 @@ test("address page: each page of txs asks /cairnx/records for its own Propose tx
 const sh = (h: string) => h.slice(0, 10) + "\u2026" + h.slice(-6);
 const RESERVED_NOTE = "(open offer, claimed; the purchase completes after a short reorg-safe wait)";
 const ATTEST_LINES: Record<keyof typeof ATTESTS, string> = {
-  refusedFill: `Market Fill request on CAIRN: paid 1.255 CSD, offer ${sh(OFFER.txid)} \u2715 no effect: offer filled`,
+  refusedFill: `Market Fill request on CAIRN: paid 1.255 CSD, offer ${sh(OFFER.txid)} No effect: offer filled`,
   fill: `Market Bought CAIRN for 1.255 CSD, offer ${sh(OFFER.txid)}`,
-  refusedCancel: `Market Cancel request on an offer: ${sh(OFFER.txid)} \u2715 no effect: offer cancelled`,
+  refusedCancel: `Market Cancel request on an offer: ${sh(OFFER.txid)} No effect: offer cancelled`,
   cancel: `Market Cancelled an offer: ${sh(OFFER.txid)}`,
   claim: `Market Reserved CAIRN ${RESERVED_NOTE}, offer ${sh(OFFER.txid)}`,
   swap: `Market Token swap fill: took the offer ${sh(SWAP.txid)} (100 base units CAIRN for 123.45 QTOK, paid in tokens; no CSD moves)`,
@@ -585,13 +587,13 @@ for (const width of [390, 1280]) {
       assert.equal(await twin.page.locator(".namehdr .badge").count(), 0, "a self-pointing name the resolver did not pick: no badge");
       assert.equal(await twin.page.textContent(".panel:has(h2:text-is('For sale')) .action"), "Market Listed for 123.45 QTOK \u00b7 open offer");
       const hist: string[] = await twin.page.evaluate(() => [...document.querySelectorAll(".panel:has(h2) tbody tr td:first-child")].map((c: any) => c.textContent));
-      assert.deepEqual(hist, ["Market bought / sold (fill) \u2715 no effect: offer filled", "Market bought / sold (fill)"]);
+      assert.deepEqual(hist, ["Market Bought / sold (fill) No effect: offer filled", "Market Bought / sold (fill)"]);
       assert.equal(twin.overflow, 0, "horizontal overflow");
     } finally { await twin.close(); }
     const solo = await open("/explorer#/name/solo", width, () => /resolves to/i.test(document.body.innerText));
     try {
       assert.deepEqual(solo.errors, []);
-      assert.equal(await solo.page.textContent(".namehdr .badge"), "\u2605 primary", "the resolver's pick carries the badge");
+      assert.equal(await solo.page.textContent(".namehdr .badge"), "Primary", "the resolver's pick carries the badge");
       assert.equal(solo.overflow, 0, "horizontal overflow");
     } finally { await solo.close(); }
   });
@@ -600,24 +602,24 @@ for (const width of [390, 1280]) {
 // The proposal page's content check reads cairn's /content (same origin), hashes the bytes as received and calls
 // them verified only when they hash to the on-chain payload hash.
 const CONTENT_CASES = [
-  ["good", "/explorer", "\u2713 content integrity verified", "ok"],
-  ["binary", "/explorer", "\u2713 content integrity verified", "ok"],
-  ["tampered", "/explorer", "\u2717 content MISMATCH", "bad"],
-  ["absent", "/explorer", "content not held by this front door", "pend"],
-  ["edgeHtml", "/explorer", "content unavailable", "pend"],
-  ["otherHash", "/explorer", "content unavailable", "pend"],
-  ["noHeader", "/explorer", "\u2713 content integrity verified", "ok"],
-  ["upperCase", "/explorer", "\u2713 content integrity verified", "ok"],
-  ["e502", "/explorer", "content unavailable", "pend"],
-  ["dropped", "/explorer", "content unavailable", "pend"],
-  ["noHash", "/explorer", "no content hash", "pend"],
-  ["good", "/", "content check needs the cairn front door", "pend"],
+  ["good", "/explorer", "Content integrity verified", "ok"],
+  ["binary", "/explorer", "Content integrity verified", "ok"],
+  ["tampered", "/explorer", "Content mismatch", "bad"],
+  ["absent", "/explorer", "Content not held by this front door", "pend"],
+  ["edgeHtml", "/explorer", "Content unavailable", "pend"],
+  ["otherHash", "/explorer", "Content unavailable", "pend"],
+  ["noHeader", "/explorer", "Content integrity verified", "ok"],
+  ["upperCase", "/explorer", "Content integrity verified", "ok"],
+  ["e502", "/explorer", "Content unavailable", "pend"],
+  ["dropped", "/explorer", "Content unavailable", "pend"],
+  ["noHash", "/explorer", "No content hash", "pend"],
+  ["good", "/", "Content check needs the cairn front door", "pend"],
 ] as const;
 for (const [which, at, text, cls] of CONTENT_CASES) {
   test(`proposal page, ${which} content${at === "/" ? ", standalone" : ""}: "${text}"`, { skip: why || false }, async () => {
     Object.assign(S, { market: "off", series: true });
     const prop = CONTENT_PROPS[which];
-    const v = await open(`${at}#/proposal/${prop.txid}`, 1280, () => !!document.querySelector("#cibadge") && document.querySelector("#cibadge").textContent !== "checking content\u2026");
+    const v = await open(`${at}#/proposal/${prop.txid}`, 1280, () => !!document.querySelector("#cibadge") && document.querySelector("#cibadge").textContent !== "Checking content\u2026");
     try {
       assert.deepEqual(v.errors, []);
       assert.equal(await v.page.textContent("#cibadge"), text);
@@ -756,7 +758,7 @@ test("domain page: a Propose reads as a request unless the resolver applied it",
     // one of them refused: struck, with the request wording
     VERDICTS[props[0]!.txid] = { kind: "mint", applied: false, note: "mint past supply", height: props[0]!.height };
     const refused = await read("/explorer#/domain/cairnx%3Av1", loaded);
-    assert.ok(refused.acts[0]!.includes("Mint request for ZED") && /no effect.*mint past supply/s.test(refused.acts[0]!), refused.acts[0]);
+    assert.ok(refused.acts[0]!.includes("Mint request for ZED") && /No effect: mint past supply/.test(refused.acts[0]!), refused.acts[0]);
     assert.deepEqual(refused.acts.slice(1), done.acts.slice(1));
     assert.equal(refused.struck, 1);
   } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; S.records = "on"; for (const p of props) delete VERDICTS[p.txid]; }
@@ -846,11 +848,11 @@ for (const [txid, h, merkle] of [[PROVEN, TIP - 3, ROOT], [UNPROVEN, TIP - 4, "0
     [`/tx/${txid}/status`]: { confirmed: true, block_height: h, confirmations: 4, final: false },
     [`/tx/${txid}/merkle-proof`]: { block_height: h, pos: 2, merkle: BRANCH, merkle_root: merkle }, [`/block-height/${h}`]: b.hash, [`/block/${b.hash}`]: b });
 }
-for (const [which, txid, badge, cls] of [["matching", PROVEN, "\u2713 consistent with indexer header (not PoW-verified)", "badge ok"],
-  ["another", UNPROVEN, "\u2717 inclusion FAILED", "badge bad"]] as const) {
+for (const [which, txid, badge, cls] of [["matching", PROVEN, "Consistent with indexer header (not PoW-verified)", "badge ok"],
+  ["another", UNPROVEN, "Inclusion failed", "badge bad"]] as const) {
   test(`transaction page, a branch folding to ${which} root: "${badge}"; each branch hash shown from its start`, { skip: why || false }, async () => {
     Object.assign(S, { market: "off", series: true, shell: true });
-    const v = await open(`/explorer#/tx/${txid}`, 1280, () => !/verifying/.test(document.querySelector("#inclbadge")?.textContent ?? "verifying"));
+    const v = await open(`/explorer#/tx/${txid}`, 1280, () => !/Verifying/.test(document.querySelector("#inclbadge")?.textContent ?? "Verifying"));
     try {
       assert.deepEqual(v.errors, []);
       assert.equal(await v.page.textContent("#inclbadge"), badge);
@@ -977,6 +979,71 @@ test("latest blocks: ages read \"now\" and \"1 min\"; a hash shows its zeros dim
   }
 });
 
+// The home's CairnX activity is a ledger as the preview's latest transactions: the family label, the record in words, the
+// transaction. The label moves out of the record into its own column, out of a refused record's strike; the refusal stays
+// on the record with its reason. On a phone each row stacks: the label and the transaction, the record under them.
+test("home activity: a ledger of kind, record and transaction; a refused record struck with its reason, its label not; stacked at 390 px", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, records: "on" });
+  INDEXER["/domain/cairnx:v1/proposals"] = PROPS.slice(0, 3);
+  try {
+    for (const width of [1280, 390]) {
+      const v = await open("/explorer", width, () => document.querySelectorAll("#actfeed tr.actrow").length === 3);
+      try {
+        assert.deepEqual(v.errors, []);
+        assert.equal(v.overflow, 0, "horizontal overflow");
+        const rows = await v.page.evaluate(() => [...document.querySelectorAll("#actfeed tr.actrow")].map((r: any) => {
+          const [k, rec, tx] = [...r.children] as any[], a = tx.querySelector("a");
+          return { kind: k.textContent, struckKind: !!k.closest(".cx-void") || getComputedStyle(k.querySelector(".kind")).textDecorationLine !== "none",
+            labelsInRecord: rec.querySelectorAll(".kind").length, struck: !!rec.querySelector(".cx-void"), tag: rec.querySelector(".cx-noeffect")?.textContent ?? null,
+            href: a.getAttribute("href"), zeros: /^0x0*$/.test(a.querySelector(".lz")?.textContent ?? ""), stacked: rec.getBoundingClientRect().top >= k.getBoundingClientRect().bottom - 1 };
+        }));
+        assert.deepEqual(rows.map((r: any) => [r.kind, r.struckKind, r.labelsInRecord, r.href, r.zeros]), PROPS.slice(0, 3).map((p) => ["Token", false, 0, `#/tx/${p.txid}`, true]));
+        assert.deepEqual(rows.map((r: any) => [r.struck, r.tag]), [[true, "No effect: mint past supply"], [false, null], [false, null]], "only the refused mint struck, with its reason");
+        assert.deepEqual(rows.map((r: any) => r.stacked), Array(3).fill(width < 720), width < 720 ? "the record under the label" : "one line of three cells");
+        if (width > 720) assert.deepEqual(await v.page.evaluate(() => [...document.querySelectorAll("#actcol thead th")].map((c: any) => c.textContent)), ["Kind", "Record", "Transaction"]);
+      } finally { await v.close(); }
+    }
+  } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; }
+});
+
+// The design direction's colour rule, on every view: the neutral ramp, and colour only for up, down and caution (the
+// tokens --ui-up, --ui-down, --ui-warn at any alpha). A name's monogram is neutral too (identity colour belongs to cairn's
+// avatar module). A hash's leading zeros are the faint step, below the muted text around them.
+const OFF_PALETTE = fileURLToPath(new URL("./fixtures/off-palette.js", import.meta.url));
+const offPalette = async (page: any) => page.evaluate(await readFile(OFF_PALETTE, "utf8"));
+test("colour on every view: the neutral ramp and the up, down and caution tokens only; a hash's leading zeros in the faint step", { skip: why || false }, async () => {
+  Object.assign(S, { market: "fresh", series: true, shell: true, records: "on" });
+  INDEXER["/domain/cairnx:v1/proposals"] = PROPS.slice(0, 3);
+  const deep = block(TIP - 10);
+  Object.assign(INDEXER, { [`/block/${deep.hash}`]: deep, [`/block/${deep.hash}/txids`]: [] });
+  const views: [string, () => boolean][] = [
+    ["/explorer", () => !!document.querySelector("#actfeed tr.actrow") && !!document.querySelector("#csd-mkt:not([hidden])")],
+    [`/explorer#/block/${deep.hash}`, () => !!document.querySelector("#blkconfs")],
+    [`/explorer#/tx/${ATTESTS.refusedFill.txid}`, () => !!document.querySelector("#txaction .cx-noeffect")],
+    [`/explorer#/address/${BUYER}`, () => !!document.querySelector("#txrows .cx-noeffect")],
+    ["/explorer#/name/solo", () => !!document.querySelector(".namehdr .badge")],
+    ["/explorer#/name/nobody", () => /Not registered/.test(document.body.innerText)],
+    ["/explorer#/token/ZED", () => /metadata/.test(document.body.innerText)],
+    [`/explorer#/proposal/${CONTENT_PROPS.good.txid}`, () => /verified/.test(document.querySelector("#cibadge")?.textContent ?? "")],
+  ];
+  try {
+    for (const scheme of ["light", "dark"] as const) for (const [path, ready] of views) {
+      const v = await open(path, 1280, ready, { scheme });
+      try {
+        assert.deepEqual(await offPalette(v.page), [], `${path} ${scheme}`);
+      } finally { await v.close(); }
+    }
+    const v = await open(`/explorer#/block/${deep.hash}`, 1280, () => !!document.querySelector(".kv .lz"), { scheme: "light" });
+    try {
+      const c = await v.page.evaluate(() => { const p = document.createElement("span"); document.body.append(p);
+        const [faint, muted] = ["--ui-faint", "--ui-muted"].map((n) => { p.style.color = `var(${n})`; return getComputedStyle(p).color; });
+        return { zeros: getComputedStyle(document.querySelector(".kv .lz")).color, faint, muted }; });
+      assert.equal(c.zeros, c.faint, "the zeros in the faint step");
+      assert.notEqual(c.faint, c.muted);
+    } finally { await v.close(); }
+  } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; delete INDEXER[`/block/${deep.hash}`]; delete INDEXER[`/block/${deep.hash}/txids`]; }
+});
+
 // One gutter: a heading, the table or list under it and the panel's other content start at the same x, at every width. A
 // "box:" selector is measured at its border edge (a field or a pill lines up by its outline), the others at their text.
 const gutter = (page: any, pairs: [string, string][]) => page.evaluate((pairs: [string, string][]) => pairs.map(([a, b]) => ({ a, b,
@@ -993,12 +1060,11 @@ for (const width of [390, 1280]) {
       try {
         assert.deepEqual(await gutter(home.page, [
           [".ex-col:first-child > h2", "#blkfeed tr:first-child td:first-child"],
-          ["#actcol > h2", "#actfeed .actrow:first-child"],
-          ["#actcol > h2", "box:#actcol > .tabs"],
+          ["#actcol > h2", "#actfeed .actrow:first-child td:first-child"],
           [".ex-col:first-child > h2", ".pulse > .pu:first-child"],
-          [".ex-col:first-child > h2", "box:form.search"],
+          [".ex-col:first-child > h2", "box:form.ex-search"],
           [".row .panel:has(table) > h2", ".row .panel:has(table) tbody tr:first-child td:first-child"],
-          ["#csd-mkt ~ .muted, .panel:has(#emchart) > h2", ".panel:has(#emchart) .figs"],
+          ["#csd-mkt ~ .muted, .panel:has(#emchart) > h2", ".panel:has(#emchart) .facts"],
         ]), []);
       } finally { await home.close(); }
       const hash = block(TIP - 2).hash;
