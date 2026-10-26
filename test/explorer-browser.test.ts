@@ -1810,16 +1810,24 @@ for (const [route, fail, path] of [["transaction", "/tx/", `/explorer#/tx/${PROV
     } finally { S.fail = ""; S.failCode = 500; INDEXER["/domain/cairnx:v1/proposals"] = []; }
   });
 }
-test("home: /blocks/recent limited is the failed state, with no block-by-block reads after it", { skip: why || false }, async () => {
-  Object.assign(S, { market: "off", series: true, shell: true, fail: "/blocks/recent", failCode: 429 });
-  try {
-    const v = await open("/explorer", 1280, () => /Could not load|Latest blocks/.test(document.body.innerText));
+// The page and /blocks/recent come from one indexer: no answer with the list (a rate limit, a miss, a 200 without a
+// list) is the failed state, never block-by-block reads or an empty chain.
+for (const [code, why_] of [[429, /Too many requests/], [404, /\/blocks\/recent\?limit=31 answered 404/], [400, /answered 400/], [200, /A read from the indexer failed/]] as const) {
+  test(`home: /blocks/recent answering ${code}${code === 200 ? " without a list" : ""} is the failed state, with no block-by-block reads after it`, { skip: why || false }, async () => {
+    Object.assign(S, { market: "off", series: true, shell: true, fail: "/blocks/recent", failCode: code });
+    // the tip answers, so block-by-block reads would draw a chain (an empty one, with no /block-height/ stubbed)
+    INDEXER["/blocks/tip/height"] = TIP;
     try {
-      assert.match(await text(v), /^Could not load this view\s+Too many requests/);
-      assert.deepEqual(v.asked.filter((x) => /\/block-height\//.test(x)), [], "no fallback reads");
-    } finally { await v.close(); }
-  } finally { S.fail = ""; S.failCode = 500; }
-});
+      const v = await open("/explorer", 1280, () => /Could not load|Latest blocks/.test(document.body.innerText));
+      try {
+        assert.match(await text(v), /^Could not load this view\s+/);
+        assert.match(await text(v), why_);
+        assert.equal(await v.page.locator("#retry").count(), 1, "Try again");
+        assert.deepEqual(v.asked.filter((x) => /\/block-height\/|\/blocks\/tip\/height/.test(x)), [], "no fallback reads");
+      } finally { await v.close(); }
+    } finally { S.fail = ""; S.failCode = 500; delete INDEXER["/blocks/tip/height"]; }
+  });
+}
 
 // A home panel whose own read fails says so, never that there is nothing: the domains, miners, top holders, activity and
 // the hashrate series.

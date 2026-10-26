@@ -1306,13 +1306,10 @@ function blockRow(b,live){
 async function recentBlocks(){
   // one round-trip (newest-first); 31 blocks feed the block list (12 shown), the emission chart's
   // newest block AND the block-times chart from a single fetch
-  // only an indexer without /blocks/recent (its 404) is read block by block; any other failure is the view's failed
-  // state (a rate limit would only get worse with 25 more reads)
-  try{ const r=await j('/blocks/recent?limit=31'); if(Array.isArray(r)) return r; }catch(e){ if(!isMiss(e)) throw e; }
-  // fallback for an indexer without /blocks/recent (older deploy / different host)
-  const tip=await j('/blocks/tip/height');const out=[];
-  for(let h=tip;h>tip-12&&h>=0;h--){const hash=await j('/block-height/'+h).catch(()=>null);if(!hash)continue;out.push(await j('/block/'+hash));}
-  return out;
+  // the indexer serving this page serves /blocks/recent, so any failure of it (a 404 included) is the view's failed state
+  const r=await j('/blocks/recent?limit=31');
+  if(!Array.isArray(r)) throw new Error('/blocks/recent answered without a list');
+  return r;
 }
 function subscribeBlocks(tb,onBlock){
   // Auto-refresh by POLLING /blocks/recent (real timestamps, deduped by height). This works regardless of
