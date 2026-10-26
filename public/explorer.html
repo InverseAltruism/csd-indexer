@@ -54,8 +54,8 @@
   body { margin: 0; background: var(--ui-bg); color: var(--ui-ink); font: 400 var(--ui-text-md) / var(--ui-leading-body) var(--ui-font-sans);
     -webkit-font-smoothing: antialiased; }
   :where(.ex-wrap) a, .ex-brand { color: var(--ui-ink); text-decoration: none; text-underline-offset: 3px; text-decoration-thickness: 1px; }
-  :where(.ex-wrap) a:hover { text-decoration: underline; }
-  :focus-visible { outline: 2px solid var(--ui-ink); outline-offset: 2px; border-radius: var(--ui-radius-sm); }
+  :where(.ex-wrap) a:hover, .ex-brand:hover { text-decoration: underline; }
+  :where(.ex-wrap) :focus-visible, .ex-brand:focus-visible { outline: 2px solid var(--ui-ink); outline-offset: 2px; border-radius: var(--ui-radius-sm); }
   :where(.ex-wrap) b { font-weight: 500; }
   :where(.ex-wrap) button { font: inherit; color: inherit; }
   :where(.ex-wrap) svg.i { width: var(--ui-text-lg); height: var(--ui-text-lg); flex: none; fill: none; stroke: currentColor; stroke-width: 1.6;
@@ -235,7 +235,7 @@
   .badge.bad { border-color: color-mix(in oklab, var(--ui-down) 35%, var(--ui-line)); background: var(--ui-down-tint); color: var(--ui-down); }
   .badge.caution { border-color: color-mix(in oklab, var(--ui-warn) 35%, var(--ui-line)); background: var(--ui-warn-tint); color: var(--ui-warn); }
   /* inside a line of text or a table row, the small badge, so the line keeps its height */
-  :is(td, .kv .v) .badge { height: calc(var(--ui-space-4) + var(--ui-space-1)); }
+  :where(.ex-wrap) :is(td, .kv .v) .badge { height: calc(var(--ui-space-4) + var(--ui-space-1)); }
 
   .action { padding: 0 0 var(--ui-space-3); font-size: var(--ui-text-md); line-height: var(--ui-leading-body); }
   .action .what { color: var(--ui-ink); }
@@ -262,7 +262,7 @@
     text-decoration-color: var(--ui-line-strong); text-underline-offset: 3px; }
   .ex-again:hover { text-decoration-color: currentColor; }
   /* a failed read's line inside a key's value or a record line takes no gap of its own */
-  :is(.kv .v, .action) > .ex-unread { margin-top: var(--ui-space-1); }
+  :where(.ex-wrap) :is(.kv .v, .action) > .ex-unread { margin-top: var(--ui-space-1); }
 
   .namehdr { display: flex; align-items: center; gap: var(--ui-space-4); }
   .namehdr h2.ex-title { margin: 0; }
@@ -369,7 +369,7 @@
     :where(.ex-wrap) table.stack thead th.act { order: 1; }
     :where(.ex-wrap) table.stack thead th:last-child { order: 2; margin-left: auto; }
     :where(.ex-wrap) table.acts td.k { width: auto; }
-    :is(table.stack, :where(.ex-wrap) table.acts) td.empty { grid-column: 1 / -1; }
+    :where(.ex-wrap) :is(table.stack, table.acts) td.empty { grid-column: 1 / -1; }
   }
   /* on a phone the block list drops its tx count (on each block's page) so the hash keeps its eight digits */
   @media (max-width: 400px) { .opt-xs { display: none; } }
