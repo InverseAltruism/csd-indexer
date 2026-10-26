@@ -122,14 +122,14 @@ export const COINBASE_OUTPUTS = "FROM outputs o JOIN txs t ON t.txid = o.txid WH
 // Every boot rebuilds coinbase_totals from the rows, so a writer without the maintenance (an older version)
 // cannot leave it stale; a boot took 0.3 to 0.4 s on Postgres and 0.9 to 1.0 s on SQLite seeded at 2026-10 mainnet size.
 // The rebuild and the maintaining writers serialize: on Postgres both take COINBASE_TOTALS_LOCK first in their
-// transaction (it conflicts with itself, not with readers); on SQLite the rebuild runs under BEGIN IMMEDIATE and
-// a writer whose snapshot it outdated fails with SQLITE_BUSY and retries on the next poll.
+// transaction (it conflicts with itself, not with readers); on SQLite the rebuild and every Store.tx begin
+// IMMEDIATE, so each waits for another process's write transaction through busy_timeout instead of failing.
 export const COINBASE_TOTALS_LOCK = "LOCK TABLE coinbase_totals IN SHARE ROW EXCLUSIVE MODE";
 export function coinbaseTotalsRebuildSql(backend: Store["backend"]): string[] {
   return [
     ...(backend === "postgres" ? [COINBASE_TOTALS_LOCK] : []),
     "DELETE FROM coinbase_totals",
-    `INSERT INTO coinbase_totals(addr, outputs, value) SELECT o.addr, COUNT(*), SUM(o.value) ${COINBASE_OUTPUTS} GROUP BY o.addr`,
+    `INSERT INTO coinbase_totals(addr, outputs, value) SELECT o.addr, COUNT(*), COALESCE(SUM(o.value), 0) ${COINBASE_OUTPUTS} GROUP BY o.addr`,
   ];
 }
 
@@ -186,8 +186,10 @@ class SqliteStore implements Store {
   // store call (a microtask; the event loop cannot run I/O callbacks until the microtask
   // chain drains). Adding `await fetch(...)`/fs/timers inside a dbTx callback would let
   // readers interleave on this SAME connection and see uncommitted rows. Don't.
+  // IMMEDIATE: every caller writes, and a deferred transaction that reads first cannot wait for another
+  // process's write lock when it upgrades (SQLITE_BUSY at once, busy_timeout unused).
   async tx<T>(fn: (s: Store) => Promise<T>): Promise<T> {
-    this.d.exec("BEGIN");
+    this.d.exec("BEGIN IMMEDIATE");
     try { const r = await fn(this); this.d.exec("COMMIT"); return r; }
     catch (e) { try { this.d.exec("ROLLBACK"); } catch { /* already rolled back */ } throw e; }
   }

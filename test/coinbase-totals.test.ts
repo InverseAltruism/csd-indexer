@@ -4,6 +4,7 @@
 // txid repeated within a block, a non-coinbase tx reusing a coinbase txid) compares the two after every step.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { tmpDb } from "./_tmpdb.js";
 
 process.env.CSD_INDEX_DB = tmpDb("cbtotals");
@@ -174,20 +175,48 @@ test("Postgres: writers and boot rebuilds serialize on the coinbase_totals lock"
   }
 });
 
-test("SQLite: a writer whose snapshot the boot rebuild outdated fails instead of writing stale totals", { skip: !SQLITE && "SQLite-only; Postgres is covered above" }, async () => {
+// A second process on the same SQLite file (another boot's rebuild, `npm run index` beside `run`) holds the
+// write lock for a while; writeBlock must wait for it through the busy timeout and then commit.
+test("SQLite: writeBlock waits for another process's write transaction and then commits", { skip: !SQLITE && "SQLite-only; Postgres is covered above" }, async () => {
   await resetStoreForTests();
   await walk(5, 20);
-  const { DatabaseSync } = await import("node:sqlite");
-  const writer = new DatabaseSync(process.env.CSD_INDEX_DB!);
-  writer.exec("PRAGMA busy_timeout = 100");
-  writer.exec("BEGIN");
-  writer.prepare("SELECT addr, outputs FROM coinbase_totals").all();        // the writer's read: its snapshot starts here
-  await closeDb();
-  await store().get("SELECT 1");                                              // another process boots and rebuilds
-  assert.throws(() => writer.exec(`INSERT INTO coinbase_totals(addr, outputs, value) VALUES('0x${ADDRS[4]}', 1, 1)`), /busy|locked/i);
-  writer.exec("ROLLBACK");
-  writer.close();
+  const tip = Number((await store().get<{ h: number }>("SELECT MAX(height) h FROM blocks"))?.h ?? -1);
+  const holder = spawn(process.execPath, ["--no-warnings", "-e", `
+    const { DatabaseSync } = require("node:sqlite");
+    const d = new DatabaseSync(process.argv[1]);
+    d.exec("BEGIN IMMEDIATE");
+    d.exec("INSERT INTO meta(key, value) VALUES('other-process', '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value");
+    process.stdout.write("locked\\n");
+    setTimeout(() => { d.exec("COMMIT"); d.close(); }, 1500);
+  `, process.env.CSD_INDEX_DB!], { stdio: ["ignore", "pipe", "inherit"] });
+  const exited = new Promise((r) => holder.once("exit", r));
+  await new Promise<void>((r) => holder.stdout!.on("data", (b) => { if (String(b).includes("locked")) r(); }));
+  const t0 = Date.now();
+  await writeBlock({ hash: hex32(900_000), height: tip + 1, chainwork: "1", header: { prev: null, merkle: null, time: 1, bits: 1, nonce: 0, version: 1 },
+    txs: [{ txid: hex32(900_001), inputs: [], outputs: [{ script_pubkey: ADDRS[0]!, value: 9 }] }] } as any);
+  const waited = Date.now() - t0;
+  await exited;
+  assert.ok(waited >= 1000, `writeBlock committed after ${waited} ms, before the other process released the lock`);
+  assert.equal((await store().get<{ hash: string }>("SELECT hash FROM blocks WHERE height=?", tip + 1))?.hash, hex32(900_000));
+  assert.equal((await store().get<{ value: string }>("SELECT value FROM meta WHERE key='other-process'"))?.value, "1");
   assert.deepEqual(await totals(), await aggregate());
+});
+
+// writeBlock never stores a NULL value (safeValue), but a row written by other means may carry one; it must
+// neither fail every boot (NOT NULL on the rebuilt sum) nor wedge an unwind over it.
+test("a coinbase output with a NULL value counts as 0 through a boot and an unwind", async () => {
+  await resetStoreForTests();
+  const C = `0x${ADDRS[2]}`;
+  await writeBlock({ hash: hex32(950_000), height: 0, chainwork: "1", header: { prev: null, merkle: null, time: 1, bits: 1, nonce: 0, version: 1 },
+    txs: [{ txid: hex32(950_001), inputs: [], outputs: [{ script_pubkey: ADDRS[0]!, value: 9 }] }] } as any);
+  await store().tx(async (d) => {
+    await d.run("INSERT INTO txs(txid,height,pos,app_type,signer,fee,time,n_in,n_out,coinbase) VALUES(?,?,?,?,?,?,?,?,?,?)", hex32(950_002), 1, 0, "Coinbase", null, 0, 0, 0, 1, 1);
+    await d.run("INSERT INTO outputs(txid,vout,addr,value,height) VALUES(?,?,?,NULL,?)", hex32(950_002), 0, C, 1);
+  });
+  await closeDb();
+  assert.deepEqual(await totals(), [`0x${ADDRS[0]}:1:9`, `${C}:1:0`], "the boot rebuilt with the NULL value as 0");
+  await unwindAbove(0);
+  assert.deepEqual(await totals(), [`0x${ADDRS[0]}:1:9`], "the unwind took the NULL-valued output out");
 });
 
 test("HAPPY PATH: an honest chain's totals are the per-address coinbase sums", async () => {

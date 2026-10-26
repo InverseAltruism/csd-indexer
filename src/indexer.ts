@@ -275,7 +275,7 @@ export const coinbaseRowsSql = (...wheres: string[]) =>
   "SELECT x.addr, x.value, c.outputs AS cur_outputs, c.value AS cur_value FROM (" +
   wheres.map((w) => `SELECT o.addr AS addr, o.value AS value ${COINBASE_OUTPUTS} AND (${w})`).join(" UNION ALL ") +
   ") x LEFT JOIN coinbase_totals c ON c.addr = x.addr";
-type CoinbaseRow = { addr: string; value: number | bigint; cur_outputs: number | bigint | null; cur_value: number | bigint | null };
+type CoinbaseRow = { addr: string; value: number | bigint | null; cur_outputs: number | bigint | null; cur_value: number | bigint | null };
 
 /**
  * The coinbase_totals writes that add (sign 1n) or subtract (-1n) `rows` (read with coinbaseRowsSql in the same
@@ -289,7 +289,7 @@ function coinbaseTotalsWrites(rows: CoinbaseRow[], sign: 1n | -1n): [string, ...
   const byAddr = new Map<string, { n: bigint; v: bigint }>();
   for (const r of rows) {
     const t = byAddr.get(r.addr) ?? { n: BigInt(r.cur_outputs ?? 0), v: BigInt(r.cur_value ?? 0) };
-    t.n += sign; t.v += sign * BigInt(r.value);
+    t.n += sign; t.v += sign * BigInt(r.value ?? 0);   // NULL as 0, as the rebuild's COALESCE counts it
     byAddr.set(r.addr, t);
   }
   return [...byAddr].map(([addr, t]): [string, ...unknown[]] => t.n <= 0n
