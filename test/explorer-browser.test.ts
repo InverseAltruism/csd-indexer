@@ -97,7 +97,7 @@ const day0 = NOW - (NOW % 86_400);
 const csdSeries = (q: URLSearchParams) => ({ ok: true, pair: "csd-usd", period: q.get("period"), range: q.get("range"), source: "coinpaprika",
   points: Array.from({ length: 30 }, (_, i) => { const c = 0.045 + 0.01 * Math.sin(i / 4); return [day0 - (29 - i) * 86_400, c, c * 1.04, c * 0.96, c, 9000]; }) });
 
-const S = { market: "fresh" as "fresh" | "stale" | "off", thin: false, partial: false, series: true, records: "on" as "on" | "404" | "400" | "500", gates: true, shell: true,
+const S = { market: "fresh" as "fresh" | "stale" | "off", thin: false, partial: false, series: true, records: "on" as "on" | "404" | "400" | "500" | "null" | "array", gates: true, shell: true,
   // the indexer's /health as live, at an old tip, behind the node, or not answering; a path prefix the indexer fails with a 500
   health: "live" as "live" | "old" | "behind" | "down" | "limited" | "html", fail: "" as string | string[], newer: 0,
   // the status a failing prefix answers with: 500, or 429 as cairn's explorerLimiter answers (its body, a Retry-After)
@@ -268,7 +268,9 @@ const server = createServer(async (req, res) => {
       if (S.records === "500") return json(res, 500, { ok: false, error: "resolver down" });
       const ids = (url.searchParams.get("ids") ?? "").split(",");
       RECORD_READS.push(ids.length);
-      return json(res, 200, { ok: true, tipHeight: TIP, records: Object.fromEntries(ids.filter((id) => id in VERDICTS).map((id) => [id, VERDICTS[id]])) });
+      // a 200 of the wrong shape: a list for the map, or a null entry for PROPS[2]
+      if (S.records === "array") return json(res, 200, { ok: true, tipHeight: TIP, records: [] });
+      return json(res, 200, { ok: true, tipHeight: TIP, records: Object.fromEntries(ids.filter((id) => id in VERDICTS).map((id) => [id, S.records === "null" && id === PROPS[2]!.txid ? null : VERDICTS[id]])) });
     }
     if (k === "/health") return S.gates ? json(res, 200, { ok: true, gates: { V25: V25_AT } }) : json(res, 404, { ok: false, error: "not found" });
     if (k === "/token/ZED") return json(res, 200, { ticker: "ZED", name: "Zed", decimals: 0, supply: "1000", minted: "10", mint: "issuer", height: TIP - 5,
@@ -562,6 +564,31 @@ for (const [records, log] of [["404", "stale"], ["400", "truncated"], ["500", "t
         assert.equal(v.asked.filter((x) => x === "/trade/api/cairnx/log").length, 0);
       } finally { await v.close(); }
     } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; S.records = "on"; S.log = "stale"; }
+  });
+}
+
+// A 200 whose records are not the resolver's map (a list), or whose entry for a txid carries no applied flag (null): those
+// txids stay unread, under the verdict line, and the other entries keep their verdicts.
+for (const records of ["null", "array"] as const) {
+  test(`domain page, /cairnx/records answering ${records === "null" ? "a null entry" : "a list for its records"}: those records read unread under the verdict line, the rest by their verdicts`, { skip: why || false }, async () => {
+    Object.assign(S, { market: "off", series: true, records });
+    INDEXER["/domain/cairnx:v1/proposals"] = PROPS.slice(0, 3);
+    try {
+      const v = await open("/explorer#/domain/cairnx%3Av1", 1280, () => /Could not load/.test(document.body.innerText) || document.querySelectorAll("td.act .what").length >= 3);
+      try {
+        assert.deepEqual(v.errors, []);
+        const row = (id: string): Promise<string> => v.page.evaluate((x: string) => [...document.querySelectorAll("tr")].find((r: any) => r.innerHTML.includes(x))?.textContent ?? "", id);
+        assert.match(await v.page.evaluate(() => document.querySelector("#verdict-line")?.textContent ?? ""), /^Could not check these records/);
+        assert.match(await row(PROPS[2]!.txid), /Mint request for/, "the entry without a verdict");
+        if (records === "null") {
+          assert.match(await row(REFUSED), /No effect: mint past supply/);
+          assert.match(await row(PROPS[1]!.txid), /Minted/);
+        } else {
+          for (const p of PROPS.slice(0, 3)) assert.match(await row(p.txid), /Mint request for/);
+          assert.equal(await v.page.locator(".cx-void").count(), 0);
+        }
+      } finally { await v.close(); }
+    } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; S.records = "on"; }
   });
 }
 

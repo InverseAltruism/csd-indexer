@@ -833,20 +833,25 @@ function verdictBook(){
     get:(id)=>ver[String(id).toLowerCase()]||null,
     unread:(id)=>unread.has(String(id).toLowerCase()),
     state:()=>!SIB.cairnx?'standalone':unread.size?'failed':'ok',
-    /** Read the verdicts of `ids` and of every txid still unread; true when the read answered. */
+    /** Read the verdicts of `ids` and of every txid still unread; a txid whose read did not answer with a verdict stays unread. */
     async read(ids){
-      if(!SIB.cairnx) return false;
+      if(!SIB.cairnx) return;
       const want=[...new Set([...(ids||[]).map((x)=>String(x).toLowerCase()),...unread])].filter((x)=>TXID_RE.test(x)&&!(x in ver));
-      if(!want.length) return true;
+      if(!want.length) return;
       const chunks=[]; for(let i=0;i<want.length;i+=100) chunks.push(want.slice(i,i+100));
       const got=(await Promise.all(chunks.map((c)=>sib(SIB.cairnx,'/records?ids='+c.join(','))))).map(sibData);
-      let all=true;
       got.forEach((r,i)=>{
-        if(!(r&&r.records&&typeof r.records==='object')){ all=false; for(const x of chunks[i]) unread.add(x); return; }
-        for(const [id,v] of Object.entries(r.records)) ver[id.toLowerCase()]={applied:v.applied,note:v.note};
-        for(const x of chunks[i]) unread.delete(x);
+        const recs=r&&r.records;
+        if(!recs||typeof recs!=='object'||Array.isArray(recs)){ for(const x of chunks[i]) unread.add(x); return; }
+        const byId=new Map(Object.entries(recs).map(([id,v])=>[id.toLowerCase(),v]));
+        for(const x of chunks[i]){
+          const v=byId.get(x);
+          // an id the resolver holds no record for is read; an entry without its applied flag is not a verdict
+          if(!byId.has(x)) unread.delete(x);
+          else if(v&&typeof v.applied==='boolean'){ ver[x]={applied:v.applied,note:v.note}; unread.delete(x); }
+          else unread.add(x);
+        }
       });
-      return all;
     },
   };
   return book;
