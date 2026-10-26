@@ -44,7 +44,8 @@ if (!/^[A-Za-z0-9_]+$/.test(PG_SCHEMA)) { console.error("bad --pg-schema"); proc
 
 // ── the canonical projection per table: same columns, same order, both sides ──
 // blocks are compared canonical-only (orphaned=0): an orphaned marker row is bookkeeping, not
-// derived chain state, and unwind deletes above-ancestor rows anyway.
+// derived chain state, and unwind deletes above-ancestor rows anyway. coinbase_totals is left out: it has no
+// height to cut at H, and it is an aggregate of outputs JOIN txs, which are compared (test/coinbase-totals.test.ts).
 const TABLES = [
   { name: "blocks", cols: ["height", "hash", "prev", "merkle", "time", "bits", "nonce", "version", "tx_count", "chainwork"], where: "orphaned=0 AND height <= $H", order: "height" },
   { name: "txs", cols: ["txid", "height", "pos", "app_type", "signer", "fee", "time", "n_in", "n_out", "coinbase"], where: "height <= $H", order: "txid" },
