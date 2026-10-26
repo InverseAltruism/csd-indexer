@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.5
+
+- The explorer's stylesheet no longer restyles cairn's shell. Its rules sit in the `page` cascade layer, which outranks
+  the shell's `components` layer whatever the specificity, so its element rules reached the first-visit Terms dialog:
+  `button` drew "Agree and continue" in the button's own colour (an invisible label, both themes), `h2` shrank the
+  title to 15 px and `:focus-visible` squared the dialog's corners. Every rule outside the tokens layer now starts from
+  the explorer's content, `:where(.ex-wrap)` (no change in specificity), or from its own classes and ids. Through cairn's
+  front door the explorer's content is unchanged (a computed-style diff of every element: 9 routes, both themes,
+  1280 and 390 px, 0 differences), and the shell draws as on cairn's other pages: the Terms dialog, and the footer's
+  toggle and theme buttons, which took the page's link and button rules before. The standalone brand keeps its hover
+  underline and focus ring. `test/explorer-page-layer.test.ts` reads every style block and fails on a selector that
+  reaches outside the explorer.
+
 ## 0.3.4
 
 - `GET /address/:a/coinbase` and `GET /miners/coinbase?limit=N` (#17): lifetime coinbase totals per address from a
