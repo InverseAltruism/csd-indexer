@@ -102,6 +102,8 @@ const S = { market: "fresh" as "fresh" | "stale" | "off", thin: false, partial: 
   health: "live" as "live" | "old" | "behind" | "down", fail: "", newer: 0,
   // the resolver behind the front door: answering, not answering (the front door's 502), or before its first scan (503)
   cx: "up" as "up" | "502" | "503",
+  // a path prefix the resolver alone fails with a 500 (the others answer)
+  cxFail: "",
   // /domain/:d/proposals honouring its limit (newest 100 by default) as the indexer does; cairn's avatar module and
   // /trade's verified-token list present or absent
   paged: false, avatar: true, trust: true };
@@ -243,6 +245,8 @@ const server = createServer(async (req, res) => {
     const k = p.slice(17);
     if (S.cx === "502") return json(res, 502, { ok: false, error: "cairnx backend unavailable" });
     if (S.cx === "503") return json(res, 503, { ok: false, error: "not ready: no validated scan since this resolver started; retry shortly" });
+    if (S.cxFail && k.startsWith(S.cxFail)) return json(res, 500, { ok: false, error: "internal" });
+    if (k === `/address/${WALLET}`) return json(res, 200, { balances: { QTOK: { available: "12345", locked: "100" } }, names: ["twin"] });
     if (k.startsWith("/record/")) { const v = VERDICTS[k.slice(8)]; return v ? json(res, 200, { txid: k.slice(8), ...v, tipHeight: TIP }) : json(res, 404, { ok: false, error: "no resolved record for this txid" }); }
     if (k === `/primary/${MINER}`) return json(res, 200, { ok: true, address: MINER, name: "solo" });
     if (k.startsWith("/name/") && k.slice(6) in NAMES) return json(res, 200, NAMES[k.slice(6)]);
@@ -1707,4 +1711,21 @@ test("a failed resolver read is asked again by the next view: a token price in i
       assert.deepEqual(v.errors, []);
     } finally { await v.close(); }
   } finally { S.cx = "up"; delete PRIMARIES[MINER]; }
+});
+
+// An address's CairnX holdings in the token's decimals; with the decimals unread, labelled base units, never base units
+// shown as whole tokens.
+test("address page: CairnX holdings in the token's decimals; with the decimals unread, labelled base units", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, cx: "up", cxFail: "" });
+  const held = (v: View) => v.page.evaluate(() => [...document.querySelectorAll("#cxpanel > div")].map((d: any) => d.textContent));
+  try {
+    for (const [fail, tokens] of [["", "123.45 QTOK (+1 locked in offers)"], ["/tokens", "12,345 base units QTOK (+100 base units locked in offers)"]] as const) {
+      S.cxFail = fail;
+      const v = await open(`/explorer#/address/${WALLET}`, 1280, () => !!document.querySelector("#cxpanel:not([hidden])"));
+      try {
+        assert.deepEqual(await held(v), ["tokens", tokens, "names", "twin.csd"], fail || "decimals read");
+        assert.deepEqual(v.errors, []);
+      } finally { await v.close(); }
+    }
+  } finally { S.cxFail = ""; }
 });
