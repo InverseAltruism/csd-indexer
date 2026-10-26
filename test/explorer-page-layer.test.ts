@@ -59,7 +59,19 @@ function styleRules(html: string): Rule[] {
   return out;
 }
 
-const scoped = (s: string) => GLOBAL.has(s) || s.startsWith(":where(.ex-wrap)") || /^[.#]/.test(s) || s.startsWith(":root.ex-");
+const ROOT_VT = ":root.ex-routing::view-transition-"; // the route crossfade's snapshots, on the explorer's own class
+/** Whether a selector stays on the explorer: it starts from its content or its own names, and no sibling combinator leads
+ *  out of them (`:where(.ex-wrap) ~ footer`, `.x + *`). An id or class rule that names the shell's own markup is out
+ *  of reach of a static reading; the browser tests' leak probe covers it. */
+function scoped(s: string): boolean {
+  if (GLOBAL.has(s)) return true;
+  if (s.startsWith(":root")) return s.startsWith(ROOT_VT);
+  if (!(s.startsWith(":where(.ex-wrap)") || /^[.#]/.test(s))) return false;
+  let top = s.replace(/\[[^\]]*\]/g, "[]");
+  for (let prev = ""; prev !== top; ) { prev = top; top = top.replace(/\([^()]*\)/g, "()"); }
+  if (/^:where\(\)\s*[+~]/.test(top)) return false;
+  return [...top.matchAll(/[+~]\s*(\S)/g)].every((m) => m[1] === "." || m[1] === "#");
+}
 
 test("outside the tokens layer every rule starts from the explorer's content or its own names (the shell keeps its look)", () => {
   const rules = styleRules(HTML).filter((r) => r.layer !== "tokens");
@@ -74,10 +86,12 @@ test("the reading catches each shape that reaches the shell, and passes the scop
   const leaks = (html: string) => styleRules(html).filter((r) => r.layer !== "tokens" && (r.nested || !scoped(r.selector))).length;
   for (const bad of ["button { color: inherit; }", "@media (max-width: 1px) { p { margin: 0; } }", ":is(h2, h3) { margin: 0; }",
     ":where(button) { color: red; }", "[role=dialog] button { color: red; }", ":focus-visible { outline: 0; }", ".x, h3 { margin: 0; }",
-    ".ex-top { & button { color: red; } }"]) assert.equal(leaks(page(bad)) > 0, true, bad);
+    ".ex-top { & button { color: red; } }", ":root.ex-routing button { color: red; }", ":where(.ex-wrap) ~ footer button { color: red; }",
+    ":where(.ex-wrap) + * { margin: 0; }", ".ex-wrap ~ * button { color: red; }"]) assert.equal(leaks(page(bad)) > 0, true, bad);
   assert.equal(leaks(`${page(".ex-a { margin: 0; }")}<style>@layer page { h2 { font-size: 15px; } }</style>`), 1, "a second page block is read");
   assert.equal(leaks("<style>h2 { font-size: 15px; }</style>"), 1, "an unlayered rule is read");
   assert.equal(leaks(page(":where(.ex-wrap) :is(td, .kv .v) .badge { margin: 0; } .ex-brand:hover { margin: 0; } @keyframes k { from { opacity: 0; } to { opacity: 1; } }")), 0);
+  assert.equal(leaks(page(".kv + .kv { margin: 0; } .pu:nth-child(-n + 2) { margin: 0; } :where(.ex-wrap) h2.ex-title + .kv { margin: 0; } :root.ex-routing::view-transition-old(root) { animation: none; }")), 0, "the page's own sibling and root shapes");
   assert.equal(leaks("<style>@layer tokens { :root { --ui-ink: #000; } }</style>"), 0, "the fallback tokens");
 });
 
