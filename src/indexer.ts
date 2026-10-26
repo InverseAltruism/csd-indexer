@@ -8,7 +8,7 @@
 // un-spend orphaned spends), and replay the canonical branch; the electrs/Subsquid
 // roll-back-then-replay pattern. Blocks deeper than finalDepth are never touched.
 import * as rpc from "./rpc.js";
-import { store, getMeta, setMeta, tx as dbTx, type Store } from "./db.js";
+import { store, getMeta, setMeta, tx as dbTx, COINBASE_OUTPUTS, COINBASE_TOTALS_LOCK, type Store } from "./db.js";
 import { deriveAddr, addrFromScriptPubkey, appType } from "./decode.js";
 import { CFG } from "./config.js";
 import { bus } from "./events.js";
@@ -157,7 +157,10 @@ export async function writeBlock(b: rpc.RpcBlock): Promise<void> {
     // "byte-identical rows" claim. Rule: every integer bound into a column goes through the SAME clamp
     // helper, so header time/bits/nonce/version use safeValue() exactly like value, fee and expires_epoch.
     const time = safeValue(blk.header.time);
+    if (d.backend === "postgres") await d.run(COINBASE_TOTALS_LOCK); // serializes with the boot rebuild (db.ts)
     // clear any prior contents of THIS height (keeps a same-height re-write internally consistent)
+    const cleared = await d.all<CoinbaseRow>(coinbaseRowsSql(COINBASE_WHERE.height, COINBASE_WHERE.txAtHeight), blk.height, blk.height, blk.height);
+    for (const [sql, ...p] of coinbaseTotalsWrites(cleared, -1n)) await d.run(sql, ...p);
     await d.run(`UPDATE outputs SET spent_txid=NULL, spent_height=NULL WHERE spent_height=?`, blk.height);
     await d.run(`DELETE FROM address_history WHERE height=?`, blk.height);
     await d.run(`DELETE FROM proposals WHERE height=?`, blk.height);
@@ -192,6 +195,9 @@ export async function writeBlock(b: rpc.RpcBlock): Promise<void> {
     for (let pos = 0; pos < blk.txs.length; pos++) {
       const t = blk.txs[pos]!;
       const isCoinbase = pos === 0;
+      // a txid already stored (a coinbase replayed at another height, or repeated in this block) is overwritten below
+      const replaced = await d.all<CoinbaseRow>(coinbaseRowsSql(COINBASE_WHERE.txid), t.txid);
+      for (const [sql, ...p] of coinbaseTotalsWrites(replaced, -1n)) await d.run(sql, ...p);
       const signer = deriveAddr(t.inputs?.[0]?.script_sig) ?? addrFromScriptPubkey(t.outputs?.[0]?.script_pubkey) ?? null;
       // resolve inputs against our own outputs → spends + input sum (skip coinbase)
       let sumIn = 0n;
@@ -234,6 +240,8 @@ export async function writeBlock(b: rpc.RpcBlock): Promise<void> {
       const fee = clampValue(isCoinbase ? 0n : (sumIn > sumOut ? sumIn - sumOut : 0n));
       const kind = appType(t, isCoinbase);
       await d.run(SQL_TX, t.txid, blk.height, pos, kind, signer, fee, time, ins.length, outs.length, isCoinbase ? 1 : 0);
+      const written = await d.all<CoinbaseRow>(coinbaseRowsSql(COINBASE_WHERE.txid), t.txid);
+      for (const [sql, ...p] of coinbaseTotalsWrites(written, 1n)) await d.run(sql, ...p);
 
       if (kind === "Propose" && t.app) {
         // expires_epoch via safeEpoch() (see above): preserves the JS-safe range exactly, clamps anything
@@ -252,6 +260,44 @@ export async function writeBlock(b: rpc.RpcBlock): Promise<void> {
   });
 }
 
+// The coinbase output rows a write is about to remove or change, or has just added (each `where` over
+// COINBASE_OUTPUTS, the arms joined by UNION ALL), each with its address's current coinbase_totals row.
+// Exported for test/coinbase-totals.test.ts, which checks each arm's plan.
+export const COINBASE_WHERE = {
+  height: "o.height = ?",
+  txAtHeight: "o.height <> ? AND t.height = ?",
+  txid: "o.txid = ?",
+  above: "o.height > ?",
+  // the unary plus keeps sqlite from driving this by outputs(height), a range over nearly every row
+  txAbove: "+o.height <= ? AND t.height > ?",
+} as const;
+export const coinbaseRowsSql = (...wheres: string[]) =>
+  "SELECT x.addr, x.value, c.outputs AS cur_outputs, c.value AS cur_value FROM (" +
+  wheres.map((w) => `SELECT o.addr AS addr, o.value AS value ${COINBASE_OUTPUTS} AND (${w})`).join(" UNION ALL ") +
+  ") x LEFT JOIN coinbase_totals c ON c.addr = x.addr";
+type CoinbaseRow = { addr: string; value: number | bigint | null; cur_outputs: number | bigint | null; cur_value: number | bigint | null };
+
+/**
+ * The coinbase_totals writes that add (sign 1n) or subtract (-1n) `rows` (read with coinbaseRowsSql in the same
+ * transaction). Every statement that inserts, overwrites or deletes outputs or txs rows is bracketed by these
+ * writes over the rows it touches, so coinbase_totals stays equal to the COINBASE_OUTPUTS aggregate
+ * (test/coinbase-totals.test.ts). Synchronous so the dbTx callbacks await only store calls. The sums are BigInt
+ * and the stored value is clamped to the column, so a node serving over-range outputs cannot wedge the write;
+ * below the clamp (any consensus-valid chain) the value is exact.
+ */
+function coinbaseTotalsWrites(rows: CoinbaseRow[], sign: 1n | -1n): [string, ...unknown[]][] {
+  const byAddr = new Map<string, { n: bigint; v: bigint }>();
+  for (const r of rows) {
+    const t = byAddr.get(r.addr) ?? { n: BigInt(r.cur_outputs ?? 0), v: BigInt(r.cur_value ?? 0) };
+    t.n += sign; t.v += sign * BigInt(r.value ?? 0);   // NULL as 0, as the rebuild's COALESCE counts it
+    byAddr.set(r.addr, t);
+  }
+  return [...byAddr].map(([addr, t]): [string, ...unknown[]] => t.n <= 0n
+    ? ["DELETE FROM coinbase_totals WHERE addr=?", addr]
+    : ["INSERT INTO coinbase_totals(addr,outputs,value) VALUES(?,?,?) ON CONFLICT(addr) DO UPDATE SET outputs=excluded.outputs, value=excluded.value",
+      addr, t.n, t.v < 0n ? 0n : clampValue(t.v)]);
+}
+
 /**
  * Hard-delete every row strictly above `ancestor`, un-spending outputs orphaned by it, AND set the tip pointer
  * to `newTip` (defaults to `ancestor`) INSIDE the same transaction. F11: the tip-pointer write used to run in
@@ -266,6 +312,9 @@ export async function writeBlock(b: rpc.RpcBlock): Promise<void> {
 export async function unwindAbove(ancestor: number, newTip: number = ancestor): Promise<void> {
   await dbTx(async (d: Store) => {
     const h = ancestor;
+    if (d.backend === "postgres") await d.run(COINBASE_TOTALS_LOCK); // serializes with the boot rebuild (db.ts)
+    const orphaned = await d.all<CoinbaseRow>(coinbaseRowsSql(COINBASE_WHERE.above, COINBASE_WHERE.txAbove), h, h, h);
+    for (const [sql, ...p] of coinbaseTotalsWrites(orphaned, -1n)) await d.run(sql, ...p);
     // un-spend outputs whose spender was orphaned (those spends no longer happened)
     await d.run(`UPDATE outputs SET spent_txid=NULL, spent_height=NULL WHERE spent_height>?`, h);
     await d.run(`DELETE FROM address_history WHERE height>?`, h);

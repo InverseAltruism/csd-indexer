@@ -74,6 +74,8 @@ Standard explorer endpoints (the widely used Esplora shape, so existing tools wo
 - `GET /tx/:id[/status]`
 - `GET /address/:a`, `/address/:a/txs`, `/address/:a/txs/chain/:last_seen_txid` (the next page),
   `/address/:a/utxo`
+- `GET /address/:a/coinbase`: lifetime count and sum of the coinbase outputs paying the address on the indexed
+  chain, with `indexed_height`; 400 on a malformed address, 503 on an empty index.
 
 The extras:
 - `GET /tx/:id/merkle-proof`: a proof you can fold yourself to confirm the transaction is in its
@@ -96,6 +98,8 @@ The extras:
   an empty index is 503.
 - `GET /address/:a/reputation`: aggregates over the address's newest 200 attestations; past that the
   answer says `truncated: true` and names the window.
+- `GET /miners/coinbase?limit=N`: the same totals for every address, most outputs first (limit 1 to 1000,
+  default 1000).
 - `GET /analytics/miners?window=`, `/analytics/richlist?limit=`, `/analytics/supply`,
   `/analytics/series?window=&points=`: miner shares and hashrate, the largest holders, supply and
   emission, and time series.

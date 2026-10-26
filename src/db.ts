@@ -87,6 +87,9 @@ const DDL = `
     confidence BIGINT, fee BIGINT, height BIGINT, time BIGINT
   );
   CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+  -- Per-address count and sum of the coinbase outputs in outputs JOIN txs (COINBASE_OUTPUTS below), kept equal
+  -- to that aggregate by indexer.ts coinbaseTotalsWrites inside every writeBlock and unwindAbove transaction.
+  CREATE TABLE IF NOT EXISTS coinbase_totals (addr TEXT PRIMARY KEY, outputs BIGINT NOT NULL, value BIGINT NOT NULL);
 
   CREATE INDEX IF NOT EXISTS idx_txs_height       ON txs(height);
   CREATE INDEX IF NOT EXISTS idx_txs_signer       ON txs(signer);
@@ -113,6 +116,23 @@ const DDL = `
   CREATE INDEX IF NOT EXISTS idx_addrhist_height  ON address_history(height);
 `;
 
+// The coinbase outputs paying an address: the one definition coinbase_totals summarises. Callers append
+// `AND (...)` to narrow it.
+export const COINBASE_OUTPUTS = "FROM outputs o JOIN txs t ON t.txid = o.txid WHERE t.coinbase = 1 AND o.addr IS NOT NULL";
+// Every boot rebuilds coinbase_totals from the rows, so a writer without the maintenance (an older version)
+// cannot leave it stale; a boot took 0.3 to 0.4 s on Postgres and 0.9 to 1.0 s on SQLite seeded at 2026-10 mainnet size.
+// The rebuild and the maintaining writers serialize: on Postgres both take COINBASE_TOTALS_LOCK first in their
+// transaction (it conflicts with itself, not with readers); on SQLite the rebuild and every Store.tx begin
+// IMMEDIATE, so each waits for another process's write transaction through busy_timeout instead of failing.
+export const COINBASE_TOTALS_LOCK = "LOCK TABLE coinbase_totals IN SHARE ROW EXCLUSIVE MODE";
+export function coinbaseTotalsRebuildSql(backend: Store["backend"]): string[] {
+  return [
+    ...(backend === "postgres" ? [COINBASE_TOTALS_LOCK] : []),
+    "DELETE FROM coinbase_totals",
+    `INSERT INTO coinbase_totals(addr, outputs, value) SELECT o.addr, COUNT(*), COALESCE(SUM(o.value), 0) ${COINBASE_OUTPUTS} GROUP BY o.addr`,
+  ];
+}
+
 // ── sqlite backend ──
 class SqliteStore implements Store {
   readonly backend = "sqlite" as const;
@@ -125,6 +145,11 @@ class SqliteStore implements Store {
     this.d = new DatabaseSync(file);
     this.d.exec(`PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = OFF;`);
     this.d.exec(DDL);
+    this.d.exec("BEGIN IMMEDIATE");
+    try {
+      for (const q of coinbaseTotalsRebuildSql(this.backend)) this.d.exec(q);
+      this.d.exec("COMMIT");
+    } catch (e) { try { this.d.exec("ROLLBACK"); } catch { /* already rolled back */ } throw e; }
   }
   private stmt(sql: string) {
     let st = this.stmts.get(sql);
@@ -161,8 +186,10 @@ class SqliteStore implements Store {
   // store call (a microtask; the event loop cannot run I/O callbacks until the microtask
   // chain drains). Adding `await fetch(...)`/fs/timers inside a dbTx callback would let
   // readers interleave on this SAME connection and see uncommitted rows. Don't.
+  // IMMEDIATE: every caller writes, and a deferred transaction that reads first cannot wait for another
+  // process's write lock when it upgrades (SQLITE_BUSY at once, busy_timeout unused).
   async tx<T>(fn: (s: Store) => Promise<T>): Promise<T> {
-    this.d.exec("BEGIN");
+    this.d.exec("BEGIN IMMEDIATE");
     try { const r = await fn(this); this.d.exec("COMMIT"); return r; }
     catch (e) { try { this.d.exec("ROLLBACK"); } catch { /* already rolled back */ } throw e; }
   }
@@ -230,6 +257,14 @@ class PgStore implements Store {
         await c.query(`CREATE SCHEMA IF NOT EXISTS ${this.schemaSafe}`);
         await c.query(`SET search_path TO ${this.schemaSafe}`);
         await c.query(DDL);
+        await c.query("BEGIN");
+        try {
+          for (const q of coinbaseTotalsRebuildSql(this.backend)) await c.query(q);
+          await c.query("COMMIT");
+        } catch (e) {
+          try { await c.query("ROLLBACK"); } catch { /* connection gone */ }
+          throw e;
+        }
       } finally { c.release(); }
     })();
     this._ready = p;
@@ -302,10 +337,11 @@ export async function checkpoint(): Promise<void> { await store().checkpoint(); 
 /** TEST ONLY: drop every table so a suite starts from nothing (works on both backends). */
 export async function resetStoreForTests(): Promise<void> {
   const s = store();
-  for (const t of ["address_history", "attestations", "proposals", "outputs", "txs", "blocks", "meta"]) {
+  for (const t of ["address_history", "attestations", "proposals", "outputs", "txs", "blocks", "meta", "coinbase_totals"]) {
     await s.exec(`DROP TABLE IF EXISTS ${t}`);
   }
   await s.exec(DDL);
+  await s.tx(async (d) => { for (const q of coinbaseTotalsRebuildSql(d.backend)) await d.run(q); });
 }
 
 export async function getMeta(k: string): Promise<string | null> {
