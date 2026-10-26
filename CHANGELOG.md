@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.6
+
+- The explorer takes the site's shell parts by name (Plan 89 wave R11): its tab icons are the site's (the Cairn mark,
+  cairn's `/favicon-32.png`, `/favicon.svg` and `/apple-touch-icon.png`) instead of its own green squares, and its
+  content sits in the site's one column, cairn's `--page-max` (1280 px) with `--page-pad` inside it, instead of its own
+  1200 px. Through the front door its edges are now the header's at every width (measured with cairn's shell: 16, 24,
+  104 and 344 px at 390, 1280, 1440 and 1920; before, 40 px inside the header on desktop). On a direct indexer hit the
+  column is 1280 px with 24 px inside, and the icons are absent. `test/explorer-shell-parts.test.ts`.
+- The page-layer test also rejects a sibling combinator or a :root rule that leads out of the explorer.
+
 ## 0.3.5
 
 - The explorer's stylesheet no longer restyles cairn's shell. Its rules sit in the `page` cascade layer, which outranks

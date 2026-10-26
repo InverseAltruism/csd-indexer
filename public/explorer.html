@@ -38,13 +38,17 @@
 <link rel="stylesheet" href="/ui/components.css?v=1" />
 <meta name="color-scheme" content="light dark" />
 <title>CSD Explorer</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%23050505'/%3E%3Crect x='3' y='3' width='4.4' height='4.4' rx='1' fill='%2357d977'/%3E%3Crect x='8.6' y='3' width='4.4' height='4.4' rx='1' fill='%23173b22'/%3E%3Crect x='3' y='8.6' width='4.4' height='4.4' rx='1' fill='%23173b22'/%3E%3Crect x='8.6' y='8.6' width='4.4' height='4.4' rx='1' fill='%23ffd24a'/%3E%3C/svg%3E" />
+<!-- the site's tab icons, the Cairn mark (cairn public/, built from cairn-ui's mark.svg); a direct indexer hit has
+     none of them and shows the browser's default -->
+<link rel="icon" href="/favicon-32.png" sizes="32x32" type="image/png" />
+<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<link rel="apple-touch-icon" href="/apple-touch-icon.png" />
 <style>
 @layer page {
   /* Measured against the approved preview's #explorer (compare.mjs). Colours, type, spacing, radii and durations are
      --ui-* tokens; the raw px are hairlines (1px), the focus ring, 1 or 2 px nudges on a token where the preview sits
      between two steps (as components.css does for its table cells), the 7 px status dot components.css also draws, and
-     the preview's layout widths (the 120 px key column, the 1200 px measure, field, card and column minimums). Font
+     the preview's layout widths (the 120 px key column, field, card and column minimums); the measure is the site's. Font
      sizes the scale lacks (the preview's 13.5, 12.5, 11.5 and 10.5 px) take the nearest token. This sheet is the page's
      own and complete: on a direct indexer hit cairn's components.css is absent, so the page cannot lean on it. */
   [hidden] { display: none !important; }
@@ -82,10 +86,11 @@
     padding: 0 clamp(var(--ui-space-4), 4vw, var(--ui-space-6)); border-bottom: 1px solid var(--ui-line); }
   .ex-brand { font-weight: 600; letter-spacing: var(--ui-track-snug); }
 
-  /* 1200 px: the content measure the site's other pages use */
-  .ex-wrap { max-width: 1200px; margin: 0 auto; }
+  /* The site's one column (cairn's components.css): --page-max wide with --page-pad inside it, so the explorer's edges
+     are the header's and every other page's; on a direct indexer hit, without cairn's sheet, 1280 px and 24 px. */
+  .ex-wrap { --ex-pad: var(--page-pad, var(--ui-space-5)); max-width: var(--page-max, 1280px); margin: 0 auto; }
   .ex-top { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ui-space-4);
-    padding: calc(var(--ui-space-4) + 2px) var(--ui-space-5); border-bottom: 1px solid var(--ui-line); }
+    padding: calc(var(--ui-space-4) + 2px) var(--ex-pad); border-bottom: 1px solid var(--ui-line); }
   .ex-search { flex: 1 1 320px; min-width: 0; display: flex; align-items: center; gap: var(--ui-space-2); height: calc(var(--ui-space-6) + var(--ui-space-3));
     padding: 0 calc(var(--ui-space-3) + 2px); border: 1px solid var(--ui-line); border-radius: var(--ui-radius-md); background: var(--ui-surface);
     transition: border-color var(--ui-dur-2) var(--ui-ease), box-shadow var(--ui-dur-2) var(--ui-ease); }
@@ -100,7 +105,7 @@
 
   :where(.ex-wrap) main { padding-bottom: var(--ui-space-6); }
   #view > :first-child { border-top: 0; }
-  .panel { position: relative; min-width: 0; padding: var(--ui-space-5); border-top: 1px solid var(--ui-line); }
+  .panel { position: relative; min-width: 0; padding: var(--ui-space-5) var(--ex-pad); border-top: 1px solid var(--ui-line); }
   /* a table runs to the panel's edges; its cells carry the inset */
   .panel > .scroll-x { margin-inline: calc(-1 * var(--ui-space-5)); }
   /* a section heading, with its side note (a count, a window, the live marker or a filter) at the right */
@@ -119,7 +124,7 @@
 
   /* the chain at a glance: label over value, split by hairlines */
   .pulse { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-bottom: 1px solid var(--ui-line); }
-  .pu { min-width: 0; padding: var(--ui-space-4) var(--ui-space-5); border-right: 1px solid var(--ui-line); }
+  .pu { min-width: 0; padding: var(--ui-space-4) var(--ex-pad); border-right: 1px solid var(--ui-line); }
   .pu:last-child { border-right: 0; }
   .pu .l, .facts dt, .mkt-l { display: block; color: var(--ui-muted); font: 500 var(--ui-text-2xs) / var(--ui-leading-body) var(--ui-font-mono);
     letter-spacing: var(--ui-track-label); text-transform: uppercase; }
@@ -130,10 +135,10 @@
   .ex-cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border-bottom: 1px solid var(--ui-line); }
   .ex-col { min-width: 0; padding: 0; border-top: 0; }
   .ex-col + .ex-col { border-left: 1px solid var(--ui-line); }
-  .ex-col > h2 { margin: 0; padding: var(--ui-space-4) var(--ui-space-5) calc(var(--ui-space-1) + 2px); }
+  .ex-col > h2 { margin: 0; padding: var(--ui-space-4) var(--ex-pad) calc(var(--ui-space-1) + 2px); }
   .ex-col > .scroll-x { margin: 0; }
   /* a column's quiet line (the activity's unread verdicts) in the column's gutter, above its table */
-  .ex-col > #actnote > .ex-unread { margin: 0; padding: 0 var(--ui-space-5) var(--ui-space-3); }
+  .ex-col > #actnote > .ex-unread { margin: 0; padding: 0 var(--ex-pad) var(--ui-space-3); }
   .ex-cols + .panel { border-top: 0; }
   /* the activity filter: quiet pill tabs in the heading, the choice on the sunken ground */
   .tab { height: var(--ui-space-5); padding: 0 var(--ui-space-2); border: 0; border-radius: var(--ui-radius-pill); background: transparent;
@@ -166,10 +171,10 @@
 
   /* tables read like a ledger (the preview's .tbl): mono labels, hairline rows, figures right-aligned in tabular digits */
   :where(.ex-wrap) table { width: 100%; border-collapse: collapse; font-size: var(--ui-text-sm); line-height: normal; }
-  :where(.ex-wrap) th { padding: var(--ui-space-3) var(--ui-space-5) calc(var(--ui-space-3) - 2px); border-bottom: 1px solid var(--ui-line); color: var(--ui-muted);
+  :where(.ex-wrap) th { padding: var(--ui-space-3) var(--ex-pad) calc(var(--ui-space-3) - 2px); border-bottom: 1px solid var(--ui-line); color: var(--ui-muted);
     text-align: left; font: 500 var(--ui-text-2xs) / var(--ui-leading-tight) var(--ui-font-mono); letter-spacing: var(--ui-track-label);
     text-transform: uppercase; white-space: nowrap; }
-  :where(.ex-wrap) td { padding: calc(var(--ui-space-3) - 1px) var(--ui-space-5); border-bottom: 1px solid var(--ui-line); text-align: left; white-space: nowrap;
+  :where(.ex-wrap) td { padding: calc(var(--ui-space-3) - 1px) var(--ex-pad); border-bottom: 1px solid var(--ui-line); text-align: left; white-space: nowrap;
     vertical-align: baseline; }
   :where(.ex-wrap) td.m { font-family: var(--ui-font-mono); font-size: var(--ui-text-xs); }
   :where(.ex-wrap) th.r, :where(.ex-wrap) td.r { text-align: right; font-variant-numeric: tabular-nums; }
@@ -291,7 +296,7 @@
   .pu .skel { height: var(--ui-space-5); margin: calc(var(--ui-space-1) + 2px) 0 0; }
   .pu .skel:first-child { height: var(--ui-space-3); margin: var(--ui-space-1) 0 0; }
   .skel.v { height: var(--ui-space-5); }
-  .sk-rows { padding: var(--ui-space-2) var(--ui-space-5) var(--ui-space-5); }
+  .sk-rows { padding: var(--ui-space-2) var(--ex-pad) var(--ui-space-5); }
   .sk-rows .skel { margin: calc(var(--ui-space-5) + 2px) 0; }
   .kv .skel { margin: var(--ui-space-1) 0; }
   @keyframes ex-skel { to { opacity: 0.45; } }
@@ -330,7 +335,7 @@
   .mkt-s { margin-top: var(--ui-space-1); color: var(--ui-muted); font-size: var(--ui-text-2xs); line-height: var(--ui-leading-snug); overflow-wrap: anywhere; }
 
   /* the trust statement under the view, in the panels' gutter; cairn's footer fills #site-footer, absent standalone */
-  .ex-trust { max-width: 80ch; margin: 0; padding: 0 var(--ui-space-5) var(--ui-space-5); color: var(--ui-muted); font-size: var(--ui-text-xs);
+  .ex-trust { max-width: 80ch; margin: 0; padding: 0 var(--ex-pad) var(--ui-space-5); color: var(--ui-muted); font-size: var(--ui-text-xs);
     line-height: var(--ui-leading-body); }
   .ex-trust a { color: inherit; text-decoration: underline; text-decoration-color: var(--ui-line-strong); }
   #site-footer:empty { display: none; }
@@ -358,7 +363,7 @@
     /* stacked ledgers: the address page's txid and amount, the activity's kind and transaction, on one line; the record
        under them at full width */
     :where(.ex-wrap) table.stack tr, :where(.ex-wrap) table.acts tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--ui-space-1) var(--ui-space-3);
-      padding: var(--ui-space-2) var(--ui-space-5); border-bottom: 1px solid var(--ui-line); }
+      padding: var(--ui-space-2) var(--ex-pad); border-bottom: 1px solid var(--ui-line); }
     :where(.ex-wrap) table.acts tr { align-items: baseline; }
     :where(.ex-wrap) table.stack tbody tr:last-child, :where(.ex-wrap) table.acts tbody tr:last-child { border-bottom: 0; }
     :where(.ex-wrap) table.stack th, :where(.ex-wrap) table.stack td, :where(.ex-wrap) table.acts th, :where(.ex-wrap) table.acts td { padding: 0; border: 0; }
