@@ -53,12 +53,12 @@
   html, body { overflow-x: clip; }
   body { margin: 0; background: var(--ui-bg); color: var(--ui-ink); font: 400 var(--ui-text-md) / var(--ui-leading-body) var(--ui-font-sans);
     -webkit-font-smoothing: antialiased; }
-  a { color: var(--ui-ink); text-decoration: none; text-underline-offset: 3px; text-decoration-thickness: 1px; }
-  a:hover { text-decoration: underline; }
+  :where(.ex-wrap) a, .ex-brand { color: var(--ui-ink); text-decoration: none; text-underline-offset: 3px; text-decoration-thickness: 1px; }
+  :where(.ex-wrap) a:hover { text-decoration: underline; }
   :focus-visible { outline: 2px solid var(--ui-ink); outline-offset: 2px; border-radius: var(--ui-radius-sm); }
-  b { font-weight: 500; }
-  button { font: inherit; color: inherit; }
-  svg.i { width: var(--ui-text-lg); height: var(--ui-text-lg); flex: none; fill: none; stroke: currentColor; stroke-width: 1.6;
+  :where(.ex-wrap) b { font-weight: 500; }
+  :where(.ex-wrap) button { font: inherit; color: inherit; }
+  :where(.ex-wrap) svg.i { width: var(--ui-text-lg); height: var(--ui-text-lg); flex: none; fill: none; stroke: currentColor; stroke-width: 1.6;
     stroke-linecap: round; stroke-linejoin: round; }
   /* Geist Mono only for hashes, addresses, heights and table figures */
   .mono, .num { font-family: var(--ui-font-mono); font-size: var(--ui-text-xs); }
@@ -72,7 +72,7 @@
   /* an address in groups of four, by spacing only: a copy of it carries no spaces */
   .g4 + .g4, .g4 + .gx, .gx + .g4 { margin-left: 0.4em; }
   /* an address shown as its .csd name is a name, so it reads in Geist */
-  a.addrl.hasname { font-family: var(--ui-font-sans); font-size: inherit; }
+  :where(.ex-wrap) a.addrl.hasname { font-family: var(--ui-font-sans); font-size: inherit; }
   /* the status dot as components.css draws it, inline in text (standalone that sheet is absent) */
   .ui-dot { display: inline-block; flex: none; width: 7px; height: 7px; border-radius: 50%; background: currentColor; vertical-align: 1px; }
 
@@ -98,13 +98,13 @@
   .kbd { padding: 2px calc(var(--ui-space-1) + 2px); border: 1px solid var(--ui-line-2); border-bottom-width: 2px; border-radius: calc(var(--ui-radius-sm) - 1px);
     color: var(--ui-muted); font: 500 var(--ui-text-2xs) var(--ui-font-mono); }
 
-  main { padding-bottom: var(--ui-space-6); }
+  :where(.ex-wrap) main { padding-bottom: var(--ui-space-6); }
   #view > :first-child { border-top: 0; }
   .panel { position: relative; min-width: 0; padding: var(--ui-space-5); border-top: 1px solid var(--ui-line); }
   /* a table runs to the panel's edges; its cells carry the inset */
   .panel > .scroll-x { margin-inline: calc(-1 * var(--ui-space-5)); }
   /* a section heading, with its side note (a count, a window, the live marker or a filter) at the right */
-  h2 { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--ui-space-1) var(--ui-space-3);
+  :where(.ex-wrap) h2 { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--ui-space-1) var(--ui-space-3);
     min-height: var(--ui-space-5); margin: 0 0 var(--ui-space-3); color: var(--ui-ink);
     font: 500 var(--ui-text-subhead) / var(--ui-leading-body) var(--ui-font-sans); letter-spacing: normal; }
   .h-side { display: inline-flex; align-items: center; gap: var(--ui-space-2); color: var(--ui-muted); font-size: var(--ui-text-xs); font-weight: 500; }
@@ -112,8 +112,8 @@
   .h-side > a:hover { color: var(--ui-ink); }
   .h-tabs { display: inline-flex; gap: var(--ui-space-1); }
   /* a detail page's title, as the preview's block heading: the title and its status badge side by side */
-  h2.ex-title { justify-content: flex-start; gap: var(--ui-space-3); margin-bottom: var(--ui-space-2); font-size: var(--ui-text-stat); letter-spacing: var(--ui-track-snug); }
-  h2 .badge { letter-spacing: normal; }
+  :where(.ex-wrap) h2.ex-title { justify-content: flex-start; gap: var(--ui-space-3); margin-bottom: var(--ui-space-2); font-size: var(--ui-text-stat); letter-spacing: var(--ui-track-snug); }
+  :where(.ex-wrap) h2 .badge { letter-spacing: normal; }
   .row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .row > .panel + .panel { border-left: 1px solid var(--ui-line); }
 
@@ -165,33 +165,33 @@
   .coin .meta b { color: var(--ui-ink); font-weight: 500; font-variant-numeric: tabular-nums; }
 
   /* tables read like a ledger (the preview's .tbl): mono labels, hairline rows, figures right-aligned in tabular digits */
-  table { width: 100%; border-collapse: collapse; font-size: var(--ui-text-sm); line-height: normal; }
-  th { padding: var(--ui-space-3) var(--ui-space-5) calc(var(--ui-space-3) - 2px); border-bottom: 1px solid var(--ui-line); color: var(--ui-muted);
+  :where(.ex-wrap) table { width: 100%; border-collapse: collapse; font-size: var(--ui-text-sm); line-height: normal; }
+  :where(.ex-wrap) th { padding: var(--ui-space-3) var(--ui-space-5) calc(var(--ui-space-3) - 2px); border-bottom: 1px solid var(--ui-line); color: var(--ui-muted);
     text-align: left; font: 500 var(--ui-text-2xs) / var(--ui-leading-tight) var(--ui-font-mono); letter-spacing: var(--ui-track-label);
     text-transform: uppercase; white-space: nowrap; }
-  td { padding: calc(var(--ui-space-3) - 1px) var(--ui-space-5); border-bottom: 1px solid var(--ui-line); text-align: left; white-space: nowrap;
+  :where(.ex-wrap) td { padding: calc(var(--ui-space-3) - 1px) var(--ui-space-5); border-bottom: 1px solid var(--ui-line); text-align: left; white-space: nowrap;
     vertical-align: baseline; }
-  td.m { font-family: var(--ui-font-mono); font-size: var(--ui-text-xs); }
-  th.r, td.r { text-align: right; font-variant-numeric: tabular-nums; }
-  tbody tr:last-child td { border-bottom: 0; }
-  tbody tr { transition: background-color var(--ui-dur-1) var(--ui-ease); }
-  tbody tr:hover { background: var(--ui-sunken); }
-  th.num { font-size: var(--ui-text-2xs); }
-  th.num:first-child, td.num:first-child { width: 1%; }
-  td.act { min-width: 260px; white-space: normal; overflow-wrap: anywhere; }
-  td.empty { color: var(--ui-muted); white-space: normal; }
+  :where(.ex-wrap) td.m { font-family: var(--ui-font-mono); font-size: var(--ui-text-xs); }
+  :where(.ex-wrap) th.r, :where(.ex-wrap) td.r { text-align: right; font-variant-numeric: tabular-nums; }
+  :where(.ex-wrap) tbody tr:last-child td { border-bottom: 0; }
+  :where(.ex-wrap) tbody tr { transition: background-color var(--ui-dur-1) var(--ui-ease); }
+  :where(.ex-wrap) tbody tr:hover { background: var(--ui-sunken); }
+  :where(.ex-wrap) th.num { font-size: var(--ui-text-2xs); }
+  :where(.ex-wrap) th.num:first-child, :where(.ex-wrap) td.num:first-child { width: 1%; }
+  :where(.ex-wrap) td.act { min-width: 260px; white-space: normal; overflow-wrap: anywhere; }
+  :where(.ex-wrap) td.empty { color: var(--ui-muted); white-space: normal; }
   .scroll-x { overflow-x: auto; -webkit-overflow-scrolling: touch; }
   /* the home's activity ledger: kind, the record, the transaction */
   /* the record takes the room the preview's short amounts leave: no second inset between the label and the record */
-  table.acts td.k { width: 1%; padding-right: 0; }
-  table.acts td.act { min-width: 0; }
+  :where(.ex-wrap) table.acts td.k { width: 1%; padding-right: 0; }
+  :where(.ex-wrap) table.acts td.act { min-width: 0; }
   .act-line .cx-noeffect { margin-left: var(--ui-space-2); }
   /* side by side, the two lists end level: as many rows each, every row one line of one height (a block's row grows to
      the activity's, whose family label is the tallest thing in either). The record is cut with an ellipsis (whole in its
      title and on its transaction's page); a refusal's tag stays whole after it. */
   @media (min-width: 861px) {
     .ex-col tbody td { height: calc(var(--ui-space-6) + var(--ui-space-3) + 1px); }
-    table.acts td.act { width: 100%; max-width: 0; white-space: nowrap; }
+    :where(.ex-wrap) table.acts td.act { width: 100%; max-width: 0; white-space: nowrap; }
     .act-line { display: flex; align-items: baseline; min-width: 0; }
     .act-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .act-line .cx-noeffect { flex: none; }
@@ -207,7 +207,7 @@
   /* side by side in a detail grid the two lists start level (its row gap spaces them once they stack) */
   .ex-detail > .kv + .kv { margin-top: 0; }
   /* a detail page's head: the title, the record in words, then its keys */
-  h2.ex-title + .kv { margin-top: var(--ui-space-4); }
+  :where(.ex-wrap) h2.ex-title + .kv { margin-top: var(--ui-space-4); }
   .flow + .kv { margin-top: var(--ui-space-5); }
   /* the record line keeps its own 12 px under it: 24 px to the keys, as after the flow line */
   .action + .kv { margin-top: var(--ui-space-3); }
@@ -223,7 +223,7 @@
   .kind { display: inline-flex; align-items: center; justify-content: center; min-width: var(--ui-space-8); margin-right: var(--ui-space-1);
     height: calc(var(--ui-text-2xs) * 2); padding: 0 var(--ui-space-2); border-radius: var(--ui-radius-sm); background: var(--ui-sunken); color: var(--ui-ink-2);
     font: 500 var(--ui-text-2xs) var(--ui-font-sans); vertical-align: 1px; text-decoration: none; white-space: nowrap; }
-  td.k .kind { margin-right: 0; }
+  :where(.ex-wrap) td.k .kind { margin-right: 0; }
   /* a known operational address's name, after the address */
   .chip { margin-left: var(--ui-space-2); color: var(--ui-muted); font-size: var(--ui-text-xs); white-space: nowrap; }
   /* a status badge, as the preview's: a pill on the surface; the tinted kinds carry state only */
@@ -240,7 +240,7 @@
   .action { padding: 0 0 var(--ui-space-3); font-size: var(--ui-text-md); line-height: var(--ui-leading-body); }
   .action .what { color: var(--ui-ink); }
   /* an amount or a name in a record line stays on one line: a break inside a number reads as two numbers */
-  .action b, td.act b { white-space: nowrap; }
+  .action b, :where(.ex-wrap) td.act b { white-space: nowrap; }
   /* a CairnX record the resolver refused: struck and tagged "No effect", so it never reads as an effect */
   .cx-void { color: var(--ui-muted); text-decoration: line-through; text-decoration-color: var(--ui-down); }
   .cx-void .what, .cx-void b, .cx-void a { color: inherit; }
@@ -254,9 +254,9 @@
   .flow .out b { color: var(--ui-down); }
   .flow .in b { color: var(--ui-up); }
   .muted { font-size: var(--ui-text-xs); }
-  div.muted { margin-top: var(--ui-space-3); max-width: 80ch; line-height: var(--ui-leading-body); }
-  div.muted + .kv, div.muted + .scroll-x { margin-top: var(--ui-space-4); }
-  div.muted a { text-decoration: underline; text-decoration-color: var(--ui-line-strong); }
+  :where(.ex-wrap) div.muted { margin-top: var(--ui-space-3); max-width: 80ch; line-height: var(--ui-leading-body); }
+  :where(.ex-wrap) div.muted + .kv, :where(.ex-wrap) div.muted + .scroll-x { margin-top: var(--ui-space-4); }
+  :where(.ex-wrap) div.muted a { text-decoration: underline; text-decoration-color: var(--ui-line-strong); }
   /* Try again in a quiet line: a text button */
   .ex-again { padding: 0; border: 0; background: none; color: var(--ui-ink); font: inherit; cursor: pointer; text-decoration: underline;
     text-decoration-color: var(--ui-line-strong); text-underline-offset: 3px; }
@@ -351,25 +351,25 @@
     .kbd { display: none; }
     .cx-noeffect { white-space: normal; }
     /* text cells wrap, so a row fits the screen and an amount is not cut at the scroll box's edge */
-    td { white-space: normal; }
-    td.num, td.age, td.r, td a.mono { white-space: nowrap; }
-    td.opt, th.opt { display: none; }
-    td.act { min-width: 8em; }
+    :where(.ex-wrap) td { white-space: normal; }
+    :where(.ex-wrap) td.num, :where(.ex-wrap) td.age, :where(.ex-wrap) td.r, :where(.ex-wrap) td a.mono { white-space: nowrap; }
+    :where(.ex-wrap) td.opt, :where(.ex-wrap) th.opt { display: none; }
+    :where(.ex-wrap) td.act { min-width: 8em; }
     /* stacked ledgers: the address page's txid and amount, the activity's kind and transaction, on one line; the record
        under them at full width */
-    table.stack tr, table.acts tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--ui-space-1) var(--ui-space-3);
+    :where(.ex-wrap) table.stack tr, :where(.ex-wrap) table.acts tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--ui-space-1) var(--ui-space-3);
       padding: var(--ui-space-2) var(--ui-space-5); border-bottom: 1px solid var(--ui-line); }
-    table.acts tr { align-items: baseline; }
-    table.stack tbody tr:last-child, table.acts tbody tr:last-child { border-bottom: 0; }
-    table.stack th, table.stack td, table.acts th, table.acts td { padding: 0; border: 0; }
-    table.stack .act, table.acts .act { grid-column: 1 / -1; grid-row: 2; min-width: 0; }
-    table.acts thead { display: none; }
+    :where(.ex-wrap) table.acts tr { align-items: baseline; }
+    :where(.ex-wrap) table.stack tbody tr:last-child, :where(.ex-wrap) table.acts tbody tr:last-child { border-bottom: 0; }
+    :where(.ex-wrap) table.stack th, :where(.ex-wrap) table.stack td, :where(.ex-wrap) table.acts th, :where(.ex-wrap) table.acts td { padding: 0; border: 0; }
+    :where(.ex-wrap) table.stack .act, :where(.ex-wrap) table.acts .act { grid-column: 1 / -1; grid-row: 2; min-width: 0; }
+    :where(.ex-wrap) table.acts thead { display: none; }
     /* a stacked ledger's heads on one line: the row's first line (its id), the record under it, the figure at the right */
-    table.stack thead tr { display: flex; align-items: baseline; gap: var(--ui-space-3); }
-    table.stack thead th.act { order: 1; }
-    table.stack thead th:last-child { order: 2; margin-left: auto; }
-    table.acts td.k { width: auto; }
-    :is(table.stack, table.acts) td.empty { grid-column: 1 / -1; }
+    :where(.ex-wrap) table.stack thead tr { display: flex; align-items: baseline; gap: var(--ui-space-3); }
+    :where(.ex-wrap) table.stack thead th.act { order: 1; }
+    :where(.ex-wrap) table.stack thead th:last-child { order: 2; margin-left: auto; }
+    :where(.ex-wrap) table.acts td.k { width: auto; }
+    :is(table.stack, :where(.ex-wrap) table.acts) td.empty { grid-column: 1 / -1; }
   }
   /* on a phone the block list drops its tx count (on each block's page) so the hash keeps its eight digits */
   @media (max-width: 400px) { .opt-xs { display: none; } }
@@ -378,16 +378,16 @@
     .panel > .scroll-x { margin-inline: calc(-1 * var(--ui-space-4)); }
     .pu { padding-inline: var(--ui-space-4); }
     .ex-col > #actnote > .ex-unread { padding-inline: var(--ui-space-4); }
-    th, td { padding-inline: var(--ui-space-3); }
+    :where(.ex-wrap) th, :where(.ex-wrap) td { padding-inline: var(--ui-space-3); }
     /* the latest-blocks list keeps its 16 px edges and tightens between columns */
     .ex-col th, .ex-col td { padding-inline: var(--ui-space-2); }
     /* one 16 px gutter for headings, tables and lists: a column panel adds none of its own, a table's outer cells carry it */
     .ex-col { padding-inline: 0; }
     .ex-col > .scroll-x { margin-inline: 0; }
     .ex-col > h2 { padding-inline: var(--ui-space-4); }
-    th:first-child, td:first-child { padding-left: var(--ui-space-4); }
-    th:last-child, td:last-child { padding-right: var(--ui-space-4); }
-    table.stack tr, table.acts tr { padding-inline: var(--ui-space-4); }
+    :where(.ex-wrap) th:first-child, :where(.ex-wrap) td:first-child { padding-left: var(--ui-space-4); }
+    :where(.ex-wrap) th:last-child, :where(.ex-wrap) td:last-child { padding-right: var(--ui-space-4); }
+    :where(.ex-wrap) table.stack tr, :where(.ex-wrap) table.acts tr { padding-inline: var(--ui-space-4); }
     .kv { grid-template-columns: minmax(0, 1fr); gap: 2px 0; }
     .kv > .v { margin-bottom: var(--ui-space-2); }
     .kv + .kv { margin-top: 0; }

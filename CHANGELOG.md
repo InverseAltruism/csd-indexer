@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.5
+
+- The explorer's stylesheet no longer restyles cairn's shell. Its rules sit in the `page` cascade layer, which outranks
+  the shell's `components` layer whatever the specificity, so its bare `button` and `h2` rules drew the first-visit
+  Terms dialog's "Agree and continue" in the button's own colour (an invisible label, both themes) and shrank its title
+  to 15 px. Every element rule of the page layer is scoped to the explorer's content, `:where(.ex-wrap)`, with no
+  change in specificity: through cairn's front door the explorer looks the same pixel for pixel, and the dialog draws as
+  on every other page. `test/explorer-page-layer.test.ts` keeps the page layer off bare elements outside `.ex-wrap`.
+
 ## 0.3.4
 
 - `GET /address/:a/coinbase` and `GET /miners/coinbase?limit=N` (#17): lifetime coinbase totals per address from a
