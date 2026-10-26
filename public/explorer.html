@@ -820,7 +820,7 @@ function warmCx(){
 }
 const amt=(v,ticker)=> DEC&&DEC[ticker]!=null ? fmtAmt(v,DEC[ticker]) : `${esc(group(v))} <span class="dim">base units</span>`;
 // A view's CairnX record verdicts (txid → {applied, note}), read for the records it shows from /cairnx/records, 100
-// txids a read; a front door or resolver without that route (404) or a failed read falls back to the applied-event log.
+// txids a read; each read that answers gives its verdicts, and the txids of one that does not (a 404 included) stay unread.
 // They let a view show that a record the resolver REFUSED (mint past supply, mint by a non-issuer, deploy with an unpaid
 // fee, an underfunded transfer...) had NO effect, instead of rendering it as if it succeeded. Each view keeps its own
 // book, so a read another view makes (a home refresh in flight) never changes what this one says. A verdict once read is
@@ -840,16 +840,13 @@ function verdictBook(){
       if(!want.length) return true;
       const chunks=[]; for(let i=0;i<want.length;i+=100) chunks.push(want.slice(i,i+100));
       const got=(await Promise.all(chunks.map((c)=>sib(SIB.cairnx,'/records?ids='+c.join(','))))).map(sibData);
-      if(got.every((r)=>r&&r.records&&typeof r.records==='object')){
-        for(const r of got) for(const [id,v] of Object.entries(r.records)) ver[id.toLowerCase()]={applied:v.applied,note:v.note};
-      } else {
-        const log=sibData(await sib(SIB.cairnx,'/log?limit=5000'));
-        if(!Array.isArray(log)){ for(const x of want) unread.add(x); return false; }
-        const asked=new Set(want);
-        for(const e of log){ const id=String(e.id).toLowerCase(); if(asked.has(id)) ver[id]={applied:e.ok,note:e.note}; }
-      }
-      for(const x of want) unread.delete(x);
-      return true;
+      let all=true;
+      got.forEach((r,i)=>{
+        if(!(r&&r.records&&typeof r.records==='object')){ all=false; for(const x of chunks[i]) unread.add(x); return; }
+        for(const [id,v] of Object.entries(r.records)) ver[id.toLowerCase()]={applied:v.applied,note:v.note};
+        for(const x of chunks[i]) unread.delete(x);
+      });
+      return all;
     },
   };
   return book;

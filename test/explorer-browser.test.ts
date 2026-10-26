@@ -102,8 +102,10 @@ const S = { market: "fresh" as "fresh" | "stale" | "off", thin: false, partial: 
   health: "live" as "live" | "old" | "behind" | "down" | "limited" | "html", fail: "" as string | string[], newer: 0,
   // the status a failing prefix answers with: 500, or 429 as cairn's explorerLimiter answers (its body, a Retry-After)
   failCode: 500,
-  // txids whose verdict read the resolver fails (and its log with them)
+  // txids whose /cairnx/records read the resolver fails
   failIds: new Set<string>(),
+  // the resolver's /cairnx/log, which the page must not read: stale (every record applied) or truncated (none of them)
+  log: "stale" as "stale" | "truncated",
   // the resolver behind the front door: answering, not answering (the front door's 502), or before its first scan (503)
   cx: "up" as "up" | "502" | "503",
   // a path prefix the resolver alone fails with a 500 (the others answer)
@@ -260,7 +262,6 @@ const server = createServer(async (req, res) => {
     if (k === "/name-history/twin") return json(res, 200, { ok: true, name: "twin", events: [ATTESTS.fill, ATTESTS.refusedFill].map((a) => ({ txid: a.txid, height: a.height, pos: 3, kind: "fill" })) });
     if (k === "/tokens") return json(res, 200, [{ ticker: "QTOK", name: "Quarter", decimals: 2, supply: "100000000", minted: "100000", mint: "issuer" }]);
     if (k === "/records" && (url.searchParams.get("ids") ?? "").split(",").some((id) => S.failIds.has(id))) return json(res, 500, { ok: false, error: "resolver down" });
-    if (k === "/log" && S.failIds.size) return json(res, 500, { ok: false, error: "resolver down" });
     if (k === "/records") {
       if (S.records === "404") return json(res, 404, { ok: false, error: "not a cairnx read endpoint" });
       if (S.records === "400") return json(res, 400, { ok: false, error: "at most 100 txids per request, got 130" });
@@ -279,8 +280,7 @@ const server = createServer(async (req, res) => {
     if (k === "/name/onsale") return json(res, 200, { ok: true, owner: MINER, height: TIP - 9, effectiveHeight: TIP - 9, lease: {}, offer: { give: { name: "onsale" }, want: null } });
     // the resolver's answer for a name nobody holds
     if (k.startsWith("/name/")) return json(res, 404, { ok: false, error: "unregistered name", name: k.slice(6) });
-    if (k === "/log" && S.records === "500") return json(res, 500, { ok: false, error: "resolver down" });
-    if (k === "/log") return json(res, 200, Object.entries(VERDICTS).map(([id, v]) => ({ id, ok: v.applied, note: v.note, height: v.height })));
+    if (k === "/log") return json(res, 200, S.log === "truncated" ? [] : Object.entries(VERDICTS).map(([id, v]) => ({ id, ok: true, note: "", height: v.height })));
     if (k === "/primaries") { const want = (url.searchParams.get("addrs") ?? "").split(","); return json(res, 200, { ok: true, primaries: Object.fromEntries(want.filter((a) => a in PRIMARIES).map((a) => [a, PRIMARIES[a]])) }); }
     return json(res, 200, []);
   }
@@ -526,33 +526,66 @@ test("the market going from fresh to 503 while the page is open hides the CSD/US
   } finally { await v.close(); S.market = "fresh"; }
 });
 
-// Verdicts (Plan 85 12.2d): the records a view shows are asked of /cairnx/records, 100 txids a read; a front door or
-// resolver without that route (404) or one that refuses the read (400) falls back to the applied-event log. The log is
-// not read when the route answers.
-for (const records of ["on", "404", "400"] as const) {
-  test(`domain page, /cairnx/records ${records === "on" ? "answering: two reads for 130 records, no log read" : `${records}: one log read`}; the refused mint shows no effect`, { skip: why || false }, async () => {
-    Object.assign(S, { market: "off", series: true, records });
-    INDEXER["/domain/cairnx:v1/proposals"] = PROPS;
-    RECORD_READS.length = 0;
+// Verdicts (Plan 85 12.2d): the records a view shows are asked of /cairnx/records, 100 txids a read. The log is never
+// read: a read that does not answer leaves its records unread.
+test("domain page, /cairnx/records answering: two reads for 130 records, no log read; the refused mint shows no effect", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, records: "on" });
+  INDEXER["/domain/cairnx:v1/proposals"] = PROPS;
+  RECORD_READS.length = 0;
+  try {
+    const v = await open("/explorer#/domain/cairnx%3Av1", 1280, () => !!document.querySelector(".cx-noeffect"));
     try {
-      const v = await open("/explorer#/domain/cairnx%3Av1", 1280, () => !!document.querySelector(".cx-noeffect") || /\d proposals?\./.test(document.body.innerText));
+      assert.deepEqual(v.errors, []);
+      const row: string = await v.page.evaluate((id: string) => [...document.querySelectorAll("tr")].find((r: any) => r.innerHTML.includes(id))?.textContent ?? "", REFUSED);
+      assert.match(row, /No effect: mint past supply/);
+      assert.deepEqual(RECORD_READS.sort((a, b) => b - a), [100, 30]);
+      assert.equal(v.asked.filter((x) => x === "/trade/api/cairnx/log").length, 0);
+      assert.equal(await v.page.locator(".cx-noeffect").count(), 1, "only the refused record");
+      assert.equal(await v.page.evaluate(() => document.querySelector("#verdict-line")?.textContent ?? null), null);
+    } finally { await v.close(); }
+  } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; }
+});
+
+// A resolver without the route (404), one refusing the read (400) or failing it: its records stay unread, and a log that
+// answers (stale, or truncated so it names none of them) is not asked in their place.
+for (const [records, log] of [["404", "stale"], ["400", "truncated"], ["500", "truncated"]] as const) {
+  test(`domain page, /cairnx/records ${records} with a ${log} log: every record its request under the verdict line, none struck, no log read`, { skip: why || false }, async () => {
+    Object.assign(S, { market: "off", series: true, records, log });
+    INDEXER["/domain/cairnx:v1/proposals"] = PROPS.slice(0, 3);
+    try {
+      const v = await open("/explorer#/domain/cairnx%3Av1", 1280, () => document.querySelectorAll("td.act .what").length >= 3);
       try {
         assert.deepEqual(v.errors, []);
-        const row: string = await v.page.evaluate((id: string) => [...document.querySelectorAll("tr")].find((r: any) => r.innerHTML.includes(id))?.textContent ?? "", REFUSED);
-        assert.match(row, /No effect/);
-        assert.match(row, /No effect: mint past supply/);
-        const logReads = v.asked.filter((x) => x === "/trade/api/cairnx/log").length;
-        if (records === "on") {
-          assert.deepEqual(RECORD_READS.sort((a, b) => b - a), [100, 30]);
-          assert.equal(logReads, 0);
-        } else {
-          assert.equal(logReads, 1);
-        }
-        assert.equal(await v.page.locator(".cx-noeffect").count(), 1, "only the refused record");
+        assert.match(await v.page.evaluate(() => document.querySelector("#verdict-line")?.textContent ?? ""), /^Could not check these records/);
+        for (const a of await v.page.evaluate(() => [...document.querySelectorAll("td.act")].map((c: any) => c.textContent))) assert.match(a, /Mint request for/);
+        assert.equal(await v.page.locator(".cx-void").count(), 0);
+        assert.equal(v.asked.filter((x) => x === "/trade/api/cairnx/log").length, 0);
       } finally { await v.close(); }
-    } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; S.records = "on"; }
+    } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; S.records = "on"; S.log = "stale"; }
   });
 }
+
+// One of two reads failing keeps the other's verdicts: a stale log never replaces them, and only the failed read's
+// records read as requests.
+test("domain page, one /cairnx/records read of two failing: the answered one's verdicts show, the failed one's records read unread, no log read", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, records: "on", log: "stale" });
+  INDEXER["/domain/cairnx:v1/proposals"] = PROPS;
+  S.failIds = new Set([PROPS[129]!.txid]);
+  RECORD_READS.length = 0;
+  try {
+    const v = await open("/explorer#/domain/cairnx%3Av1", 1280, () => document.querySelectorAll("td.act .what").length >= 130);
+    try {
+      assert.deepEqual(v.errors, []);
+      const row = (id: string): Promise<string> => v.page.evaluate((x: string) => [...document.querySelectorAll("tr")].find((r: any) => r.innerHTML.includes(x))?.textContent ?? "", id);
+      assert.match(await row(REFUSED), /No effect: mint past supply/, "the answered read's refusal");
+      assert.match(await row(PROPS[1]!.txid), /Minted/, "the answered read's applied mint");
+      for (const p of PROPS.slice(100)) assert.match(await row(p.txid), /Mint request for/, `${p.txid} unread`);
+      assert.deepEqual(RECORD_READS, [100], "the failed read is the one of 30");
+      assert.match(await v.page.textContent("#verdict-line"), /^Could not check these records/);
+      assert.equal(v.asked.filter((x) => x === "/trade/api/cairnx/log").length, 0);
+    } finally { await v.close(); }
+  } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; S.failIds = new Set(); }
+});
 
 test("home page: the activity feed's records are asked of /cairnx/records (130 txids, two reads), no log read; the refused mint shows no effect", { skip: why || false }, async () => {
   Object.assign(S, { market: "off", series: true, records: "on" });
