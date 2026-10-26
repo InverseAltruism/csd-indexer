@@ -99,7 +99,11 @@ const csdSeries = (q: URLSearchParams) => ({ ok: true, pair: "csd-usd", period: 
 
 const S = { market: "fresh" as "fresh" | "stale" | "off", thin: false, partial: false, series: true, records: "on" as "on" | "404" | "400" | "500", gates: true, shell: true,
   // the indexer's /health as live, at an old tip, behind the node, or not answering; a path prefix the indexer fails with a 500
-  health: "live" as "live" | "old" | "behind" | "down", fail: "", newer: 0,
+  health: "live" as "live" | "old" | "behind" | "down" | "limited" | "html", fail: "" as string | string[], newer: 0,
+  // the status a failing prefix answers with: 500, or 429 as cairn's explorerLimiter answers (its body, a Retry-After)
+  failCode: 500,
+  // txids whose verdict read the resolver fails (and its log with them)
+  failIds: new Set<string>(),
   // the resolver behind the front door: answering, not answering (the front door's 502), or before its first scan (503)
   cx: "up" as "up" | "502" | "503",
   // a path prefix the resolver alone fails with a 500 (the others answer)
@@ -214,9 +218,12 @@ const server = createServer(async (req, res) => {
   const api = p.startsWith("/explorer/api/") ? p.slice(13) : null;
   if (api !== null || ["/health", "/domains", "/blocks/recent"].includes(p) || p.startsWith("/analytics/") || p.startsWith("/domain/") || p.startsWith("/proposal/")) {
     const k = api ?? p;
-    if (S.fail && k.startsWith(S.fail)) return json(res, 500, { error: "internal" });
+    if ([S.fail].flat().some((f) => f && k.startsWith(f))) return S.failCode === 429
+      ? json(res, 429, { ok: false, error: "rate limit exceeded" }, { "retry-after": "60" }) : json(res, S.failCode, { error: "internal" });
     if (k === "/health" && S.health !== "live") {
       if (S.health === "down") return json(res, 503, { error: "unavailable" });
+      if (S.health === "limited") return json(res, 429, { ok: false, error: "rate limit exceeded" }, { "retry-after": "60" });
+      if (S.health === "html") { res.writeHead(200, { "content-type": "text/html" }); return res.end("<!doctype html><title>Just a moment...</title>"); }
       const h = INDEXER["/health"] as Record<string, unknown>;
       return json(res, 200, S.health === "old" ? { ...h, seconds_since_tip: 1260, stale: true } : { ...h, tip_height: TIP + 7 });
     }
@@ -252,6 +259,8 @@ const server = createServer(async (req, res) => {
     if (k.startsWith("/name/") && k.slice(6) in NAMES) return json(res, 200, NAMES[k.slice(6)]);
     if (k === "/name-history/twin") return json(res, 200, { ok: true, name: "twin", events: [ATTESTS.fill, ATTESTS.refusedFill].map((a) => ({ txid: a.txid, height: a.height, pos: 3, kind: "fill" })) });
     if (k === "/tokens") return json(res, 200, [{ ticker: "QTOK", name: "Quarter", decimals: 2, supply: "100000000", minted: "100000", mint: "issuer" }]);
+    if (k === "/records" && (url.searchParams.get("ids") ?? "").split(",").some((id) => S.failIds.has(id))) return json(res, 500, { ok: false, error: "resolver down" });
+    if (k === "/log" && S.failIds.size) return json(res, 500, { ok: false, error: "resolver down" });
     if (k === "/records") {
       if (S.records === "404") return json(res, 404, { ok: false, error: "not a cairnx read endpoint" });
       if (S.records === "400") return json(res, 400, { ok: false, error: "at most 100 txids per request, got 130" });
@@ -264,6 +273,9 @@ const server = createServer(async (req, res) => {
     if (k === "/token/ZED") return json(res, 200, { ticker: "ZED", name: "Zed", decimals: 0, supply: "1000", minted: "10", mint: "issuer", height: TIP - 5,
       deployer: MINER, deployId: "0x" + "de".repeat(32), tmeta: "0x" + "4d".repeat(32), holders: {} });
     if (k.startsWith("/token/")) return json(res, 404, { ok: false, error: "unknown ticker" });
+    // a 200 that carries no name record: not the resolver's answer for a name
+    if (k === "/name/empty") return json(res, 200, {});
+    if (k === "/name/list") return json(res, 200, []);
     if (k === "/name/onsale") return json(res, 200, { ok: true, owner: MINER, height: TIP - 9, effectiveHeight: TIP - 9, lease: {}, offer: { give: { name: "onsale" }, want: null } });
     // the resolver's answer for a name nobody holds
     if (k.startsWith("/name/")) return json(res, 404, { ok: false, error: "unregistered name", name: k.slice(6) });
@@ -634,7 +646,8 @@ for (const width of [390, 1280]) {
       assert.equal(await twin.page.locator(".namehdr .badge").count(), 0, "a self-pointing name the resolver did not pick: no badge");
       assert.equal(await twin.page.textContent(".panel:has(h2:text-is('For sale')) .action"), "Market Listed for 123.45 QTOK \u00b7 open offer");
       const hist: string[] = await twin.page.evaluate(() => [...document.querySelectorAll(".panel:has(h2) tbody tr td:first-child")].map((c: any) => c.textContent));
-      assert.deepEqual(hist, ["Market Bought / sold (fill) No effect: offer filled", "Market Bought / sold (fill)"]);
+      // the refused fill reads as its request, struck with its reason; the applied one by its effect
+      assert.deepEqual(hist, ["Market Fill request No effect: offer filled", "Market Bought / sold (fill)"]);
       assert.equal(twin.overflow, 0, "horizontal overflow");
     } finally { await twin.close(); }
     const solo = await open("/explorer#/name/solo", width, () => /resolves to/i.test(document.body.innerText));
@@ -1023,8 +1036,10 @@ const state = (page: any) => page.evaluate(() => {
   const [sd, ld] = [s, lp].map((e: any) => e.querySelector(".ui-dot")?.getBoundingClientRect()).map((r: any) => r ? r.width > 0 && r.height > 0 : null);
   return { stats: s.hidden ? null : { text: s.textContent, cls: b?.className ?? "", dot: sd }, live: lp.hidden ? null : { text: lp.textContent, dot: ld } };
 });
+// The front door's rate limit (a 429) and an answer that is not JSON say nothing about the indexer: neither is "offline".
 for (const [health, stats] of [["live", null], ["old", { text: "Last block 21 min ago", cls: "badge caution", dot: true }],
-  ["behind", { text: "7 blocks behind", cls: "badge caution", dot: true }], ["down", { text: "Indexer offline", cls: "badge bad", dot: true }]] as const) {
+  ["behind", { text: "7 blocks behind", cls: "badge caution", dot: true }], ["down", { text: "Indexer offline", cls: "badge bad", dot: true }],
+  ["limited", { text: "Too many requests", cls: "badge caution", dot: true }], ["html", { text: "Could not check", cls: "badge caution", dot: true }]] as const) {
   test(`indexer ${health}: ${stats ? `"${stats.text}" beside the search, no "Live" in the latest-blocks heading` : "\"Live\" in the latest-blocks heading, nothing beside the search"}`, { skip: why || false }, async () => {
     Object.assign(S, { market: "off", series: true, shell: true, health: "live" });
     // the home view renders on a live /health; the state is then read again on the page's 15 s timer
@@ -1728,4 +1743,206 @@ test("address page: CairnX holdings in the token's decimals; with the decimals u
       } finally { await v.close(); }
     }
   } finally { S.cxFail = ""; }
+});
+
+// ── the code review of the fix round: a rate limit is no miss, verdicts bound to their view, a name without its record,
+// a malformed escape, the trust badge's deploy ──
+const LIMITED = "Too many requests, try again in a minute: the front door limits how often one connection reads.";
+const failedView = async (v: View) => ({ title: await v.page.textContent("h2.ex-title"), text: await text(v), retry: await v.page.locator("#retry").count() });
+
+// cairn's explorerLimiter answers a 429 for /explorer/api and /trade/api alike. Only a 400 or a 404 is the indexer holding
+// no such record; a 429 is the failed state with Try again on every route, and the view loads once the reads answer.
+for (const [route, fail, path] of [["transaction", "/tx/", `/explorer#/tx/${PROVEN}`], ["block", "/block-height/", `/explorer#/block/${TIP - 3}`],
+  ["address", "/address/", `/explorer#/address/${WALLET}`], ["proposal", "/proposal/", `/explorer#/proposal/${CONTENT_PROPS.good.txid}`],
+  ["domain", "/domain/", "/explorer#/domain/cairnx%3Av1"], ["search", "/domains", "/explorer#/search/hello%20world"],
+  ["a txid the indexer lacks whose block read is limited", "/block/", `/explorer#/tx/0x${"cd".repeat(32)}`]] as const) {
+  test(`a 429 on the ${route} route is the failed state with Try again, never "Nothing found"`, { skip: why || false }, async () => {
+    Object.assign(S, { market: "off", series: true, shell: true, cx: "up", fail: fail, failCode: 429 });
+    INDEXER["/domain/cairnx:v1/proposals"] = PROPS.slice(0, 3);
+    try {
+      const v = await open(path, 1280, () => /Nothing found|Could not load/.test(document.body.innerText));
+      try {
+        const f = await failedView(v);
+        assert.equal(f.title, "Could not load this view");
+        assert.match(f.text, new RegExp(LIMITED.replace(/[.:]/g, "\\$&")));
+        assert.doesNotMatch(f.text, /Nothing found|no record/);
+        assert.equal(f.retry, 1);
+        assert.deepEqual(v.errors, []);
+        // the honest path: the reads answer and Try again loads the view (the domain query a miss, as it is)
+        S.fail = "";
+        await v.page.click("#retry");
+        await until(v.page, () => !document.querySelector("main .skel") && !/Could not load/.test(document.body.innerText));
+        assert.doesNotMatch(await text(v), /Too many requests/);
+      } finally { await v.close(); }
+    } finally { S.fail = ""; S.failCode = 500; INDEXER["/domain/cairnx:v1/proposals"] = []; }
+  });
+}
+test("home: /blocks/recent limited is the failed state, with no block-by-block reads after it", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, fail: "/blocks/recent", failCode: 429 });
+  try {
+    const v = await open("/explorer", 1280, () => /Could not load|Latest blocks/.test(document.body.innerText));
+    try {
+      assert.match(await text(v), /^Could not load this view\s+Too many requests/);
+      assert.deepEqual(v.asked.filter((x) => /\/block-height\//.test(x)), [], "no fallback reads");
+    } finally { await v.close(); }
+  } finally { S.fail = ""; S.failCode = 500; }
+});
+
+// A home panel whose own read fails says so, never that there is nothing: the domains, miners, top holders, activity and
+// the hashrate series.
+test("home: each panel whose read failed says it could not check, never an empty answer", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, cx: "up", failCode: 500,
+    fail: ["/domains", "/analytics/miners", "/analytics/richlist", "/domain/cairnx:v1/proposals", "/analytics/series", "/analytics/supply"] });
+  INDEXER["/domain/cairnx:v1/proposals"] = PROPS.slice(0, 3);
+  try {
+    const v = await open("/explorer", 1280, () => !!document.querySelector("#hrchart .cc-empty") && !!document.querySelector("#actfeed td"));
+    try {
+      const t: string = await v.page.evaluate(() => document.body.innerText);
+      for (const w of ["the on-chain domains", "the miners", "the top holders", "the CairnX activity"]) assert.match(t, new RegExp(`Could not check ${w} right now\\. Try again`), w);
+      assert.equal(await v.page.textContent("#hrchart .cc-empty"), "Could not load the hashrate series right now");
+      // a figure without its read is a dash, not a dash with a unit
+      assert.deepEqual(await v.page.evaluate(() => [...document.querySelectorAll(".pulse .pu .n")].slice(1).map((n: any) => n.textContent)), ["-", "-", "-"]);
+      assert.doesNotMatch(t, /No domain records yet|No recent miners|No holders yet|No CairnX records in this indexer yet|no hashrate series from this indexer/);
+      assert.deepEqual(v.errors, []);
+    } finally { await v.close(); }
+  } finally { S.fail = ""; INDEXER["/domain/cairnx:v1/proposals"] = []; }
+});
+
+// On a transaction's page a failed proof read leaves inclusion unchecked (never "No proof"), and an Attest whose proposal
+// read failed is an attestation all the same (never "a plain chain transaction").
+test("transaction page: a failed proof read reads \"Inclusion not checked\"; an Attest whose proposal read failed reads as an attestation", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, cx: "up", failCode: 500, fail: `/tx/${PROVEN}/merkle-proof` });
+  try {
+    const p = await open(`/explorer#/tx/${PROVEN}`, 1280, () => !/Verifying/.test(document.querySelector("#inclbadge")?.textContent ?? "Verifying"));
+    try { assert.equal(await p.page.textContent("#inclbadge"), "Inclusion not checked: the proof read failed"); } finally { await p.close(); }
+    S.fail = "/proposal/";
+    const a = await open(`/explorer#/tx/${ATTESTS.fill.txid}`, 1280, decoded);
+    try {
+      assert.equal(await a.page.textContent("#txaction"), "Record AttestationCould not check what it attests right now. Try again");
+      assert.doesNotMatch(await text(a), /plain chain transaction/);
+    } finally { await a.close(); }
+  } finally { S.fail = ""; }
+});
+
+// A failed Load more is not the end of the ledger.
+test("address page: a failed Load more keeps its button, saying so, and loads the next page once the read answers", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, cx: "up", failCode: 500, fail: `/address/${WALLET}/txs/chain/` });
+  try {
+    const v = await open(`/explorer#/address/${WALLET}`, 1280, () => !!document.querySelector("#txloadmore"));
+    try {
+      await v.page.click("#txloadmore");
+      await until(v.page, () => document.querySelector("#txloadmore")?.textContent === "Could not load more. Try again");
+      assert.equal(await v.page.locator("#txrows tr").count(), 25);
+      S.fail = "";
+      await v.page.click("#txloadmore");
+      await until(v.page, () => document.querySelectorAll("#txrows tr").length === 50);
+    } finally { await v.close(); }
+  } finally { S.fail = ""; }
+});
+
+// Each ledger's verdict line says what holds for every row it shows: it appears when a later page's verdicts fail and
+// goes once a later read answers the rows still unread, which are then worded by their verdicts.
+for (const [where, path, rowsSel, more] of [["address", `/explorer#/address/${WALLET}`, "#txrows tr", "#txloadmore"], ["domain", "/explorer#/domain/cairnx%3Av1", "#domrows tr", "#domloadmore"]] as const) {
+  test(`${where} page: the verdict line follows every row shown, across Load more, both ways`, { skip: why || false }, async () => {
+    Object.assign(S, { market: "off", series: true, shell: true, cx: "up", paged: true, fail: "" });
+    INDEXER["/domain/cairnx:v1/proposals"] = PROPS; PAGED_TOTAL = PROPS.length;
+    const line = (v: View) => v.page.evaluate(() => document.querySelector("#verdict-line")?.textContent ?? null);
+    const words = (v: View) => v.page.evaluate((sel: string) => [...document.querySelectorAll(`${sel} td.act`)].map((c: any) => /Minted|Mint request/.exec(c.textContent)?.[0] ?? c.textContent), rowsSel);
+    const decodedAll = () => [...document.querySelectorAll("td.act")].every((c: any) => !!c.querySelector(".what"));
+    try {
+      for (const failFirst of [true, false]) {
+        S.records = failFirst ? "500" : "on";
+        const v = await open(path, 1280, () => document.querySelectorAll("td.act").length > 0 && [...document.querySelectorAll("td.act")].every((c: any) => !!c.querySelector(".what")));
+        try {
+          assert.equal((await line(v)) !== null, failFirst, `first page, verdicts ${failFirst ? "failing" : "read"}`);
+          if (failFirst) assert.ok((await words(v)).every((w: string) => w === "Mint request"), "every row its request");
+          S.records = failFirst ? "on" : "500";
+          const before = await v.page.locator(rowsSel).count();
+          await v.page.click(more);
+          await until(v.page, () => !document.querySelector("#txloadmore:disabled, #domloadmore:disabled"));
+          for (const end = Date.now() + 10_000; (await v.page.locator(rowsSel).count()) === before && Date.now() < end;) await sleep(100);
+          await until(v.page, decodedAll); await sleep(300);
+          assert.equal((await line(v)) !== null, !failFirst, `after Load more, verdicts ${failFirst ? "read" : "failing"}`);
+          const w = await words(v);
+          // rows 2 and 3 are applied mints on both ledgers (the domain's first row is the refused one)
+          if (failFirst) assert.ok(w.slice(1, 3).every((x: string) => x === "Minted"), `the first page worded again: ${w.slice(0, 3)}`);
+          else assert.ok(w.slice(1, 3).every((x: string) => x === "Minted") && w.slice(before).every((x: string) => x === "Mint request"), `old rows keep their verdicts, new ones requests: ${w.slice(before, before + 2)}`);
+        } finally { await v.close(); }
+      }
+    } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; S.paged = false; PAGED_TOTAL = null; S.records = "on"; }
+  });
+}
+
+// One view's failed verdict read never reaches another view's line: each view keeps its own verdicts.
+test("a verdict read that failed on the home leaves the next view's verdict line alone", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, cx: "up", records: "on" });
+  const lone = cxProp(150, { v: 1, t: "mint", ticker: "CAIRN", amount: "100" });
+  INDEXER["/domain/cairnx:v1/proposals"] = [lone];
+  S.failIds = new Set([lone.txid]);
+  try {
+    const v = await open("/explorer", 1280, () => !!document.querySelector("#actfeed .actrow"));
+    try {
+      assert.match(await v.page.textContent("#actnote"), /^Could not check these records/, "the home's own read failed");
+      // the home's txid still fails: a book shared between views would ask for it again here
+      INDEXER["/domain/cairnx:v1/proposals"] = PROPS.slice(0, 3);
+      await v.page.evaluate(() => { location.hash = "#/domain/cairnx%3Av1"; });
+      await until(v.page, () => document.querySelectorAll("#domrows tr").length === 3);
+      assert.equal(await v.page.evaluate(() => document.querySelector("#verdict-line")?.textContent ?? null), null);
+      assert.equal(await v.page.locator(".cx-noeffect").count(), 1, "its own verdicts read");
+    } finally { await v.close(); }
+  } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; S.failIds = new Set(); }
+});
+
+// The history of a name lists refused records too: with no applied verdict each row reads as its request.
+test("name history: with the verdicts unread every row reads as its request under the line", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, cx: "up", records: "500" });
+  try {
+    const v = await open("/explorer#/name/twin", 1280, () => /history \(/i.test(document.body.innerText));
+    try {
+      assert.match(await v.page.textContent("#verdict-line"), /^Could not check these records/);
+      assert.deepEqual(await v.page.evaluate(() => [...document.querySelectorAll("table.stack tbody td.act")].map((c: any) => c.textContent)), ["Market Fill request", "Market Fill request"]);
+    } finally { await v.close(); }
+  } finally { S.records = "on"; }
+});
+
+// A 200 without a name record ({} or []) is not the resolver's answer for a name.
+for (const name of ["empty", "list"]) {
+  test(`name page: a 200 without a name record (${name === "empty" ? "{}" : "[]"}) is "Could not check", never a registered name`, { skip: why || false }, async () => {
+    Object.assign(S, { market: "off", series: true, shell: true, cx: "up" });
+    const v = await open(`/explorer#/name/${name}`, 1280, () => !document.querySelector("main .skel"));
+    try {
+      const t = await text(v);
+      assert.match(t, /Could not check this name right now, so it is not shown as available\. Try again/);
+      assert.doesNotMatch(t, /A \.csd name on Compute Substrate|Owner|Not registered/);
+    } finally { await v.close(); }
+  });
+}
+
+// A malformed escape in a route's value is a miss naming it as typed, never a failed read.
+test("a malformed escape in a name, token or domain route is \"Nothing found\" quoting it", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, cx: "up" });
+  for (const [route, raw] of [["name", "%E0%A4%A"], ["token", "%zz"], ["domain", "%zz"]] as const) {
+    const v = await open(`/explorer#/${route}/${raw}`, 1280, () => /Nothing found|Could not load/.test(document.body.innerText));
+    try {
+      assert.equal(await v.page.textContent("h2.ex-title"), "Nothing found", route);
+      assert.match(await text(v), new RegExp(`no record at ${raw}\\.`));
+      assert.deepEqual(v.errors, []);
+    } finally { await v.close(); }
+  }
+});
+
+// Verified says "for this deploy", so it needs an entry bound to this token's deploy; an entry without one, or a level
+// this page does not know, shows no badge rather than a sentence that does not hold.
+test("token page: no badge for a listed entry without a deploy, or for a trust level the page does not know", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, cx: "up", trust: true });
+  try {
+    for (const entry of [{ name: "Zed" }, { deployId: "0x" + "de".repeat(32), level: "pending" }]) {
+      TRUST_LIST.verified = { ZED: entry } as any;
+      const v = await open("/explorer#/token/ZED", 1280, () => /metadata/.test(document.body.innerText));
+      try {
+        assert.equal(await v.page.locator("h2.ex-title .badge").count(), 0, JSON.stringify(entry));
+        assert.doesNotMatch(await text(v), /Listed by Cairn|Not listed|Look-alike|Verified/);
+      } finally { await v.close(); }
+    }
+  } finally { TRUST_LIST.verified = {}; }
 });

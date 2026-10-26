@@ -531,6 +531,14 @@ const age = (t)=>t?ageOf(Math.max(Math.floor(Date.now()/1000),TIP_TIME)-t):'';
 /** The same age in running text: "now", or "2 min ago". */
 const ago = (t)=>{ const a=age(t); return a&&a!=='now'?a+' ago':a; };
 const j = async(p)=>{const r=await fetch(API+p);if(!r.ok)throw Object.assign(new Error(`${p} answered ${r.status}`),{status:r.status});return r.json();};
+/** A failed read is a miss only when the indexer answered 400 or 404: it holds no such record. A 429 (the front door's
+ *  rate limit), any other status, a body that is not JSON and no answer at all say nothing about the record. */
+const isMiss=(e)=>!!e&&(e.status===400||e.status===404);
+/** The failed state's words for a read that failed. */
+const failedWhy=(e)=>e&&e.status===429?'Too many requests, try again in a minute: the front door limits how often one connection reads.'
+  :`A read from the indexer failed (${esc(e&&e.message||'no response')}). Check your connection, then try again.`;
+/** A route's value as typed in the hash, decoded; a malformed escape is a miss (a 400, as the indexer answers one). */
+const routeValue=(raw)=>{ try{ return decodeURIComponent(raw); }catch{ throw Object.assign(new Error('a malformed escape'),{status:400}); } };
 
 // ── client-side merkle fold (SubtleCrypto, no deps). A consistency check against the
 //    indexer's own header, NOT a trustless proof (no PoW/checkpoint verification here). ──
@@ -566,7 +574,7 @@ document.getElementById('view').addEventListener('click',(e)=>{
   if(navigator.clipboard&&navigator.clipboard.writeText) navigator.clipboard.writeText(b.dataset.copy).then(()=>done(true),()=>done(false)); else done(false); });
 // (no eager warmCx() here: `let DEC` is declared below, so an eager call would hit its
 // temporal dead zone and reject before its first await, doing nothing. Every render path awaits
-// warmCx()/warmVerdicts() itself, which is where the actual warming happens.)
+// warmCx() itself, which is where the actual warming happens.)
 // A route change crossfades the view it leaves into the one it opens (the page's view transition, 320 ms on the shared
 // curve; reduced motion keeps it, as a crossfade has no movement). Without the API the new view fades in
 // over 200 ms. The first paint and a theme switch in flight (theme.js runs its own transition) swap at once. The update
@@ -601,26 +609,29 @@ async function route(){
     else if(h.startsWith('/block/'))    await blockPage(v,h.slice(7));
     else if(h.startsWith('/tx/')){
       // a pasted 64-hex is usually a txid but can be a BLOCK hash, so fall through instead of erroring
+      // only when the indexer holds no such tx; a block read that fails is the failed state, not the tx's miss
       try{ await txPage(v,h.slice(4)); }
       catch(err){ const id=h.slice(4);
-        if(/^0x[0-9a-f]{64}$/i.test(id)&&await j('/block/'+id).catch(()=>null)){ location.hash='/block/'+id; return; }
+        if(!isMiss(err)||!/^0x[0-9a-f]{64}$/i.test(id)) throw err;
+        const blk=await j('/block/'+id).then((b)=>b,(e)=>{ if(isMiss(e)) return null; throw e; });
+        if(blk){ location.hash='/block/'+id; return; }
         throw err; }
     }
     else if(h.startsWith('/address/'))  await addrPage(v,h.slice(9));
-    else if(h.startsWith('/domain/'))   await domainPage(v,decodeURIComponent(h.slice(8)));
+    else if(h.startsWith('/domain/'))   await domainPage(v,routeValue(h.slice(8)));
     else if(h.startsWith('/proposal/')) await proposalPage(v,h.slice(10));
-    else if(h.startsWith('/token/'))     await tokenPage(v,decodeURIComponent(h.slice(7)));
-    else if(h.startsWith('/name/'))      await namePage(v,decodeURIComponent(h.slice(6)));
+    else if(h.startsWith('/token/'))     await tokenPage(v,routeValue(h.slice(7)));
+    else if(h.startsWith('/name/'))      await namePage(v,routeValue(h.slice(6)));
     else if(h.startsWith('/search/'))    await searchPage(v,h.slice(8));
     else v.innerHTML='<div class="panel"><h2 class="ex-title">Not found</h2><div class="muted">Nothing lives at this address of the explorer. Search above for a .csd name, block height, txid or address, or go to the <a href="#/">explorer home</a>.</div></div>';
   }catch(e){
-    // a 4xx is the indexer saying it has no such record (a miss); anything else is a read that failed
-    if(e&&e.status>=400&&e.status<500&&h!=='/'&&h!==''){
+    // a 400 or 404 is the indexer saying it holds no such record (a miss); anything else is a read that failed
+    if(isMiss(e)&&h!=='/'&&h!==''){
       const what=h.split('/').slice(2).join('/');
       let shown=what; try{ shown=decodeURIComponent(what); }catch{ /* a malformed escape: the value as typed */ }
       v.innerHTML=missPanel(shown||h);
     } else {
-      v.innerHTML=`<div class="panel"><h2 class="ex-title">Could not load this view</h2><div class="muted">A read from the indexer failed (${esc(e&&e.message||'no response')}). Check your connection, then try again.</div><button type="button" class="ex-btn" id="retry">Try again</button></div>`;
+      v.innerHTML=`<div class="panel"><h2 class="ex-title">Could not load this view</h2><div class="muted">${failedWhy(e)}</div><button type="button" class="ex-btn" id="retry">Try again</button></div>`;
       $('#retry',v).addEventListener('click',()=>{ void route(); });
     }
   }
@@ -704,10 +715,13 @@ async function paintNames(root){
 // ── .csd name page helpers ──
 // 1 epoch = 30 blocks ≈ 1 hour, so an epoch count reads as hours; roll up to days/months.
 const epochsToHuman=(e)=>{e=Math.max(0,Math.round(e));if(e<48)return e+'h';if(e<24*60)return Math.round(e/24)+'d';return Math.round(e/24/30.4)+'mo';};
-const KIND_LABEL={ncommit:['Name','Sealed a commitment'],name:['Name','Claimed'],nfinalize:['Name','Finalized'],nset:['Name','Set address'],
-  nxfer:['Name','Transferred'],nrenew:['Name','Renewed lease'],offer:['Market','Listed for sale'],ocancel:['Market','Cancelled listing'],bid:['Market','Bid'],
-  claim:['Market','Reserved (open offer)'],fill:['Market','Bought / sold (fill)'],cancel:['Market','Cancelled']};
-const kindLabel=(k)=>{ const l=Object.hasOwn(KIND_LABEL,k)?KIND_LABEL[k]:null; return l?kind(l[0])+l[1]:esc(k||'record'); };
+// a name-history event's family, its effect, and the request it makes: the effect only with the resolver's applied
+// verdict (/name-history lists refused records too), as a record line is worded
+const KIND_LABEL={ncommit:['Name','Sealed a commitment','Commitment request'],name:['Name','Claimed','Claim request'],nfinalize:['Name','Finalized','Finalize request'],
+  nset:['Name','Set address','Point request'],nxfer:['Name','Transferred','Transfer request'],nrenew:['Name','Renewed lease','Renewal request'],
+  offer:['Market','Listed for sale','Listing request'],ocancel:['Market','Cancelled listing','Cancel listing request'],bid:['Market','Bid','Bid request'],
+  claim:['Market','Reserved (open offer)','Claim request (open offer)'],fill:['Market','Bought / sold (fill)','Fill request'],cancel:['Market','Cancelled','Cancel request']};
+const kindLabel=(k,verdict)=>{ const l=Object.hasOwn(KIND_LABEL,k)?KIND_LABEL[k]:null; return l?kind(l[0])+(verdict&&verdict.applied===true?l[1]:l[2]):esc(k||'record'); };
 // A registered name's identity avatar, cairn's /ui/avatar.js (front door only), seeded as /names seeds a name: the
 // same gradient for the same name everywhere. Without the module, and for a name nobody holds, its initial on a
 // neutral disc. The page waits for the module before it draws the name, so the avatar never changes once shown.
@@ -805,41 +819,51 @@ function warmCx(){
   })();
 }
 const amt=(v,ticker)=> DEC&&DEC[ticker]!=null ? fmtAmt(v,DEC[ticker]) : `${esc(group(v))} <span class="dim">base units</span>`;
-// CairnX VERDICT map (txid → {applied, note}) for the records a view shows, read fresh per view (verdicts change as
-// blocks land) from /cairnx/records, 100 txids a read. Lets us show that a record the resolver REFUSED (mint past
-// supply, mint by a non-issuer, deploy with an unpaid fee, an underfunded transfer…) had NO on-chain effect, instead
-// of rendering it as if it succeeded. A front door or resolver without that route (404) or a failed read falls back to
-// the applied-event log. `more` adds a later page's txids to the same view.
-// VER_STATE says whether the view's verdicts were read: "ok", "standalone" (no resolver to ask) or "failed" (the records
-// read and the log read both failed); in the last two every record reads as its request, and the view says why
-// (verdictLine).
-let VER={}, VER_STATE='ok';
+// A view's CairnX record verdicts (txid → {applied, note}), read for the records it shows from /cairnx/records, 100
+// txids a read; a front door or resolver without that route (404) or a failed read falls back to the applied-event log.
+// They let a view show that a record the resolver REFUSED (mint past supply, mint by a non-issuer, deploy with an unpaid
+// fee, an underfunded transfer...) had NO effect, instead of rendering it as if it succeeded. Each view keeps its own
+// book, so a read another view makes (a home refresh in flight) never changes what this one says. A verdict once read is
+// kept (a resolved record's verdict does not change); a txid whose read failed stays unread and is asked again by the
+// book's next read; the view says so while any record it shows is unread (verdictLine).
 const TXID_RE=/^0x[0-9a-f]{64}$/;
-async function warmVerdicts(ids,more=false){
-  if(!more){ VER={}; VER_STATE='ok'; }
-  if(!SIB.cairnx){ VER_STATE='standalone'; return VER; }
-  const want=[...new Set((ids||[]).map((x)=>String(x).toLowerCase()))].filter((x)=>TXID_RE.test(x)&&!(x in VER));
-  if(!want.length) return VER;
-  const chunks=[]; for(let i=0;i<want.length;i+=100) chunks.push(want.slice(i,i+100));
-  const got=(await Promise.all(chunks.map((c)=>sib(SIB.cairnx,'/records?ids='+c.join(','))))).map(sibData);
-  if(got.some((r)=>!r||!r.records||typeof r.records!=='object')) return verdictsFromLog();
-  for(const r of got) for(const [id,v] of Object.entries(r.records)) VER[id.toLowerCase()]={applied:v.applied,note:v.note};
-  return VER;
-}
-async function verdictsFromLog(){
-  const log=sibData(await sib(SIB.cairnx,'/log?limit=5000'));
-  if(!Array.isArray(log)){ VER_STATE='failed'; return VER; }
-  for(const e of log) VER[String(e.id).toLowerCase()]={applied:e.ok,note:e.note};
-  return VER;
+function verdictBook(){
+  const ver={}, unread=new Set();
+  const book={
+    get:(id)=>ver[String(id).toLowerCase()]||null,
+    unread:(id)=>unread.has(String(id).toLowerCase()),
+    state:()=>!SIB.cairnx?'standalone':unread.size?'failed':'ok',
+    /** Read the verdicts of `ids` and of every txid still unread; true when the read answered. */
+    async read(ids){
+      if(!SIB.cairnx) return false;
+      const want=[...new Set([...(ids||[]).map((x)=>String(x).toLowerCase()),...unread])].filter((x)=>TXID_RE.test(x)&&!(x in ver));
+      if(!want.length) return true;
+      const chunks=[]; for(let i=0;i<want.length;i+=100) chunks.push(want.slice(i,i+100));
+      const got=(await Promise.all(chunks.map((c)=>sib(SIB.cairnx,'/records?ids='+c.join(','))))).map(sibData);
+      if(got.every((r)=>r&&r.records&&typeof r.records==='object')){
+        for(const r of got) for(const [id,v] of Object.entries(r.records)) ver[id.toLowerCase()]={applied:v.applied,note:v.note};
+      } else {
+        const log=sibData(await sib(SIB.cairnx,'/log?limit=5000'));
+        if(!Array.isArray(log)){ for(const x of want) unread.add(x); return false; }
+        const asked=new Set(want);
+        for(const e of log){ const id=String(e.id).toLowerCase(); if(asked.has(id)) ver[id]={applied:e.ok,note:e.note}; }
+      }
+      for(const x of want) unread.delete(x);
+      return true;
+    },
+  };
+  return book;
 }
 /** The verdict a /cairnx/record/:txid read carries, or null (no resolved record, standalone, or the read failed). */
 const recordVerdict=(r)=>r.state==='ok'&&r.data&&typeof r.data.applied==='boolean'?r.data:null;
 /** Under one record's line, when its verdict read failed: why it reads as a request. */
 const recordLine=(r)=>r.state==='failed'?`<div class="muted ex-unread">Could not check this record with the CairnX resolver right now, so it is not shown as applied. ${AGAIN}</div>`:'';
-/** The quiet line on a ledger of CairnX records whose verdicts could not be read; none of them reads as applied. */
-function verdictLine(){
-  if(VER_STATE==='failed') return `<div class="muted ex-unread" id="verdict-line">Could not check these records with the CairnX resolver right now, so none is shown as applied. ${AGAIN}</div>`;
-  if(VER_STATE==='standalone') return '<div class="muted ex-unread" id="verdict-line">This standalone view has no CairnX resolver to ask, so each record reads as the request it makes.</div>';
+/** The quiet line on a ledger of CairnX records while any it shows is unread (none of those reads as applied), or when
+ *  there is no resolver to ask; empty once every shown record's verdict was read. */
+function verdictLine(book){
+  const st=book.state();
+  if(st==='failed') return `<div class="muted ex-unread" id="verdict-line">Could not check these records with the CairnX resolver right now, so none is shown as applied. ${AGAIN}</div>`;
+  if(st==='standalone') return '<div class="muted ex-unread" id="verdict-line">This standalone view has no CairnX resolver to ask, so each record reads as the request it makes.</div>';
   return '';
 }
 // Wrap a decoded record line with its resolver verdict. A refused record is struck through and
@@ -1011,16 +1035,22 @@ async function marketPanel(box){
 // The home's two lists show as many rows each: a new block or record enters at the top and the last row leaves.
 const HOME_ROWS=12;
 const NAME_KINDS=new Set(['name','nset','nxfer','nrenew','ncommit']);
+// A read a page shows the rest without: its data, or FAILED, so a panel never reads a failed read as an empty answer.
+const FAILED=Object.freeze({failed:true});
+const soft=(p)=>j(p).catch(()=>FAILED);
+const known=(x)=>x===FAILED?null:x;
+/** A table's one row for a read that failed: what could not be checked, and Try again. */
+const unreadRow=(what,cols)=>`<tr><td colspan="${cols}" class="empty">Could not check ${what} right now. ${AGAIN}</td></tr>`;
 /** The home's CairnX activity: a ledger as the preview's latest transactions (the family label, the record in words, the
- *  transaction), with All, Names and DEX and a View all to the domain's ledger. refresh(tip) reads it again: a record
- *  not shown before enters with the new block's row-in. */
-function homeActivity(act,props,avgSecs,tipH){
-  let tip=tipH, filt='all', acts=[];
+ *  transaction), with All, Names and DEX and a View all to the domain's ledger, its verdicts in the view's `book`.
+ *  refresh(tip) reads it again: a record not shown before enters with the new block's row-in. */
+function homeActivity(act,props,avgSecs,tipH,book){
+  let tip=tipH, filt='all', acts=[], failed=props===FAILED;
   const seen=new Set();
   // /domain/:d/proposals is already newest-first (DESC by height); do NOT reverse
   const decode=(list)=>list.map((p)=>{ let rec=null; try{rec=JSON.parse(p.uri);}catch{ /* not JSON: no record kind, the row shows under all */ }
-    const html=describeDomainRecord('cairnx:v1',p.uri,VER&&VER[String(p.txid).toLowerCase()],p.height); return html?{p,html,name:!!(rec&&NAME_KINDS.has(rec.t))}:null; }).filter(Boolean);
-  acts=decode(props);
+    const html=describeDomainRecord('cairnx:v1',p.uri,book.get(p.txid),p.height); return html?{p,html,name:!!(rec&&NAME_KINDS.has(rec.t))}:null; }).filter(Boolean);
+  acts=failed?[]:decode(props);
   for(const a of acts) seen.add(a.p.txid);
   act.insertAdjacentHTML('beforeend','<div id="actnote"></div><div class="scroll-x"><table class="acts"><thead><tr><th>Kind</th><th>Record</th><th class="r">Transaction</th></tr></thead><tbody id="actfeed"></tbody></table></div>');
   // the filter and View all, once there is a record to filter
@@ -1040,7 +1070,8 @@ function homeActivity(act,props,avgSecs,tipH){
     return r; };
   const render=(entering=new Set())=>{
     const feed=$('#actfeed',act); if(!feed) return;
-    $('#actnote',act).innerHTML=acts.length?verdictLine():'';
+    $('#actnote',act).innerHTML=acts.length?verdictLine(book):'';
+    if(failed){ feed.innerHTML=unreadRow('the CairnX activity',3); return; }
     if(!acts.length){ feed.innerHTML='<tr><td colspan="3" class="empty">No CairnX records in this indexer yet.</td></tr>'; return; }
     heading();
     const list=acts.filter(a=>filt==='all'||(filt==='name'?a.name:!a.name)).slice(0,HOME_ROWS);
@@ -1051,10 +1082,11 @@ function homeActivity(act,props,avgSecs,tipH){
     async refresh(newTip){
       const list=await j('/domain/'+encodeURIComponent('cairnx:v1')+'/proposals').catch(()=>null);
       if(!Array.isArray(list)||!act.isConnected) return;
-      // verdicts are read again for every listed record: one a block lands on may just have been judged
-      await warmVerdicts(list.map((p)=>p.txid));
+      // the new records' verdicts, and any not judged yet: one a block lands on may just have been
+      await book.read(list.map((p)=>p.txid));
       if(!act.isConnected) return;
       if(newTip) tip=newTip;
+      failed=false;
       acts=decode(list);
       const entering=new Set(acts.filter((a)=>!seen.has(a.p.txid)).map((a)=>a.p.txid));
       for(const id of entering) seen.add(id);
@@ -1066,13 +1098,15 @@ async function home(v){
   void charts();   // the chart module loads alongside the reads, so the hashrate tile usually has its window when drawn
   // /health answers whenever the indexer runs, an empty index included: a failed read is the route's failed state
   const health=await j('/health');
-  const [domains,supply,miners,rich,cxprops,series]=await Promise.all([
-    j('/domains').catch(()=>[]),
-    j('/analytics/supply').catch(()=>null),j('/analytics/miners?window=1d').catch(()=>null),
-    j('/analytics/richlist?limit=8').catch(()=>null),
-    j('/domain/'+encodeURIComponent('cairnx:v1')+'/proposals').catch(()=>[]),
-    j('/analytics/series?window=1d&points=56').catch(()=>null)]);
-  await Promise.all([warmCx(), warmVerdicts((cxprops||[]).map((p)=>p.txid))]);
+  // each panel shows its own failed read; the figures without their read show a dash. An indexer without
+  // /analytics/series (its 404) has no series; any other failure of it is a failed read.
+  const [domains,supplyR,minersR,rich,cxprops,seriesR]=await Promise.all([
+    soft('/domains'), soft('/analytics/supply'), soft('/analytics/miners?window=1d'), soft('/analytics/richlist?limit=8'),
+    soft('/domain/'+encodeURIComponent('cairnx:v1')+'/proposals'),
+    j('/analytics/series?window=1d&points=56').catch((e)=>isMiss(e)?null:FAILED)]);
+  const supply=known(supplyR), miners=known(minersR), series=known(seriesR);
+  const book=verdictBook();
+  await Promise.all([warmCx(), cxprops===FAILED?null:book.read((cxprops||[]).map((p)=>p.txid))]);
   const recent=await recentBlocks();
   v.innerHTML='';
 
@@ -1083,9 +1117,9 @@ async function home(v){
   const hrSpan=miners&&Number.isFinite(miners.from_height)?`Δchainwork ÷ Δtime over blocks ${fmtInt(miners.from_height)} to ${fmtInt(miners.to_height)}, from the indexer`:'';
   v.appendChild(el(`<div class="pulse">
     <div class="pu hot"><div class="l">Height</div><div class="n">${fmtInt(health.indexed_height)}</div></div>
-    <div class="pu"><div class="l">Avg block time, 24h</div><div class="n">${miners?Math.round(miners.avg_interval_secs):'-'} <span class="u">s</span></div></div>
+    <div class="pu"><div class="l">Avg block time, 24h</div><div class="n">${miners?`${Math.round(miners.avg_interval_secs)} <span class="u">s</span>`:'-'}</div></div>
     <div class="pu" id="pu-hr" title="${esc(hrSpan)}"><div class="l">Hashrate<span data-hrwin="tile"></span></div><div class="n">${hr?`${hr.val} <span class="u">${hr.unit}</span>`:'-'}</div></div>
-    <div class="pu"><div class="l">Circulating</div><div class="n">${supply?fmtCSD(supply.emitted_supply).replace(' CSD',''):'-'} <span class="u">CSD</span></div></div>
+    <div class="pu"><div class="l">Circulating</div><div class="n">${supply?`${fmtCSD(supply.emitted_supply).replace(' CSD','')} <span class="u">CSD</span>`:'-'}</div></div>
   </div>`));
   if(!paintHrWin(v,miners,series)) charts().then(()=>{ if(v.isConnected) paintHrWin(v,miners,series); });
 
@@ -1098,7 +1132,7 @@ async function home(v){
   v.appendChild(cols);
   const tb=$('#blkfeed',cols);
   recent.slice(0,HOME_ROWS).forEach(b=>tb.appendChild(blockRow(b)));
-  const activity=homeActivity($('#actcol',cols),cxprops||[],(miners&&miners.avg_interval_secs)||120,health.indexed_height||0);
+  const activity=homeActivity($('#actcol',cols),cxprops===FAILED?FAILED:(cxprops||[]),(miners&&miners.avg_interval_secs)||120,health.indexed_height||0,book);
   // the same subscription that brings a new block reads the activity again
   subscribeBlocks(tb,(tip)=>activity.refresh(tip));
 
@@ -1161,7 +1195,7 @@ async function home(v){
 
   v.appendChild(el(`<div class="row">
     <div class="panel"><h2>App activity, on-chain domains</h2><div class="scroll-x"><table><thead><tr><th>Domain</th><th class="num">Proposals</th></tr></thead>
-      <tbody>${domains.slice(0,8).map(d=>`<tr><td>${link('/domain/'+encodeURIComponent(d.domain),domainLabel(d.domain))}</td><td class="num">${fmtInt(d.proposals)}</td></tr>`).join('')||'<tr><td colspan="2" class="empty">No domain records yet</td></tr>'}</tbody></table></div></div>
+      <tbody>${domains===FAILED?unreadRow('the on-chain domains',2):(Array.isArray(domains)?domains:[]).slice(0,8).map(d=>`<tr><td>${link('/domain/'+encodeURIComponent(d.domain),domainLabel(d.domain))}</td><td class="num">${fmtInt(d.proposals)}</td></tr>`).join('')||'<tr><td colspan="2" class="empty">No domain records yet</td></tr>'}</tbody></table></div></div>
     <div class="panel"><h2>Chain records</h2><div class="kv">
       <div>blocks indexed</div><div class="v">${fmtInt(health.blocks)}</div>
       <div>transactions</div><div class="v">${fmtInt(health.txs)}</div>
@@ -1175,10 +1209,10 @@ async function home(v){
   v.appendChild(el(`<div class="row">
     <div class="panel"><h2>Miners, 24h${miners?` <span class="h-side"><span>${fmtInt(miners.miner_count)} ${miners.miner_count===1?'miner':'miners'}</span>${miners.concentration?`<span title="Herfindahl-Hirschman index of block share, lower = more decentralised">HHI ${Math.round(miners.concentration.hhi*10000)}</span>`:''}</span>`:''}</h2>
       <div class="scroll-x"><table><thead><tr><th class="num">#</th><th>Miner</th><th class="num">Blocks</th><th class="opt num">Share</th></tr></thead><tbody>${
-        ((miners&&miners.miners)||[]).slice(0,5).map((m,i)=>`<tr><td class="num dim">${i+1}</td><td>${addrLink(m.addr)}</td><td class="num">${fmtInt(m.blocks)}</td><td class="opt num dim">${(m.share*100).toFixed(1)}%</td></tr>`).join('')||'<tr><td colspan="4" class="empty">No recent miners</td></tr>'}</tbody></table></div></div>
+        minersR===FAILED?unreadRow('the miners',4):((miners&&miners.miners)||[]).slice(0,5).map((m,i)=>`<tr><td class="num dim">${i+1}</td><td>${addrLink(m.addr)}</td><td class="num">${fmtInt(m.blocks)}</td><td class="opt num dim">${(m.share*100).toFixed(1)}%</td></tr>`).join('')||'<tr><td colspan="4" class="empty">No recent miners</td></tr>'}</tbody></table></div></div>
     <div class="panel"><h2>Top holders</h2>
       <div class="scroll-x"><table><thead><tr><th class="num">#</th><th>Address</th><th class="num">Balance</th><th class="opt num">Share</th></tr></thead><tbody>${
-        ((rich&&rich.holders)||[]).slice(0,5).map(hh=>`<tr><td class="num dim">${hh.rank}</td><td>${addrLink(hh.addr)}</td><td class="num">${fmtCSD(hh.balance)}</td><td class="opt num dim">${(hh.pct_of_emitted).toFixed(2)}%</td></tr>`).join('')||'<tr><td colspan="4" class="empty">Indexing…</td></tr>'}</tbody></table></div></div>
+        rich===FAILED?unreadRow('the top holders',4):((rich&&rich.holders)||[]).slice(0,5).map(hh=>`<tr><td class="num dim">${hh.rank}</td><td>${addrLink(hh.addr)}</td><td class="num">${fmtCSD(hh.balance)}</td><td class="opt num dim">${(hh.pct_of_emitted).toFixed(2)}%</td></tr>`).join('')||'<tr><td colspan="4" class="empty">No holders yet</td></tr>'}</tbody></table></div></div>
   </div>`));
 
   // ── network hashrate (the indexer's series over the hero tile's window) and block times (the last ~30
@@ -1198,7 +1232,7 @@ async function home(v){
         <div class="muted">Seconds between consecutive blocks · dashed line: the 120 s target${avg!=null?` · avg <b>${avg}s</b>`:''} <span id="btpick"></span></div></div>
     </div>`);
     v.appendChild(row);
-    charts().then(()=>plot($('#hrchart',row),hp,{kind:'area',label:'network hashrate',range:paintHrWin(row,miners,series),format:(x)=>{const f=fmtHashrate(x*1e9);return f.val+' '+f.unit;},emptyText:'no hashrate series from this indexer'}));
+    charts().then(()=>plot($('#hrchart',row),hp,{kind:'area',label:'network hashrate',range:paintHrWin(row,miners,series),format:(x)=>{const f=fmtHashrate(x*1e9);return f.val+' '+f.unit;},emptyText:seriesR===FAILED?'Could not load the hashrate series right now':'no hashrate series from this indexer'}));
     plot($('#btchart',row),bt,{label:'block interval',range:`last ${iv.length} blocks`,format:(x)=>Math.round(x)+' s',
       domain:{lo:0,hi:btTop(Math.max(240,2*(avg||0)))},extra:bt.length?[refLine(bt,120)]:[],emptyText:'not enough blocks yet',
       onCrosshair:(t)=>{ const i=bt.findIndex(p=>p[0]===t), s=$('#btpick',row); if(s) s.textContent=i>=0?`· block ${fmtInt(iv[i].h)}: ${iv[i].dt}s`:''; }});
@@ -1220,16 +1254,21 @@ function trustReader(){
       const verified=list.verified&&typeof list.verified==='object'?list.verified:{};
       const impersonated=new Set((Array.isArray(list.impersonated)?list.impersonated:[]).map((t)=>String(t).toUpperCase()));
       return (t)=>{ const tk=String(t.ticker||'').toUpperCase(), meta=Object.hasOwn(verified,t.ticker)?verified[t.ticker]:Object.hasOwn(verified,tk)?verified[tk]:null;
-        return { level:mod.trustLevel({ticker:tk,meta,impersonated,live:t}), listed:!!meta }; };
+        // bound: the entry names this token's deploy (trustLevel calls an entry without a deployId verified for any deploy)
+        return { level:mod.trustLevel({ticker:tk,meta,impersonated,live:t}), listed:!!meta,
+          bound:!!meta&&!!meta.deployId&&String(meta.deployId).toLowerCase()===String(t.deployId||'').toLowerCase() }; };
     }catch{ TRUST=null; return null; }
   })();
 }
-// the design direction's trust badges, each with the sentence it stands for
+// the design direction's trust badges, each with the sentence it stands for, and only where the sentence holds:
+// Verified for an entry bound to this deploy, Unverified for a ticker the list does not name; any other answer (an
+// entry without a deploy, a level this page does not know) shows no badge
 function trustBadge(tr){
-  if(tr.level==='verified') return [`<span class="badge ok">${ICON.check}Verified</span>`,'Listed by Cairn for this deploy. A display convenience, not a consensus claim.'];
+  if(tr.level==='verified'&&tr.bound) return [`<span class="badge ok">${ICON.check}Verified</span>`,'Listed by Cairn for this deploy. A display convenience, not a consensus claim.'];
   if(tr.level==='impersonator') return [`<span class="badge caution">${ICON.alert}Look-alike</span>`,tr.listed?'Same ticker as a listed token, different deploy. Anyone can deploy any ticker.'
     :'Its ticker reads like a listed or well-known token, and Cairn does not list it. Anyone can deploy any ticker.'];
-  return ['<span class="badge">Unverified</span>','Not listed. Check the deployer before you buy.'];
+  if(tr.level==='unverified'&&!tr.listed) return ['<span class="badge">Unverified</span>','Not listed. Check the deployer before you buy.'];
+  return ['',''];
 }
 
 // ── token page: one CairnX coin, humanly ──
@@ -1270,7 +1309,9 @@ function blockRow(b,live){
 async function recentBlocks(){
   // one round-trip (newest-first); 31 blocks feed the block list (12 shown), the emission chart's
   // newest block AND the block-times chart from a single fetch
-  try{ const r=await j('/blocks/recent?limit=31'); if(Array.isArray(r)) return r; }catch{ /* no /blocks/recent on this indexer: the per-block reads below */ }
+  // only an indexer without /blocks/recent (its 404) is read block by block; any other failure is the view's failed
+  // state (a rate limit would only get worse with 25 more reads)
+  try{ const r=await j('/blocks/recent?limit=31'); if(Array.isArray(r)) return r; }catch(e){ if(!isMiss(e)) throw e; }
   // fallback for an indexer without /blocks/recent (older deploy / different host)
   const tip=await j('/blocks/tip/height');const out=[];
   for(let h=tip;h>tip-12&&h>=0;h--){const hash=await j('/block-height/'+h).catch(()=>null);if(!hash)continue;out.push(await j('/block/'+hash));}
@@ -1345,7 +1386,8 @@ async function blockPage(v,id){
 
 async function txPage(v,id){
   await warmCx();
-  const [tx,status,proof]=await Promise.all([j('/tx/'+id),j('/tx/'+id+'/status').catch(()=>null),j('/tx/'+id+'/merkle-proof').catch(()=>null)]);
+  // the proof's 404 is the indexer holding none; any other failure leaves inclusion unchecked, never "No proof"
+  const [tx,status,proof]=await Promise.all([j('/tx/'+id),j('/tx/'+id+'/status').catch(()=>null),j('/tx/'+id+'/merkle-proof').catch((e)=>isMiss(e)?null:FAILED)]);
   v.innerHTML='';
   const typeBadge = `<span class="kind">${tx.app_type==='Propose'?'Propose':tx.app_type==='Attest'?'Attest':tx.coinbase?'Coinbase':'Transfer'}</span>`;
 
@@ -1367,9 +1409,11 @@ async function txPage(v,id){
     let line=null;
     if(tx.app_type==='Propose'){
       // precise per-record verdict for the detail page (authoritative even past a bounded log page)
-      const [prop,vr]=await Promise.all([j('/proposal/'+tx.txid).catch(()=>null),sib(SIB.cairnx,'/record/'+tx.txid)]);
+      const [prop,vr]=await Promise.all([j('/proposal/'+tx.txid).catch((e)=>isMiss(e)?null:FAILED),sib(SIB.cairnx,'/record/'+tx.txid)]);
       const verdict=recordVerdict(vr);
-      if(prop) line=(describeDomainRecord(prop.domain,prop.uri,verdict,prop.height)
+      // a Propose whose proposal read failed is a proposal all the same, never "a plain chain transaction"
+      if(prop===FAILED) line=`${kind('Record')}<span class="what">Proposal</span>${unreadLine('what it proposes')}`;
+      else if(prop) line=(describeDomainRecord(prop.domain,prop.uri,verdict,prop.height)
         || `${kind('Record')}<span class="what">Anchored a proposal</span> in ${link('/domain/'+encodeURIComponent(prop.domain),prop.domain)}`)
         +(prop.domain==='cairnx:v1'?recordLine(vr):'');
     } else if(tx.app_type==='Attest'){
@@ -1378,9 +1422,10 @@ async function txPage(v,id){
       const full=sibData(nr), pid=full&&full.tx&&full.tx.app&&full.tx.app.proposal_id;
       if(pid){
         const pidHex=pidHexOf(pid);
-        const prop=await j('/proposal/'+pidHex).catch(()=>null);
+        const prop=await j('/proposal/'+pidHex).catch((e)=>isMiss(e)?null:FAILED);
         const score=full.tx.app.score;
-        if(prop&&prop.domain==='cairnx:v1'){
+        if(prop===FAILED) line=`${kind('Record')}<span class="what">Attestation</span>${unreadLine('what it attests')}`;
+        else if(prop&&prop.domain==='cairnx:v1'){
           let rec=null; try{rec=JSON.parse(prop.uri);}catch{ /* not JSON: rec stays null, which describeOfferAttest handles */ }
           line=describeOfferAttest(tx,full.tx.app,pidHex,rec,recordVerdict(vr))+recordLine(vr);
         } else if(prop){
@@ -1396,7 +1441,9 @@ async function txPage(v,id){
       const outs=(tx.outputs||[]).filter(o=>(o.addr||'').toLowerCase()!==me);
       line=`${kind('CSD')}<span class="what">${addrLink(tx.signer)} sent CSD</span>${outs.length===1?` to ${addrLink(outs[0].addr)}`:` to ${outs.length} recipients`}`;
     }
-    slot.innerHTML=line||'<span class="dim">A plain chain transaction</span>';
+    // an app record whose details are absent is still that record
+    slot.innerHTML=line||(tx.app_type==='Attest'?`${kind('Record')}<span class="what">Attestation</span>`:tx.app_type==='Propose'?`${kind('Record')}<span class="what">Proposal</span>`
+      :'<span class="dim">A plain chain transaction</span>');
     paintNames(human);
   })();
 
@@ -1407,7 +1454,8 @@ async function txPage(v,id){
   v.appendChild(el(`<div class="panel"><h2>Outputs</h2><div class="scroll-x"><table><thead><tr><th class="num">#</th><th>Address</th><th class="num">Value</th><th class="opt">Status</th></tr></thead>
     <tbody>${(tx.outputs||[]).map(o=>`<tr><td class="num dim">${esc(o.vout)}</td><td>${addrLink(o.addr)}</td><td class="num">${fmtCSD(o.value)}</td>
       <td class="opt">${o.spent_txid?`<span class="dim">Spent by ${txidLink(o.spent_txid)}</span>`:'<span class="dim">Unspent</span>'}</td></tr>`).join('')||'<tr><td colspan="4" class="empty">No outputs</td></tr>'}</tbody></table></div></div>`));
-  if(proof){
+  if(proof===FAILED){ const b=$('#inclbadge'); b.innerHTML=`${ICON.x}Inclusion not checked: the proof read failed`; b.className='badge pend'; }
+  else if(proof){
     v.appendChild(el(`<div class="panel"><h2>Merkle inclusion proof</h2>
       <div class="muted">This proof is served by an <i>untrusted</i> indexer, and so is the block header below. Your browser folds the branch and checks it equals the indexer's stated merkle root: a <b>consistency check</b> that the proof matches the header this same indexer reports. It is <b>NOT</b> a PoW/consensus proof: nothing here verifies the header's proof-of-work or that it is on the canonical chain. For a trustless inclusion proof, fold against a header obtained from the L0 light client (which checks PoW + checkpoints).</div>
       <div class="kv">
@@ -1466,19 +1514,27 @@ async function addrPage(v,a){
   v.appendChild(el(`<div class="panel"><h2>Transactions (${fmtInt(s.tx_count)})</h2><div id="txnote"></div><div class="scroll-x"><table class="stack"><thead><tr><th>Txid</th><th class="act">Record</th><th class="opt num">Block</th><th class="num">Amount</th></tr></thead>
     <tbody id="txrows"></tbody></table></div><div id="txmore"></div></div>`));
   let loaded=0, lastTxid=null;
-  const appendTxPage=async(page,later=true)=>{
+  // the view's verdicts; every row shown, so a later read can word again a row whose verdict it answered
+  const book=verdictBook(), rows=[], isRecord=(t)=>t.app_type==='Propose'||t.app_type==='Attest';
+  const appendTxPage=async(page)=>{
     if(!Array.isArray(page)||!page.length){const m=$('#txmore'); if(m) m.innerHTML=loaded?'':'<div class="muted">No transactions</div>'; return;}
-    const records=page.filter((t)=>t.app_type==='Propose'||t.app_type==='Attest');
-    await warmVerdicts(records.map((t)=>t.txid),later);
-    const note=$('#txnote'); if(note&&records.length&&!note.innerHTML) note.innerHTML=verdictLine();
+    const records=page.filter(isRecord), unread=rows.filter((r)=>book.unread(r.t.txid));
+    // this page's verdicts and those of earlier rows still unread
+    await book.read(records.map((t)=>t.txid));
+    const note=$('#txnote'); if(note) note.innerHTML=records.length||rows.some((r)=>isRecord(r.t))?verdictLine(book):'';
+    for(const r of unread) if(!book.unread(r.t.txid)) decodeTxRow(r.t,r.i);
     const start=loaded;
     $('#txrows').insertAdjacentHTML('beforeend',page.map((t,k)=>{const i=start+k;return `<tr><td>${txidLink(t.txid)}</td><td class="act" id="act-${i}"><span class="dim">${esc(t.app_type)}</span></td><td class="opt num">${link('/block/'+t.height,fmtInt(t.height))}</td><td id="dir-${i}" class="num dim">…</td></tr>`;}).join(''));
     loaded+=page.length; lastTxid=page[page.length-1].txid;
-    page.forEach((t,k)=>{decodeTxRow(t,start+k);});
+    page.forEach((t,k)=>{ rows.push({t,i:start+k}); decodeTxRow(t,start+k); });
     const more=$('#txmore');
     if(more) more.innerHTML=(page.length===PAGE&&loaded<s.tx_count)?`<button type="button" class="ex-btn" id="txloadmore">Load more (${fmtInt(loaded)} of ${fmtInt(s.tx_count)})</button>`:'';
     const btn=$('#txloadmore');
-    if(btn) btn.onclick=async()=>{btn.disabled=true;btn.textContent='Loading…';await appendTxPage(await j('/address/'+a+'/txs/chain/'+lastTxid).catch(()=>[]));};
+    if(btn) btn.onclick=async()=>{ btn.disabled=true; btn.textContent='Loading…';
+      const next=await j('/address/'+a+'/txs/chain/'+lastTxid).catch(()=>FAILED);
+      // a failed read is not the end of the list: the button stays, saying so
+      if(next===FAILED){ btn.disabled=false; btn.textContent='Could not load more. Try again'; return; }
+      await appendTxPage(next); };
   };
 
   // decode one row (each is a cheap local lookup)
@@ -1497,7 +1553,7 @@ async function addrPage(v,a){
       if(d) d.outerHTML=`<td class="num ${delta>=0?'green':'red'}">${delta>=0?'+':''}${fmtCSD(delta)}</td>`;
       if(full.app_type==='Propose'){
         const prop=await j('/proposal/'+t.txid).catch(()=>null);
-        const line=prop&&(describeDomainRecord(prop.domain,prop.uri,VER&&VER[t.txid.toLowerCase()],prop.height)||`${kind('Record')}proposal in ${esc(prop.domain)}`);
+        const line=prop&&(describeDomainRecord(prop.domain,prop.uri,book.get(t.txid),prop.height)||`${kind('Record')}proposal in ${esc(prop.domain)}`);
         const slot=$('#act-'+i); if(slot&&line) slot.innerHTML=line;
       } else if(full.app_type==='Attest'&&SIB.node){
         const nf=sibData(await sib(SIB.node,'/tx/'+t.txid));
@@ -1505,7 +1561,7 @@ async function addrPage(v,a){
         if(pid){const pidHex=pidHexOf(pid), prop=await j('/proposal/'+pidHex).catch(()=>null);
           if(prop&&prop.domain==='cairnx:v1'){let rec=null;try{rec=JSON.parse(prop.uri);}catch{ /* not JSON: rec stays null, which describeOfferAttest handles */ }
             const slot=$('#act-'+i);
-            if(slot) slot.innerHTML=describeOfferAttest(full,nf.tx.app,pidHex,rec,VER&&VER[t.txid.toLowerCase()]);
+            if(slot) slot.innerHTML=describeOfferAttest(full,nf.tx.app,pidHex,rec,book.get(t.txid));
           }}
       } else if(full.coinbase){const slot=$('#act-'+i); if(slot) slot.innerHTML=`${kind('CSD')}Block reward`;}
       else if(full.app_type==='Transfer'||full.app_type==='None'){const slot=$('#act-'+i); if(slot) slot.innerHTML=`${kind('CSD')}Transfer`;}
@@ -1513,7 +1569,7 @@ async function addrPage(v,a){
     }catch{ /* a failed read leaves this row's placeholders; the other rows decode on their own */ }
   }
 
-  await appendTxPage(txs,false);
+  await appendTxPage(txs);
 }
 
 // ── .csd name profile page (the name-service centerpiece), front-door only ──
@@ -1530,8 +1586,9 @@ async function namePage(v,label){
     v.appendChild(el(`<div class="panel">${head(nameAvatar(label),'','<div class="muted">Not registered. <a href="https://cairn-substrate.com/names" target="_blank" rel="noopener">Register it on /names</a></div>')}</div>`));
     return;
   }
-  // a 200 that says ok:false is not the resolver's answer for a name (it answers 404): it says nothing either
-  if(r.state!=='ok'||!r.data||typeof r.data!=='object'||r.data.ok===false){
+  // a name record has its owner's address; a 200 without one (ok:false, {} or []) is not the resolver's answer for a
+  // name (it answers 404 for one nobody holds): it says nothing either
+  if(r.state!=='ok'||!r.data||typeof r.data!=='object'||r.data.ok===false||!/^0x[0-9a-f]{40}$/i.test(String(r.data.owner||''))){
     v.appendChild(el(`<div class="panel">${head(nameAvatar(label),' <span class="badge caution">Could not check</span>',`<div class="muted ex-unread">Could not check this name right now, so it is not shown as available. ${AGAIN}</div>`)}</div>`));
     return;
   }
@@ -1567,9 +1624,10 @@ async function namePage(v,label){
   }
   const h=sibData(hist), evs=((h&&Array.isArray(h.events)&&h.events)||[]).slice().reverse();
   if(hist.state==='failed') v.appendChild(el(`<div class="panel"><h2>History</h2>${unreadLine("this name's history")}</div>`));
-  await warmVerdicts(evs.slice(0,40).map((ev)=>ev.txid));
-  if(evs.length) v.appendChild(el(`<div class="panel"><h2>History (${fmtInt(evs.length)})</h2>${verdictLine()}<div class="scroll-x"><table class="stack"><thead><tr><th class="act">Record</th><th>Tx</th><th class="num">Block</th></tr></thead>
-    <tbody>${evs.slice(0,40).map(ev=>`<tr><td class="act">${cxVerdict(kindLabel(ev.kind),VER[String(ev.txid).toLowerCase()])}</td><td>${txidLink(ev.txid)}</td><td class="num">${ev.height?link('/block/'+ev.height,fmtInt(ev.height)):''}</td></tr>`).join('')}</tbody></table></div></div>`));
+  const book=verdictBook();
+  await book.read(evs.slice(0,40).map((ev)=>ev.txid));
+  if(evs.length) v.appendChild(el(`<div class="panel"><h2>History (${fmtInt(evs.length)})</h2>${verdictLine(book)}<div class="scroll-x"><table class="stack"><thead><tr><th class="act">Record</th><th>Tx</th><th class="num">Block</th></tr></thead>
+    <tbody>${evs.slice(0,40).map(ev=>`<tr><td class="act">${cxVerdict(kindLabel(ev.kind,book.get(ev.txid)),book.get(ev.txid))}</td><td>${txidLink(ev.txid)}</td><td class="num">${ev.height?link('/block/'+ev.height,fmtInt(ev.height)):''}</td></tr>`).join('')}</tbody></table></div></div>`));
   paintNames(v);
 }
 // A domain's proposals, newest first: the indexer's newest 100, then 100 more a read (its limit, up to 10,000). The count
@@ -1582,20 +1640,24 @@ async function domainPage(v,d){
   if(!Array.isArray(first)||!first.length){ v.innerHTML=missPanel(d,`This indexer has no proposals in the domain \u201c${esc(d)}\u201d.`); return; }
   const known=Array.isArray(doms)?doms.find((x)=>x&&x.domain===d):null;
   const total=known&&Number.isFinite(Number(known.proposals))?Number(known.proposals):null;
-  await Promise.all([warmCx(), warmVerdicts(first.map((p)=>p.txid))]);
+  // verdicts are CairnX's: only its domain has them, each read also asks again for the rows still unread
+  const cx=d==='cairnx:v1', book=verdictBook();
+  await Promise.all([warmCx(), cx?book.read(first.map((p)=>p.txid)):null]);
   v.innerHTML='';
   v.appendChild(el(`<div class="panel"><h2 class="ex-title">Domain <span class="mono">${esc(d)}</span></h2>
-    <div class="muted" id="domcount"></div>${d==='cairnx:v1'?verdictLine():''}
+    <div class="muted" id="domcount"></div><div id="domnote"></div>
     <div class="scroll-x"><table class="stack"><thead><tr><th>Proposal</th><th class="act">Record</th><th class="opt">Proposer</th><th class="opt num">Fee</th><th class="num">Height</th></tr></thead>
     <tbody id="domrows"></tbody></table></div><div id="dommore"></div></div>`));
-  const shown=new Set();
+  const shown=new Set(), list=[];
   let asked=DOMAIN_PAGE;
-  const row=(p)=>`<tr><td><a class="mono" href="#/proposal/${esc(p.txid)}">${hashHtml(p.txid,10)}</a></td><td class="act">${describeDomainRecord(d,p.uri,VER&&VER[p.txid.toLowerCase()],p.height)||'<span class="dim">-</span>'}</td><td class="opt">${addrLink(p.proposer)}</td><td class="opt num">${fmtCSD(p.fee)}</td><td class="num">${link('/block/'+p.height,fmtInt(p.height))}</td></tr>`;
+  const row=(p)=>`<tr><td><a class="mono" href="#/proposal/${esc(p.txid)}">${hashHtml(p.txid,10)}</a></td><td class="act">${describeDomainRecord(d,p.uri,book.get(p.txid),p.height)||'<span class="dim">-</span>'}</td><td class="opt">${addrLink(p.proposer)}</td><td class="opt num">${fmtCSD(p.fee)}</td><td class="num">${link('/block/'+p.height,fmtInt(p.height))}</td></tr>`;
   const paint=(page)=>{
     const fresh=page.filter((p)=>p&&!shown.has(p.txid));
-    for(const p of fresh) shown.add(p.txid);
+    for(const p of fresh){ shown.add(p.txid); list.push(p); }
     const rows=$('#domrows',v); if(!rows) return;
-    rows.insertAdjacentHTML('beforeend',fresh.map(row).join(''));
+    // every row drawn again: a read may have answered an earlier row's verdict
+    rows.innerHTML=list.map(row).join('');
+    $('#domnote',v).innerHTML=cx?verdictLine(book):'';
     $('#domcount',v).textContent=`${total!=null?`${fmtInt(total)} ${total===1?'proposal':'proposals'}`:`Latest ${fmtInt(shown.size)}`}. Rankings are a derived, recomputable view, not consensus-signed.`;
     const more=page.length>=asked&&asked<DOMAIN_MAX&&(total==null||shown.size<total);
     $('#dommore',v).innerHTML=more?`<button type="button" class="ex-btn" id="domloadmore">Load more (${fmtInt(shown.size)}${total!=null?` of ${fmtInt(total)}`:''})</button>`:'';
@@ -1605,8 +1667,8 @@ async function domainPage(v,d){
       const want=Math.min(DOMAIN_MAX,asked+DOMAIN_PAGE), next=await j(`${path}?limit=${want}`).catch(()=>null);
       if(!Array.isArray(next)){ b.disabled=false; b.textContent='Could not load more. Try again'; return; }
       asked=want;
-      await warmVerdicts(next.filter((p)=>p&&!shown.has(p.txid)).map((p)=>p.txid),true);
-      paint(next); paintNames(rows);
+      if(cx) await book.read(next.filter((p)=>p&&!shown.has(p.txid)).map((p)=>p.txid));
+      paint(next); paintNames($('#domrows',v));
     };
   };
   paint(first);
@@ -1665,7 +1727,13 @@ function showStatus(live,cls,text,title){
 }
 async function refreshStats(){
   let h;
-  try{ h=await j('/health'); }catch{ showStatus(false,'bad','Indexer offline','the indexer did not answer its /health read'); return; }
+  // a 429 is the front door limiting this connection and an answer that is not JSON is no indexer's: neither says the
+  // indexer is down. A 5xx (the front door could not reach it) or no answer at all does.
+  try{ h=await j('/health'); }catch(e){
+    if(e&&e.status===429) showStatus(false,'caution','Too many requests','the front door is limiting reads from this connection; the page asks again in 15 s');
+    else if(e&&(e.status>=500||e.status==null&&e instanceof TypeError)) showStatus(false,'bad','Indexer offline','the indexer did not answer its /health read');
+    else showStatus(false,'caution','Could not check',`the indexer's /health read gave no answer this page can read (${e&&e.message||'no answer'}); asked again in 15 s`);
+    return; }
   const ss=h.seconds_since_tip, lag=Math.max(0,(h.tip_height||0)-(h.indexed_height||0));
   const fresh=!h.stale&&lag<2&&(ss==null||ss<180);
   // A real indexer LAG (indexed_height < node tip, catching up) is distinct from a merely OLD tip (the indexer is AT

@@ -123,8 +123,8 @@ A record names its effect ("Minted", "Finalized name", "Bought") only when the r
 one whose verdict read failed, words it as the request it is ("Mint request for", "Fill request on"), and the page says
 in one line that the verdicts could not be checked.
 When the indexer is behind the node, its newest block is old, or it does not answer, a badge beside the search says
-which. A record the indexer does not hold reads "Nothing found"; a read that fails reads as a failure, with a way to try
-again. The same holds for what the page asks the resolver: a name reads "Not registered" only when the resolver says
+which. A record the indexer does not hold reads "Nothing found"; a read that fails, the front door's rate limit
+included, reads as a failure, with a way to try again. The same holds for what the page asks the resolver: a name reads "Not registered" only when the resolver says
 nobody holds it, and a token "No token with that ticker" only when the resolver has none; when the resolver does not
 answer the page says it could not check, never that a name is free. A search that is no block, transaction, address
 or name opens a category only when this indexer holds one by that name, and otherwise says that nothing matches.
