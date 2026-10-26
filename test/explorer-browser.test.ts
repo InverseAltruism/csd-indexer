@@ -8,7 +8,8 @@
 // passed on, no USD text with the market off, never NaN or a 0 USD; the hashrate window from the module in the tile
 // and on the chart; the request cadence; no chart of a replaced view left alive; the verdict reads and their
 // fallback; an Attest on an offer worded by its verdict; the name page's primary badge from the resolver's pick; the
-// proposal page's content check.
+// proposal page's content check; the indexer's state beside the search; the home's activity ledger; a miss told apart
+// from a failed read; the design direction's colour rule on every view; a new block's entrance.
 // Needs playwright-core (PLAYWRIGHT_CORE or the devDependency) and a Chromium (PLAYWRIGHT_CHROMIUM or the build that
 // playwright-core installs, chromium_headless_shell-1243); without either the file skips by name, and with
 // EXPLORER_BROWSER_REQUIRED=1 (CI) it fails instead. Run: npx tsx --test test/explorer-browser.test.ts
@@ -23,6 +24,8 @@ import type { AddressInfo } from "node:net";
 
 const EXPLORER = fileURLToPath(new URL("../public/explorer.html", import.meta.url));
 const CHART_STUB = fileURLToPath(new URL("./fixtures/chart-stub.js", import.meta.url));
+// /trade's trustLevel stand-in (cairn's /trade/discover.js), as the chart module's
+const TRUST_STUB = fileURLToPath(new URL("./fixtures/trust-stub.js", import.meta.url));
 // Cairn's shell set (/ui/*, /header.js, /footer.js) is served from test/fixtures/ui/, stand-ins with only what the page and
 // these tests read; with S.shell false every one of them answers 404 as the indexer does on a direct hit.
 const UI = (f: string) => fileURLToPath(new URL(`./fixtures/ui/${f}`, import.meta.url));
@@ -34,7 +37,7 @@ const SHELL: Record<string, [string, string]> = {
 
 // playwright-core is loaded untyped, and the page callbacks below run in the browser (this file has no DOM lib):
 // `any` at those two boundaries only.
-declare const document: any, location: any, innerWidth: number, getComputedStyle: any, navigator: any;
+declare const document: any, location: any, innerWidth: number, getComputedStyle: any, navigator: any, window: any, Document: any, Element: any;
 let chromium: any = null, why = "";
 try { chromium = createRequire(import.meta.url)(process.env.PLAYWRIGHT_CORE || "playwright-core").chromium; }
 catch { why = "playwright-core not found (set PLAYWRIGHT_CORE to its path)"; }
@@ -56,7 +59,8 @@ const iso = (s: number) => new Date(s * 1000).toISOString();
 const bhash = (h: number) => "0x" + "0".repeat(12) + createHash("sha256").update(`block ${h}`).digest("hex").slice(0, 52);
 const block = (h: number) => ({ height: h, hash: bhash(h), prev: bhash(h - 1),
   merkle: "0x" + "ab".repeat(32), time: bt(h), bits: 453035574, nonce: 1, version: 1, tx_count: 1, chainwork: String(BigInt(h) * 10n ** 15n), orphaned: 0 });
-const recent = (n: number) => Array.from({ length: n }, (_, i) => block(TIP - i));
+// S.newer: blocks mined above the fixture's tip since the page opened (a poll then finds them)
+const recent = (n: number) => Array.from({ length: n }, (_, i) => block(TIP + S.newer - i));
 const FROM = TIP - 720;
 const SERIES = { window: "1d", from: FROM, to: TIP, points: Array.from({ length: 56 }, (_, k) => {
   const h = FROM + Math.round(((k + 1) * 720) / 56), p = FROM + Math.round((k * 720) / 56);
@@ -68,7 +72,6 @@ const MINERS = { ok: true, window: "1d", from_height: FROM, to_height: TIP, bloc
 const INDEXER: Record<string, unknown> = {
   "/health": { ok: true, version: "0.2.13", backend: "sqlite", indexed_height: TIP, tip_height: TIP, seconds_since_tip: 60, stale: false, final_depth: 6,
     blocks: TIP + 1, txs: 147_000, proposals: 2300, attestations: 350 },
-  "/domains": [{ domain: "cairnx:v1", proposals: 3 }],
   "/analytics/supply": { ok: true, height: TIP, emitted_supply: "609005000000000", max_supply: "10511999988436800", pct_emitted: 5.79, block_reward: "5000000000",
     halving: { era: 0, interval: 1051200, next_height: 1051200, blocks_remaining: 929400, est_seconds_remaining: 111528000, next_reward: "2500000000" } },
   "/analytics/miners": MINERS,
@@ -77,9 +80,11 @@ const INDEXER: Record<string, unknown> = {
   "/domain/cairnx:v1/proposals": [],
 };
 const VWAP = 0.0594, EMITTED = 6_090_050, MAX = 105_119_999.884368;
+// the last price the market body carries; a test moves it to see a figure change
+const PRICE = { last: 0.0455 };
 function csdBody(): unknown {
   const age = S.market === "stale" ? 40 * 60 : 60;
-  const base = { ok: true, pair: "CSD/USD", quote: "USDT", price: { last: 0.0455, at: iso(NOW - age), source: "safetrade" }, range24h: { low: 0.023, high: 0.0899 },
+  const base = { ok: true, pair: "CSD/USD", quote: "USDT", price: { last: PRICE.last, at: iso(NOW - age), source: "safetrade" }, range24h: { low: 0.023, high: 0.0899 },
     change24h: null, stale: S.market === "stale", ageSecs: age, fallback: false, disagree: false, dropped: [] };
   const full = { ...base, vwap24h: VWAP, volume24h: { usd: 25620.23, csd: 431012.5 }, supply: { emitted: EMITTED, max: MAX, height: TIP, at: iso(NOW - 30) },
     marketCap: { usd: EMITTED * VWAP, basis: "vwap24h" }, fdv: { usd: MAX * VWAP, basis: "vwap24h" } };
@@ -92,7 +97,22 @@ const day0 = NOW - (NOW % 86_400);
 const csdSeries = (q: URLSearchParams) => ({ ok: true, pair: "csd-usd", period: q.get("period"), range: q.get("range"), source: "coinpaprika",
   points: Array.from({ length: 30 }, (_, i) => { const c = 0.045 + 0.01 * Math.sin(i / 4); return [day0 - (29 - i) * 86_400, c, c * 1.04, c * 0.96, c, 9000]; }) });
 
-const S = { market: "fresh" as "fresh" | "stale" | "off", thin: false, partial: false, series: true, records: "on" as "on" | "404" | "400" | "500", gates: true, shell: true };
+const S = { market: "fresh" as "fresh" | "stale" | "off", thin: false, partial: false, series: true, records: "on" as "on" | "404" | "400" | "500", gates: true, shell: true,
+  // the indexer's /health as live, at an old tip, behind the node, or not answering; a path prefix the indexer fails with a 500
+  health: "live" as "live" | "old" | "behind" | "down" | "limited" | "html", fail: "" as string | string[], newer: 0,
+  // the status a failing prefix answers with: 500, or 429 as cairn's explorerLimiter answers (its body, a Retry-After)
+  failCode: 500,
+  // txids whose verdict read the resolver fails (and its log with them)
+  failIds: new Set<string>(),
+  // the resolver behind the front door: answering, not answering (the front door's 502), or before its first scan (503)
+  cx: "up" as "up" | "502" | "503",
+  // a path prefix the resolver alone fails with a 500 (the others answer)
+  cxFail: "",
+  // /domain/:d/proposals honouring its limit (newest 100 by default) as the indexer does; cairn's avatar module and
+  // /trade's verified-token list present or absent
+  paged: false, avatar: true, trust: true };
+// /trade/verified-tokens.json as cairn serves it: the tokens Cairn lists, bound to their deploys, and the look-alike tickers
+const TRUST_LIST: { verified: Record<string, { name?: string; deployId?: string }>; impersonated: string[] } = { verified: {}, impersonated: ["BTC"] };
 // CairnX proposals in the shapes of /domain/:d/proposals, and the resolver's verdicts for them: one refused mint
 const cxProp = (n: number, uri: object) => ({ txid: "0x" + n.toString(16).padStart(64, "0"), height: TIP - n, proposer: MINER, fee: 25000000, domain: "cairnx:v1", uri: JSON.stringify(uri) });
 const PROPS = Array.from({ length: 130 }, (_, i) => cxProp(i + 1, { v: 1, t: "mint", ticker: "CAIRN", amount: "100" }));
@@ -134,6 +154,10 @@ const attTx = (a: Attest) => ({ txid: a.txid, height: a.height, pos: 3, app_type
   outputs: [{ txid: a.txid, vout: 0, addr: SELLER, value: attPaid(a) }, { txid: a.txid, vout: 1, addr: BUYER, value: 1368000000 }] });
 const ATT_BY_ID = new Map(Object.values(ATTESTS).map((a) => [a.txid, a]));
 for (const a of Object.values(ATTESTS)) if (a.verdict) VERDICTS[a.txid] = { ...a.verdict, note: a.verdict.note ?? "", height: a.height };
+// The resolver's primary names (/cairnx/primaries), for the address labels; a test that needs one sets it.
+const PRIMARIES: Record<string, string> = {};
+// the domain's total in /domains while S.paged (the indexer's count, above the 100 a read shows)
+let PAGED_TOTAL: number | null = null;
 // Two names of one owner that both point at the owner: the resolver's primary pick (/cairnx/primary) is "solo".
 const NAMES: Record<string, unknown> = {
   twin: { ok: true, name: "twin", owner: MINER, addr: MINER, height: TIP - 30, effectiveHeight: TIP - 30, lease: {}, offer: { give: { name: "twin" }, want: { ticker: "QTOK", amount: "12345" } } },
@@ -174,7 +198,10 @@ const json = (res: ServerResponse, status: number, body: unknown, extra: Record<
   res.writeHead(status, { "content-type": "application/json", ...extra }); res.end(JSON.stringify(body));
 };
 const server = createServer(async (req, res) => {
-  const url = new URL(req.url ?? "/", "http://x"), p = decodeURIComponent(url.pathname);
+  const url = new URL(req.url ?? "/", "http://x");
+  let p: string;
+  // a malformed escape: the indexer's express answers 400
+  try { p = decodeURIComponent(url.pathname); } catch { return json(res, 400, { error: "bad request" }); }
   REQS.push(p);
   if (p === "/explorer" || p === "/") {
     // as cairn src/server.ts serves /explorer: the first <script> stamped with a per-response nonce, and this CSP
@@ -191,7 +218,21 @@ const server = createServer(async (req, res) => {
   const api = p.startsWith("/explorer/api/") ? p.slice(13) : null;
   if (api !== null || ["/health", "/domains", "/blocks/recent"].includes(p) || p.startsWith("/analytics/") || p.startsWith("/domain/") || p.startsWith("/proposal/")) {
     const k = api ?? p;
+    if ([S.fail].flat().some((f) => f && k.startsWith(f))) return S.failCode === 429
+      ? json(res, 429, { ok: false, error: "rate limit exceeded" }, { "retry-after": "60" }) : json(res, S.failCode, { error: "internal" });
+    if (k === "/health" && S.health !== "live") {
+      if (S.health === "down") return json(res, 503, { error: "unavailable" });
+      if (S.health === "limited") return json(res, 429, { ok: false, error: "rate limit exceeded" }, { "retry-after": "60" });
+      if (S.health === "html") { res.writeHead(200, { "content-type": "text/html" }); return res.end("<!doctype html><title>Just a moment...</title>"); }
+      const h = INDEXER["/health"] as Record<string, unknown>;
+      return json(res, 200, S.health === "old" ? { ...h, seconds_since_tip: 1260, stale: true } : { ...h, tip_height: TIP + 7 });
+    }
     if (k === "/blocks/recent") return json(res, 200, recent(Number(url.searchParams.get("limit") || 12)));
+    // the indexer's domains are those its proposals name, with their counts
+    if (k === "/domains") { const n = (INDEXER["/domain/cairnx:v1/proposals"] as unknown[]).length; return json(res, 200, n ? [{ domain: "cairnx:v1", proposals: S.paged ? PAGED_TOTAL ?? n : n }] : []); }
+    if (S.paged && k.startsWith("/domain/") && k.endsWith("/proposals") && k in INDEXER) return json(res, 200, (INDEXER[k] as unknown[]).slice(0, Math.min(10_000, Number(url.searchParams.get("limit")) || 100)));
+    // a domain the indexer has no proposals in: an empty list, as the indexer answers
+    if (k.startsWith("/domain/") && k.endsWith("/proposals") && !(k in INDEXER)) return json(res, 200, []);
     if (k === "/analytics/series" && !S.series) return json(res, 404, { error: "not found" });
     const addr = ADDRESS(k, url.searchParams);
     if (addr !== undefined) return json(res, 200, addr);
@@ -209,11 +250,17 @@ const server = createServer(async (req, res) => {
   }
   if (p.startsWith("/trade/api/cairnx/")) {
     const k = p.slice(17);
+    if (S.cx === "502") return json(res, 502, { ok: false, error: "cairnx backend unavailable" });
+    if (S.cx === "503") return json(res, 503, { ok: false, error: "not ready: no validated scan since this resolver started; retry shortly" });
+    if (S.cxFail && k.startsWith(S.cxFail)) return json(res, 500, { ok: false, error: "internal" });
+    if (k === `/address/${WALLET}`) return json(res, 200, { balances: { QTOK: { available: "12345", locked: "100" } }, names: ["twin"] });
     if (k.startsWith("/record/")) { const v = VERDICTS[k.slice(8)]; return v ? json(res, 200, { txid: k.slice(8), ...v, tipHeight: TIP }) : json(res, 404, { ok: false, error: "no resolved record for this txid" }); }
     if (k === `/primary/${MINER}`) return json(res, 200, { ok: true, address: MINER, name: "solo" });
     if (k.startsWith("/name/") && k.slice(6) in NAMES) return json(res, 200, NAMES[k.slice(6)]);
     if (k === "/name-history/twin") return json(res, 200, { ok: true, name: "twin", events: [ATTESTS.fill, ATTESTS.refusedFill].map((a) => ({ txid: a.txid, height: a.height, pos: 3, kind: "fill" })) });
     if (k === "/tokens") return json(res, 200, [{ ticker: "QTOK", name: "Quarter", decimals: 2, supply: "100000000", minted: "100000", mint: "issuer" }]);
+    if (k === "/records" && (url.searchParams.get("ids") ?? "").split(",").some((id) => S.failIds.has(id))) return json(res, 500, { ok: false, error: "resolver down" });
+    if (k === "/log" && S.failIds.size) return json(res, 500, { ok: false, error: "resolver down" });
     if (k === "/records") {
       if (S.records === "404") return json(res, 404, { ok: false, error: "not a cairnx read endpoint" });
       if (S.records === "400") return json(res, 400, { ok: false, error: "at most 100 txids per request, got 130" });
@@ -225,10 +272,17 @@ const server = createServer(async (req, res) => {
     if (k === "/health") return S.gates ? json(res, 200, { ok: true, gates: { V25: V25_AT } }) : json(res, 404, { ok: false, error: "not found" });
     if (k === "/token/ZED") return json(res, 200, { ticker: "ZED", name: "Zed", decimals: 0, supply: "1000", minted: "10", mint: "issuer", height: TIP - 5,
       deployer: MINER, deployId: "0x" + "de".repeat(32), tmeta: "0x" + "4d".repeat(32), holders: {} });
+    if (k.startsWith("/token/")) return json(res, 404, { ok: false, error: "unknown ticker" });
+    // a 200 that carries no name record: not the resolver's answer for a name
+    if (k === "/name/empty") return json(res, 200, {});
+    if (k === "/name/list") return json(res, 200, []);
     if (k === "/name/onsale") return json(res, 200, { ok: true, owner: MINER, height: TIP - 9, effectiveHeight: TIP - 9, lease: {}, offer: { give: { name: "onsale" }, want: null } });
+    // the resolver's answer for a name nobody holds
+    if (k.startsWith("/name/")) return json(res, 404, { ok: false, error: "unregistered name", name: k.slice(6) });
     if (k === "/log" && S.records === "500") return json(res, 500, { ok: false, error: "resolver down" });
     if (k === "/log") return json(res, 200, Object.entries(VERDICTS).map(([id, v]) => ({ id, ok: v.applied, note: v.note, height: v.height })));
-    return json(res, 200, k === "/primaries" ? { ok: true, primaries: {} } : []);
+    if (k === "/primaries") { const want = (url.searchParams.get("addrs") ?? "").split(","); return json(res, 200, { ok: true, primaries: Object.fromEntries(want.filter((a) => a in PRIMARIES).map((a) => [a, PRIMARIES[a]])) }); }
+    return json(res, 200, []);
   }
   if (p === "/api/health") return json(res, 200, { ok: true, tipHeight: TIP });
   if (p.startsWith("/content/")) {
@@ -242,6 +296,11 @@ const server = createServer(async (req, res) => {
     res.writeHead(200, { "content-type": "application/json; charset=utf-8", ...(odd === "noheader" ? {} : { "x-csd-payload-hash": h }) });
     return res.end(body);
   }
+  if (p === "/ui/avatar.js" || p === "/trade/discover.js") {
+    if (p === "/ui/avatar.js" && (!S.avatar || !S.shell)) { res.writeHead(404, { "content-type": "text/html" }); return res.end("<pre>Cannot GET</pre>"); }
+    res.writeHead(200, { "content-type": "text/javascript" }); return res.end(await readFile(p === "/ui/avatar.js" ? UI("avatar.js") : TRUST_STUB));
+  }
+  if (p === "/trade/verified-tokens.json") return S.trust ? json(res, 200, { note: "display convenience", ...TRUST_LIST }) : json(res, 404, { ok: false, error: "not found" });
   if (p === "/charts/chart.js") {
     res.writeHead(200, { "content-type": "text/javascript" }); return res.end(await readFile(CHART_STUB));
   }
@@ -265,9 +324,11 @@ async function until(page: any, ready: () => boolean, ms = 15_000): Promise<void
   const end = Date.now() + ms;
   while (!(await page.evaluate(ready))) { if (Date.now() > end) throw new Error(`timed out waiting for ${ready.toString().slice(0, 120)}`); await sleep(100); }
 }
-async function open(path: string, width: number, ready: () => boolean, { clock = false, response = "", scheme = "dark", locale = "en-US", at = 0 } = {}): Promise<View> {
-  const ctx = await browser.newContext({ viewport: { width, height: width < 500 ? 844 : 900 }, isMobile: width < 500, hasTouch: width < 500, colorScheme: scheme, locale, serviceWorkers: "block" });
+async function open(path: string, width: number, ready: () => boolean, { clock = false, response = "", scheme = "dark", locale = "en-US", at = 0, reduced = false, init = null as null | (() => void) } = {}): Promise<View> {
+  const ctx = await browser.newContext({ viewport: { width, height: width < 500 ? 844 : 900 }, isMobile: width < 500, hasTouch: width < 500, colorScheme: scheme, locale, serviceWorkers: "block",
+    reducedMotion: reduced ? "reduce" : "no-preference" });
   await ctx.addInitScript(() => { try { localStorage.setItem("cairn:terms:v4", "2026-10-12T00:00:00.000Z"); } catch { /* no storage */ } });
+  if (init) await ctx.addInitScript(init);
   const page = await ctx.newPage();
   if (clock || at) await page.clock.install(at ? { time: at } : undefined);
   const errors: string[] = [], failed: string[] = [], asked: string[] = [];
@@ -306,8 +367,8 @@ for (const market of ["fresh", "stale", "off"] as const) for (const width of [39
       assert.deepEqual(v.failed, market === "off" ? ["503 /api/market/csd"] : []);
       assert.equal(v.overflow, 0, "horizontal overflow");
       assert.equal(await v.page.textContent("#pu-hr .n"), "3.15 TH/s", "the indexer's figure over the window");
-      assert.equal(await v.page.textContent("#pu-hr .l"), "hashrate · series of 56 points", "the module's window text for the 1d series, in the tile");
-      assert.equal(await v.page.textContent(".panel:has(#hrchart) .pill"), "series of 56 points", "the same window on the chart");
+      assert.equal(await v.page.textContent("#pu-hr .l"), "Hashrate · series of 56 points", "the module's window text for the 1d series, in the tile");
+      assert.equal(await v.page.textContent(".panel:has(#hrchart) .h-side"), "series of 56 points", "the same window on the chart");
       assert.equal(await v.page.getAttribute("#hrchart canvas", "data-points"), "56", "the series' 56 points handed to the chart");
       assert.equal(await v.page.evaluate(() => (globalThis as any).__chartStubLive), market === "off" ? 3 : 4, "one live mount per chart host");
       // the library lays its pane out in the first row of a table, whose cells this page's own td rules once capped
@@ -370,7 +431,7 @@ test("the indexer without /analytics/series (404): the tile names the blocks, th
   try {
     assert.deepEqual(v.errors, []);
     assert.deepEqual(v.failed.sort(), ["404 /explorer/api/analytics/series", "503 /api/market/csd"]);
-    assert.equal(await v.page.textContent("#pu-hr .l"), "hashrate · blocks 121080 to 121800", "the module's window text from the miners read");
+    assert.equal(await v.page.textContent("#pu-hr .l"), "Hashrate · blocks 121080 to 121800", "the module's window text from the miners read");
     assert.equal(await v.page.textContent("#hrchart .cc-empty"), "no hashrate series from this indexer");
   } finally { await v.close(); S.series = true; }
 });
@@ -386,7 +447,7 @@ test("standalone (the page at /): no market read, no chart module, the figures w
     assert.equal(await v.page.locator("#hrchart").count(), 0, "no chart panels standalone");
     assert.equal(await v.page.textContent("#pu-hr .n"), "3.15 TH/s");
     // the window text is the chart module's, which a standalone page has not: the label is bare, the title names the blocks
-    assert.equal(await v.page.textContent("#pu-hr .l"), "hashrate");
+    assert.equal(await v.page.textContent("#pu-hr .l"), "Hashrate");
     assert.match(await v.page.getAttribute("#pu-hr", "title"), /over blocks 121,080 to 121,800, from the indexer/);
   } finally { await v.close(); }
 });
@@ -474,12 +535,12 @@ for (const records of ["on", "404", "400"] as const) {
     INDEXER["/domain/cairnx:v1/proposals"] = PROPS;
     RECORD_READS.length = 0;
     try {
-      const v = await open("/explorer#/domain/cairnx%3Av1", 1280, () => !!document.querySelector(".cx-noeffect") || /proposal\(s\)/.test(document.body.innerText));
+      const v = await open("/explorer#/domain/cairnx%3Av1", 1280, () => !!document.querySelector(".cx-noeffect") || /\d proposals?\./.test(document.body.innerText));
       try {
         assert.deepEqual(v.errors, []);
         const row: string = await v.page.evaluate((id: string) => [...document.querySelectorAll("tr")].find((r: any) => r.innerHTML.includes(id))?.textContent ?? "", REFUSED);
-        assert.match(row, /no effect/);
-        assert.match(row, /no effect: mint past supply/);
+        assert.match(row, /No effect/);
+        assert.match(row, /No effect: mint past supply/);
         const logReads = v.asked.filter((x) => x === "/trade/api/cairnx/log").length;
         if (records === "on") {
           assert.deepEqual(RECORD_READS.sort((a, b) => b - a), [100, 30]);
@@ -520,7 +581,7 @@ test("address page: each page of txs asks /cairnx/records for its own Propose tx
     await until(v.page, () => !!document.querySelector("#act-25 .what") && !!document.querySelector("#act-49 .what"));
     assert.deepEqual(RECORD_READS, [25, 25], "the second page's 25, not the first again");
     assert.equal(v.asked.filter((x) => x === "/trade/api/cairnx/log").length, 0);
-    assert.match(await v.page.textContent("#act-25"), /no effect.*mint past supply/s);
+    assert.match(await v.page.textContent("#act-25"), /No effect: mint past supply/);
     assert.equal(await v.page.locator(".cx-noeffect").count(), 1);
     assert.deepEqual(v.errors, []);
   } finally { await v.close(); }
@@ -532,9 +593,9 @@ test("address page: each page of txs asks /cairnx/records for its own Propose tx
 const sh = (h: string) => h.slice(0, 10) + "\u2026" + h.slice(-6);
 const RESERVED_NOTE = "(open offer, claimed; the purchase completes after a short reorg-safe wait)";
 const ATTEST_LINES: Record<keyof typeof ATTESTS, string> = {
-  refusedFill: `Market Fill request on CAIRN: paid 1.255 CSD, offer ${sh(OFFER.txid)} \u2715 no effect: offer filled`,
+  refusedFill: `Market Fill request on CAIRN: paid 1.255 CSD, offer ${sh(OFFER.txid)} No effect: offer filled`,
   fill: `Market Bought CAIRN for 1.255 CSD, offer ${sh(OFFER.txid)}`,
-  refusedCancel: `Market Cancel request on an offer: ${sh(OFFER.txid)} \u2715 no effect: offer cancelled`,
+  refusedCancel: `Market Cancel request on an offer: ${sh(OFFER.txid)} No effect: offer cancelled`,
   cancel: `Market Cancelled an offer: ${sh(OFFER.txid)}`,
   claim: `Market Reserved CAIRN ${RESERVED_NOTE}, offer ${sh(OFFER.txid)}`,
   swap: `Market Token swap fill: took the offer ${sh(SWAP.txid)} (100 base units CAIRN for 123.45 QTOK, paid in tokens; no CSD moves)`,
@@ -585,13 +646,14 @@ for (const width of [390, 1280]) {
       assert.equal(await twin.page.locator(".namehdr .badge").count(), 0, "a self-pointing name the resolver did not pick: no badge");
       assert.equal(await twin.page.textContent(".panel:has(h2:text-is('For sale')) .action"), "Market Listed for 123.45 QTOK \u00b7 open offer");
       const hist: string[] = await twin.page.evaluate(() => [...document.querySelectorAll(".panel:has(h2) tbody tr td:first-child")].map((c: any) => c.textContent));
-      assert.deepEqual(hist, ["Market bought / sold (fill) \u2715 no effect: offer filled", "Market bought / sold (fill)"]);
+      // the refused fill reads as its request, struck with its reason; the applied one by its effect
+      assert.deepEqual(hist, ["Market Fill request No effect: offer filled", "Market Bought / sold (fill)"]);
       assert.equal(twin.overflow, 0, "horizontal overflow");
     } finally { await twin.close(); }
     const solo = await open("/explorer#/name/solo", width, () => /resolves to/i.test(document.body.innerText));
     try {
       assert.deepEqual(solo.errors, []);
-      assert.equal(await solo.page.textContent(".namehdr .badge"), "\u2605 primary", "the resolver's pick carries the badge");
+      assert.equal(await solo.page.textContent(".namehdr .badge"), "Primary", "the resolver's pick carries the badge");
       assert.equal(solo.overflow, 0, "horizontal overflow");
     } finally { await solo.close(); }
   });
@@ -600,24 +662,24 @@ for (const width of [390, 1280]) {
 // The proposal page's content check reads cairn's /content (same origin), hashes the bytes as received and calls
 // them verified only when they hash to the on-chain payload hash.
 const CONTENT_CASES = [
-  ["good", "/explorer", "\u2713 content integrity verified", "ok"],
-  ["binary", "/explorer", "\u2713 content integrity verified", "ok"],
-  ["tampered", "/explorer", "\u2717 content MISMATCH", "bad"],
-  ["absent", "/explorer", "content not held by this front door", "pend"],
-  ["edgeHtml", "/explorer", "content unavailable", "pend"],
-  ["otherHash", "/explorer", "content unavailable", "pend"],
-  ["noHeader", "/explorer", "\u2713 content integrity verified", "ok"],
-  ["upperCase", "/explorer", "\u2713 content integrity verified", "ok"],
-  ["e502", "/explorer", "content unavailable", "pend"],
-  ["dropped", "/explorer", "content unavailable", "pend"],
-  ["noHash", "/explorer", "no content hash", "pend"],
-  ["good", "/", "content check needs the cairn front door", "pend"],
+  ["good", "/explorer", "Content integrity verified", "ok"],
+  ["binary", "/explorer", "Content integrity verified", "ok"],
+  ["tampered", "/explorer", "Content mismatch", "bad"],
+  ["absent", "/explorer", "Content not held by this front door", "pend"],
+  ["edgeHtml", "/explorer", "Content unavailable", "pend"],
+  ["otherHash", "/explorer", "Content unavailable", "pend"],
+  ["noHeader", "/explorer", "Content integrity verified", "ok"],
+  ["upperCase", "/explorer", "Content integrity verified", "ok"],
+  ["e502", "/explorer", "Content unavailable", "pend"],
+  ["dropped", "/explorer", "Content unavailable", "pend"],
+  ["noHash", "/explorer", "No content hash", "pend"],
+  ["good", "/", "Content check needs the cairn front door", "pend"],
 ] as const;
 for (const [which, at, text, cls] of CONTENT_CASES) {
   test(`proposal page, ${which} content${at === "/" ? ", standalone" : ""}: "${text}"`, { skip: why || false }, async () => {
     Object.assign(S, { market: "off", series: true });
     const prop = CONTENT_PROPS[which];
-    const v = await open(`${at}#/proposal/${prop.txid}`, 1280, () => !!document.querySelector("#cibadge") && document.querySelector("#cibadge").textContent !== "checking content\u2026");
+    const v = await open(`${at}#/proposal/${prop.txid}`, 1280, () => !!document.querySelector("#cibadge") && document.querySelector("#cibadge").textContent !== "Checking content\u2026");
     try {
       assert.deepEqual(v.errors, []);
       assert.equal(await v.page.textContent("#cibadge"), text);
@@ -639,7 +701,7 @@ for (const gates of [true, false]) {
     ];
     applied(...INDEXER["/domain/cairnx:v1/proposals"] as any[]);
     try {
-      const v = await open("/explorer#/domain/cairnx%3Av1", 1280, () => /proposal\(s\)/.test(document.body.innerText));
+      const v = await open("/explorer#/domain/cairnx%3Av1", 1280, () => /\d proposals?\./.test(document.body.innerText));
       try {
         assert.deepEqual(v.errors, []);
         const acts: string[] = await v.page.evaluate(() => [...document.querySelectorAll("td.act")].map((c: any) => c.textContent));
@@ -695,7 +757,7 @@ test("domain page: record lines separate their parts with a colon or comma, neve
   ];
   applied(...INDEXER["/domain/cairnx:v1/proposals"] as any[]);
   try {
-    const v = await open("/explorer#/domain/cairnx%3Av1", 1280, () => /proposal\(s\)/.test(document.body.innerText));
+    const v = await open("/explorer#/domain/cairnx%3Av1", 1280, () => /\d proposals?\./.test(document.body.innerText));
     try {
       assert.deepEqual(v.errors, []);
       const acts: string[] = await v.page.evaluate(() => [...document.querySelectorAll("td.act")].map((c: any) => c.textContent));
@@ -734,7 +796,7 @@ test("domain page: a Propose reads as a request unless the resolver applied it",
         struck: await v.page.locator(".cx-void").count() };
     } finally { await v.close(); }
   };
-  const loaded = () => /proposal\(s\)/.test(document.body.innerText);
+  const loaded = () => /\d proposals?\./.test(document.body.innerText);
   INDEXER["/domain/cairnx:v1/proposals"] = props;
   try {
     Object.assign(S, { market: "off", series: true, gates: true, records: "on" });
@@ -756,10 +818,34 @@ test("domain page: a Propose reads as a request unless the resolver applied it",
     // one of them refused: struck, with the request wording
     VERDICTS[props[0]!.txid] = { kind: "mint", applied: false, note: "mint past supply", height: props[0]!.height };
     const refused = await read("/explorer#/domain/cairnx%3Av1", loaded);
-    assert.ok(refused.acts[0]!.includes("Mint request for ZED") && /no effect.*mint past supply/s.test(refused.acts[0]!), refused.acts[0]);
+    assert.ok(refused.acts[0]!.includes("Mint request for ZED") && /No effect: mint past supply/.test(refused.acts[0]!), refused.acts[0]);
     assert.deepEqual(refused.acts.slice(1), done.acts.slice(1));
     assert.equal(refused.struck, 1);
   } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; S.records = "on"; for (const p of props) delete VERDICTS[p.txid]; }
+});
+
+// The name page's history and a domain's proposals are ledgers like the address page's: on a phone each row stacks, the
+// transaction (and its block) on one line and the record under them at full width, instead of a record squeezed between
+// two columns; on a desktop each row is one line. Each transaction or proposal id dims its 0x as every hash does.
+test("name history and a domain's proposals: one line per row at 1280 px, the record under its transaction at 390 px; ids with their 0x dimmed", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, records: "on" });
+  INDEXER["/domain/cairnx:v1/proposals"] = PROPS.slice(0, 3);
+  const stacked = (page: any) => page.evaluate(() => [...document.querySelectorAll("table.stack tbody tr")].map((r: any) => {
+    const rec = r.querySelector("td.act").getBoundingClientRect(), id = r.querySelector("td:not(.act) a.mono"), tx = id.getBoundingClientRect();
+    return [rec.top >= tx.bottom - 1, /^0x0*$/.test(id.querySelector(".lz")?.textContent ?? "")]; }));
+  try {
+    for (const width of [1280, 390]) {
+      for (const [path, ready, rows] of [["/explorer#/name/twin", () => /history \(/i.test(document.body.innerText), 2],
+        ["/explorer#/domain/cairnx%3Av1", () => /\d proposals?\./.test(document.body.innerText), 3]] as const) {
+        const v = await open(path, width, ready);
+        try {
+          assert.deepEqual(v.errors, []);
+          assert.equal(v.overflow, 0, "horizontal overflow");
+          assert.deepEqual(await stacked(v.page), Array(rows).fill([width < 720, true]), `${path} at ${width} px`);
+        } finally { await v.close(); }
+      }
+    }
+  } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; }
 });
 
 test("token page: the metadata hash is described as what it is, with no claim about a content swarm", { skip: why || false }, async () => {
@@ -780,7 +866,9 @@ const look = (page: any) => page.evaluate(() => ({
   bg: getComputedStyle(document.body).backgroundColor, ink: getComputedStyle(document.body).color,
   sawTheme: document.querySelector("#site-header")?.dataset.sawTheme ?? null,
   brand: document.querySelector("#site-header .ex-brand") ? document.querySelector("#site-header .ex-brand").getBoundingClientRect().height > 0 : null,
-  foot: document.querySelector("#site-footer .ex-foot")?.getBoundingClientRect().height ?? 0,
+  // the page's trust statement, shown on the page itself (not folded into a footer)
+  trust: (() => { const n = document.querySelector("#trust-note"); return n && !n.closest("footer") ? Math.round(n.getBoundingClientRect().height) : 0; })(),
+  note: document.querySelector("#site-footer")?.getAttribute("data-note") ?? null,
 }));
 for (const scheme of ["light", "dark"] as const) {
   test(`through the front door, ${scheme}: theme-init.js runs before every style sheet, cairn's tokens win over the fallback, theme.js loads before header.js`, { skip: why || false }, async () => {
@@ -790,13 +878,14 @@ for (const scheme of ["light", "dark"] as const) {
       assert.deepEqual(v.errors, []);
       assert.deepEqual(v.failed, ["503 /api/market/csd"]);
       const l = await look(v.page);
+      assert.ok(l.trust > 0, "the trust statement on the page");
       assert.deepEqual(l, { theme: scheme, initSheets: "0", bg: scheme === "dark" ? "rgb(16, 16, 20)" : "rgb(250, 250, 240)",
-        ink: scheme === "dark" ? "rgb(238, 238, 238)" : "rgb(17, 17, 17)", sawTheme: "true", brand: null, foot: l.foot });
+        ink: scheme === "dark" ? "rgb(238, 238, 238)" : "rgb(17, 17, 17)", sawTheme: "true", brand: null, trust: l.trust, note: null });
     } finally { await v.close(); }
   });
 }
 
-test("a direct indexer hit, cairn's files absent: the page renders on its fallback tokens with its own brand line and footer", { skip: why || false }, async () => {
+test("a direct indexer hit, cairn's files absent: the page renders on its fallback tokens with its own brand line and its trust statement", { skip: why || false }, async () => {
   Object.assign(S, { market: "fresh", series: true, shell: false });
   try {
     for (const width of [390, 1280]) {
@@ -811,8 +900,11 @@ test("a direct indexer hit, cairn's files absent: the page renders on its fallba
         assert.equal(l.bg, "rgb(244, 244, 241)", "the fallback ground");
         assert.equal(l.ink, "rgb(12, 12, 11)", "the fallback ink");
         assert.equal(l.brand, true, "the page's own brand line shown");
-        assert.ok(l.foot > 0, "the standalone disclaimer");
+        assert.ok(l.trust > 0, "the trust statement on the page");
+        assert.equal(l.note, null, "said once: no footer copy of it");
         assert.equal(await v.page.textContent("#pu-hr .n"), "3.15 TH/s");
+        const dot = await v.page.evaluate(() => { const r = document.querySelector("#livepill .ui-dot").getBoundingClientRect(); return [Math.round(r.width), Math.round(r.height)]; });
+        assert.deepEqual(dot, [7, 7], "the live marker's dot, drawn by the page's own sheet");
         assert.equal(v.overflow, 0, "horizontal overflow");
       } finally { await v.close(); }
     }
@@ -846,11 +938,11 @@ for (const [txid, h, merkle] of [[PROVEN, TIP - 3, ROOT], [UNPROVEN, TIP - 4, "0
     [`/tx/${txid}/status`]: { confirmed: true, block_height: h, confirmations: 4, final: false },
     [`/tx/${txid}/merkle-proof`]: { block_height: h, pos: 2, merkle: BRANCH, merkle_root: merkle }, [`/block-height/${h}`]: b.hash, [`/block/${b.hash}`]: b });
 }
-for (const [which, txid, badge, cls] of [["matching", PROVEN, "\u2713 consistent with indexer header (not PoW-verified)", "badge ok"],
-  ["another", UNPROVEN, "\u2717 inclusion FAILED", "badge bad"]] as const) {
+for (const [which, txid, badge, cls] of [["matching", PROVEN, "Consistent with indexer header (not PoW-verified)", "badge ok"],
+  ["another", UNPROVEN, "Inclusion failed", "badge bad"]] as const) {
   test(`transaction page, a branch folding to ${which} root: "${badge}"; each branch hash shown from its start`, { skip: why || false }, async () => {
     Object.assign(S, { market: "off", series: true, shell: true });
-    const v = await open(`/explorer#/tx/${txid}`, 1280, () => !/verifying/.test(document.querySelector("#inclbadge")?.textContent ?? "verifying"));
+    const v = await open(`/explorer#/tx/${txid}`, 1280, () => !/Verifying/.test(document.querySelector("#inclbadge")?.textContent ?? "Verifying"));
     try {
       assert.deepEqual(v.errors, []);
       assert.equal(await v.page.textContent("#inclbadge"), badge);
@@ -936,15 +1028,35 @@ test("address page: the address grouped in fours on screen, copied whole by sele
   } finally { await v.close(); }
 });
 
-// The live markers are dots drawn by CSS beside their words: inline in running text they need a box of their own.
-test("the live dot beside \"live\" and the status line's dot have a size", { skip: why || false }, async () => {
-  Object.assign(S, { market: "off", series: true, shell: true });
-  const v = await open("/explorer", 1280, () => !!document.querySelector("#stats .ui-dot") && !!document.querySelector("#livepill .ui-dot"));
-  try {
-    const sizes = await v.page.evaluate(() => ["#stats .ui-dot", "#livepill .ui-dot"].map((s) => { const r = document.querySelector(s).getBoundingClientRect(); return [Math.round(r.width), Math.round(r.height)]; }));
-    for (const [w, h] of sizes) assert.ok(w > 0 && h > 0, `a dot of ${w} by ${h}`);
-  } finally { await v.close(); }
+// The indexer's state, read from /health: live, the latest-blocks heading says so and the search has its row to itself;
+// otherwise one badge beside the search says what is wrong and the heading's "Live" is gone, so the two never disagree.
+// The dots are drawn by CSS beside their words: inline they need a box of their own.
+const state = (page: any) => page.evaluate(() => {
+  const s = document.querySelector("#stats"), lp = document.querySelector("#livepill"), b = s.querySelector(".badge");
+  const [sd, ld] = [s, lp].map((e: any) => e.querySelector(".ui-dot")?.getBoundingClientRect()).map((r: any) => r ? r.width > 0 && r.height > 0 : null);
+  return { stats: s.hidden ? null : { text: s.textContent, cls: b?.className ?? "", dot: sd }, live: lp.hidden ? null : { text: lp.textContent, dot: ld } };
 });
+// The front door's rate limit (a 429) and an answer that is not JSON say nothing about the indexer: neither is "offline".
+for (const [health, stats] of [["live", null], ["old", { text: "Last block 21 min ago", cls: "badge caution", dot: true }],
+  ["behind", { text: "7 blocks behind", cls: "badge caution", dot: true }], ["down", { text: "Indexer offline", cls: "badge bad", dot: true }],
+  ["limited", { text: "Too many requests", cls: "badge caution", dot: true }], ["html", { text: "Could not check", cls: "badge caution", dot: true }]] as const) {
+  test(`indexer ${health}: ${stats ? `"${stats.text}" beside the search, no "Live" in the latest-blocks heading` : "\"Live\" in the latest-blocks heading, nothing beside the search"}`, { skip: why || false }, async () => {
+    Object.assign(S, { market: "off", series: true, shell: true, health: "live" });
+    // the home view renders on a live /health; the state is then read again on the page's 15 s timer
+    const v = await open("/explorer", 1280, () => !!document.querySelector("#livepill"), { clock: true });
+    try {
+      assert.deepEqual(await state(v.page), { stats: null, live: { text: "Live", dot: true } });
+      S.health = health;
+      await v.page.clock.runFor(15_000);
+      await until(v.page, () => !!document.querySelector("#livepill") && (document.querySelector("#stats").hidden === !document.querySelector("#livepill").hidden));
+      await sleep(300);
+      assert.deepEqual(await state(v.page), { stats, live: stats ? null : { text: "Live", dot: true } });
+      const row = await v.page.evaluate(() => { const s = document.querySelector("form.ex-search").getBoundingClientRect(), top = document.querySelector(".ex-top").getBoundingClientRect();
+        return { inRow: s.top >= top.top && s.bottom <= top.bottom, fills: s.width > 0.8 * top.width }; });
+      assert.deepEqual(row, { inRow: true, fills: true }, "the search keeps its row");
+    } finally { await v.close(); S.health = "live"; }
+  });
+}
 
 // The latest-blocks list: ages in the preview's form, and each hash with its leading zeros and eight digits after them.
 test("latest blocks: ages read \"now\" and \"1 min\"; a hash shows its zeros dimmed and eight digits, the whole hash in its link", { skip: why || false }, async () => {
@@ -977,6 +1089,136 @@ test("latest blocks: ages read \"now\" and \"1 min\"; a hash shows its zeros dim
   }
 });
 
+// The home's CairnX activity is a ledger as the preview's latest transactions: the family label, the record in words, the
+// transaction. The label moves out of the record into its own column, out of a refused record's strike; the refusal stays
+// on the record with its reason. On a phone each row stacks: the label and the transaction, the record under them.
+test("home activity: a ledger of kind, record and transaction; a refused record struck with its reason, its label not; stacked at 390 px", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, records: "on" });
+  INDEXER["/domain/cairnx:v1/proposals"] = PROPS.slice(0, 3);
+  try {
+    for (const width of [1280, 390]) {
+      const v = await open("/explorer", width, () => document.querySelectorAll("#actfeed tr.actrow").length === 3);
+      try {
+        assert.deepEqual(v.errors, []);
+        assert.equal(v.overflow, 0, "horizontal overflow");
+        const rows = await v.page.evaluate(() => [...document.querySelectorAll("#actfeed tr.actrow")].map((r: any) => {
+          const [k, rec, tx] = [...r.children] as any[], a = tx.querySelector("a");
+          return { kind: k.textContent, struckKind: !!k.closest(".cx-void") || getComputedStyle(k.querySelector(".kind")).textDecorationLine !== "none",
+            labelsInRecord: rec.querySelectorAll(".kind").length, struck: !!rec.querySelector(".cx-void"), tag: rec.querySelector(".cx-noeffect")?.textContent ?? null,
+            href: a.getAttribute("href"), zeros: /^0x0*$/.test(a.querySelector(".lz")?.textContent ?? ""), stacked: rec.getBoundingClientRect().top >= k.getBoundingClientRect().bottom - 1 };
+        }));
+        assert.deepEqual(rows.map((r: any) => [r.kind, r.struckKind, r.labelsInRecord, r.href, r.zeros]), PROPS.slice(0, 3).map((p) => ["Token", false, 0, `#/tx/${p.txid}`, true]));
+        assert.deepEqual(rows.map((r: any) => [r.struck, r.tag]), [[true, "No effect: mint past supply"], [false, null], [false, null]], "only the refused mint struck, with its reason");
+        assert.deepEqual(rows.map((r: any) => r.stacked), Array(3).fill(width < 720), width < 720 ? "the record under the label" : "one line of three cells");
+        if (width > 720) assert.deepEqual(await v.page.evaluate(() => [...document.querySelectorAll("#actcol thead th")].map((c: any) => c.textContent)), ["Kind", "Record", "Transaction"]);
+      } finally { await v.close(); }
+    }
+  } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; }
+});
+
+// A read that fails is not a miss. The indexer's 404 means it holds no such record: "Nothing found", naming the value. A
+// 500 or a dropped connection says nothing about the record: "Could not load this view" with a way to ask again.
+test("a 404 reads \"Nothing found\" with the value; a 500 reads \"Could not load this view\", and Try again loads the view once the indexer answers", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, fail: "" });
+  const h = TIP - 100, b = block(h);
+  try {
+    const miss = await open(`/explorer#/block/${h}`, 1280, () => /Nothing found|Could not load/.test(document.body.innerText));
+    try {
+      assert.equal(await miss.page.textContent("h2.ex-title"), "Nothing found");
+      assert.match(await miss.page.textContent("main"), new RegExp(`no record at ${h}\\.`));
+      assert.equal(await miss.page.locator("#retry").count(), 0);
+    } finally { await miss.close(); }
+    // a pasted value with a malformed escape: still a miss, named as typed, never a view left loading
+    const odd = await open("/explorer#/block/0x%E0%A4%A", 1280, () => /Nothing found|Could not load/.test(document.body.innerText));
+    try {
+      assert.deepEqual(odd.errors, []);
+      assert.equal(await odd.page.textContent("h2.ex-title"), "Nothing found");
+      assert.match(await odd.page.textContent("main"), /no record at 0x%E0%A4%A\./);
+    } finally { await odd.close(); }
+    S.fail = "/block-height/";
+    const v = await open(`/explorer#/block/${h}`, 1280, () => /Nothing found|Could not load/.test(document.body.innerText));
+    try {
+      assert.equal(await v.page.textContent("h2.ex-title"), "Could not load this view");
+      assert.match(await v.page.textContent("main"), /A read from the indexer failed \(\/block-height\/\d+ answered 500\)/);
+      Object.assign(INDEXER, { [`/block-height/${h}`]: b.hash, [`/block/${b.hash}`]: b, [`/block/${b.hash}/txids`]: [] });
+      S.fail = "";
+      await v.page.click("#retry");
+      await until(v.page, () => /^Block /.test(document.querySelector("h2.ex-title")?.textContent ?? ""));
+      assert.match(await v.page.textContent("h2.ex-title"), new RegExp(`^Block ${h.toLocaleString("en-US")}`));
+    } finally { await v.close(); }
+  } finally { S.fail = ""; for (const k of [`/block-height/${h}`, `/block/${b.hash}`, `/block/${b.hash}/txids`]) delete INDEXER[k]; }
+});
+
+// The design direction's colour rule, on every view: the neutral ramp, and colour only for up, down and caution (the
+// tokens --ui-up, --ui-down, --ui-warn at any alpha). A name's identity avatar is the one other colour, a background image
+// this rule does not read; the neutral disc without it is neutral (identity colour belongs to cairn's
+// avatar module). A hash's leading zeros are the faint step, below the muted text around them.
+const OFF_PALETTE = fileURLToPath(new URL("./fixtures/off-palette.js", import.meta.url));
+const offPalette = async (page: any) => page.evaluate(await readFile(OFF_PALETTE, "utf8"));
+test("colour on every view: the neutral ramp and the up, down and caution tokens only; a hash's leading zeros in the faint step", { skip: why || false }, async () => {
+  Object.assign(S, { market: "fresh", series: true, shell: true, records: "on" });
+  INDEXER["/domain/cairnx:v1/proposals"] = PROPS.slice(0, 3);
+  const deep = block(TIP - 10);
+  Object.assign(INDEXER, { [`/block/${deep.hash}`]: deep, [`/block/${deep.hash}/txids`]: [] });
+  const views: [string, () => boolean][] = [
+    ["/explorer", () => !!document.querySelector("#actfeed tr.actrow") && !!document.querySelector("#csd-mkt:not([hidden])")],
+    [`/explorer#/block/${deep.hash}`, () => !!document.querySelector("#blkconfs")],
+    [`/explorer#/tx/${ATTESTS.refusedFill.txid}`, () => !!document.querySelector("#txaction .cx-noeffect")],
+    [`/explorer#/address/${BUYER}`, () => !!document.querySelector("#txrows .cx-noeffect")],
+    ["/explorer#/name/solo", () => !!document.querySelector(".namehdr .badge")],
+    ["/explorer#/name/nobody", () => /Not registered/.test(document.body.innerText)],
+    ["/explorer#/token/ZED", () => /metadata/.test(document.body.innerText)],
+    [`/explorer#/proposal/${CONTENT_PROPS.good.txid}`, () => /verified/.test(document.querySelector("#cibadge")?.textContent ?? "")],
+  ];
+  try {
+    for (const scheme of ["light", "dark"] as const) for (const [path, ready] of views) {
+      const v = await open(path, 1280, ready, { scheme });
+      try {
+        assert.deepEqual(await offPalette(v.page), [], `${path} ${scheme}`);
+      } finally { await v.close(); }
+    }
+    const v = await open(`/explorer#/block/${deep.hash}`, 1280, () => !!document.querySelector(".kv .lz"), { scheme: "light" });
+    try {
+      const c = await v.page.evaluate(() => { const p = document.createElement("span"); document.body.append(p);
+        const [faint, muted] = ["--ui-faint", "--ui-muted"].map((n) => { p.style.color = `var(${n})`; return getComputedStyle(p).color; });
+        return { zeros: getComputedStyle(document.querySelector(".kv .lz")).color, faint, muted }; });
+      assert.equal(c.zeros, c.faint, "the zeros in the faint step");
+      assert.notEqual(c.faint, c.muted);
+    } finally { await v.close(); }
+  } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; delete INDEXER[`/block/${deep.hash}`]; delete INDEXER[`/block/${deep.hash}/txids`]; }
+});
+
+// A block mined while the page is open enters the latest blocks at the top, once, as the preview's does: it fades in and
+// drops 14 px into place over 460 ms on the shared curve; the rows under it move down without an animation of their own,
+// and a poll that finds nothing new starts none. With reduced motion the page's own sheet asks for a fade with no
+// movement; cairn's real components.css (not this file's stand-in) cuts every animation to 1 ms under reduced motion, so
+// through the front door the row appears at once, as the preview's does.
+const arrival = (page: any) => page.evaluate(() => [...document.querySelectorAll("#blkfeed tr")].map((r: any) => r.getAnimations().map((a: any) => {
+  const t = a.effect.getTiming(), k = a.effect.getKeyframes();
+  return { h: r.dataset.h, name: a.animationName, ms: t.duration, ease: t.easing, from: k[0] ? { opacity: k[0].opacity, transform: k[0].transform ?? null } : null };
+})).flat());
+for (const reduced of [false, true]) {
+  test(`a new block enters the latest blocks once${reduced ? ", with reduced motion the page's sheet asking for a fade only" : ": a fade and a 14 px drop over 460 ms; the rows under it take no animation"}`, { skip: why || false }, async () => {
+    Object.assign(S, { market: "off", series: true, shell: true, newer: 0 });
+    const v = await open("/explorer", 1280, () => document.querySelectorAll("#blkfeed tr").length === 12, { clock: true, reduced });
+    try {
+      assert.deepEqual(await arrival(v.page), [], "the first paint enters nothing");
+      S.newer = 1;
+      await v.page.clock.runFor(12_000);
+      await until(v.page, () => document.querySelector("#blkfeed tr")?.getAttribute("data-h") === String(121_801));
+      const first = await arrival(v.page);
+      assert.deepEqual(first.map((a: any) => [a.h, a.name, a.ms]), [["121801", reduced ? "ex-fade-in" : "ex-row-in", 460]]);
+      assert.equal(first[0].from.opacity, "0");
+      if (reduced) assert.equal(first[0].from.transform, null, "no movement");
+      else assert.match(first[0].from.transform, /translateY\(-14px\)/);
+      assert.equal(await v.page.textContent(".pu.hot .n"), "121,801", "the height in the strip follows");
+      await v.page.clock.runFor(12_000);
+      await sleep(300);
+      assert.deepEqual((await arrival(v.page)).map((a: any) => a.h), ["121801"], "a poll with nothing new starts no animation");
+    } finally { await v.close(); S.newer = 0; }
+  });
+}
+
 // One gutter: a heading, the table or list under it and the panel's other content start at the same x, at every width. A
 // "box:" selector is measured at its border edge (a field or a pill lines up by its outline), the others at their text.
 const gutter = (page: any, pairs: [string, string][]) => page.evaluate((pairs: [string, string][]) => pairs.map(([a, b]) => ({ a, b,
@@ -985,7 +1227,7 @@ const gutter = (page: any, pairs: [string, string][]) => page.evaluate((pairs: [
     return Math.round(r.left + (sel.startsWith("box:") ? 0 : parseFloat(s.paddingLeft) + parseFloat(s.borderLeftWidth))); }) }))
   .filter((x) => x.at[0] === null || x.at[0] !== x.at[1]), pairs);
 for (const width of [390, 1280]) {
-  test(`one gutter at ${width} px: headings line up with the rows, lists and fields under them`, { skip: why || false }, async () => {
+  test(`one gutter at ${width} px: headings line up with the rows, lists and fields under them; a block's two key columns start level; keys 16 px under a detail title`, { skip: why || false }, async () => {
     Object.assign(S, { market: "off", series: true, shell: true, records: "on" });
     INDEXER["/domain/cairnx:v1/proposals"] = PROPS.slice(0, 3);
     try {
@@ -993,12 +1235,11 @@ for (const width of [390, 1280]) {
       try {
         assert.deepEqual(await gutter(home.page, [
           [".ex-col:first-child > h2", "#blkfeed tr:first-child td:first-child"],
-          ["#actcol > h2", "#actfeed .actrow:first-child"],
-          ["#actcol > h2", "box:#actcol > .tabs"],
+          ["#actcol > h2", "#actfeed .actrow:first-child td:first-child"],
           [".ex-col:first-child > h2", ".pulse > .pu:first-child"],
-          [".ex-col:first-child > h2", "box:form.search"],
+          [".ex-col:first-child > h2", "box:form.ex-search"],
           [".row .panel:has(table) > h2", ".row .panel:has(table) tbody tr:first-child td:first-child"],
-          ["#csd-mkt ~ .muted, .panel:has(#emchart) > h2", ".panel:has(#emchart) .figs"],
+          ["#csd-mkt ~ .muted, .panel:has(#emchart) > h2", ".panel:has(#emchart) .facts"],
         ]), []);
       } finally { await home.close(); }
       const hash = block(TIP - 2).hash;
@@ -1006,7 +1247,19 @@ for (const width of [390, 1280]) {
       const blk = await open(`/explorer#/block/${hash}`, width, () => !!document.querySelector("#blkconfs") && document.querySelectorAll("tbody tr").length > 0);
       try {
         assert.deepEqual(await gutter(blk.page, [["h2.ex-title", ".kv > div:first-child"], ["main > .panel:nth-child(2) > h2", "main > .panel:nth-child(2) tbody tr:first-child td:first-child"]]), []);
+        const [a, b] = await blk.page.evaluate(() => [...document.querySelectorAll(".ex-detail > .kv")].map((k: any) => { const r = k.getBoundingClientRect(); return { top: Math.round(r.top), left: Math.round(r.left), end: Math.round(r.bottom) }; }));
+        if (width > 860) assert.equal(b.top, a.top, "side by side, the second key column starts level with the first");
+        else assert.ok(b.left === a.left && b.top > a.end, "stacked, the second key list follows the first");
       } finally { await blk.close(); }
+      // a detail page's keys start 16 px under its title, as the preview's block, whatever follows the title
+      const gaps: number[] = [];
+      for (const path of [`/explorer#/block/${hash}`, "/explorer#/token/ZED", `/explorer#/address/${BUYER}`]) {
+        const d = await open(path, width, () => !!document.querySelector("h2.ex-title + .kv, h2.ex-title + .ex-detail"));
+        try {
+          gaps.push(await d.page.evaluate(() => { const h = document.querySelector("h2.ex-title"); return Math.round(h.nextElementSibling.getBoundingClientRect().top - h.getBoundingClientRect().bottom); }));
+        } finally { await d.close(); }
+      }
+      assert.deepEqual(gaps, [16, 16, 16], "title to keys on the block, token and address pages");
     } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; }
   });
 }
@@ -1025,3 +1278,671 @@ for (const width of [360, 390, 1280]) {
     } finally { await v.close(); }
   });
 }
+
+// ── Wave R10 fix round: a sibling read in three states, the activity's verdicts, the name page, the search, the domain
+// ledger, motion, the trust statement, the charts' reference lines and the block page. ──
+const text = (v: View) => v.page.evaluate(() => document.querySelector("main").innerText as string);
+
+// A name's page asks the resolver. Its 404 for a valid name is its answer that nobody holds it: "Not registered". A read
+// that fails (the front door's 502, the resolver's 503 before its first scan) says nothing: "Could not check", never a
+// verdict, with Try again. Standalone there is no resolver to ask; a label outside the name rule is never asked.
+for (const cx of ["503", "502"] as const) {
+  test(`name page, the resolver answering ${cx}: "Could not check", never "Not registered"; Try again shows the name once it answers`, { skip: why || false }, async () => {
+    Object.assign(S, { market: "off", series: true, shell: true, cx });
+    try {
+      for (const name of ["solo", "nobody"]) {
+        const v = await open(`/explorer#/name/${name}`, 1280, () => !document.querySelector("main .skel"));
+        try {
+          assert.deepEqual(v.errors, []);
+          const t = await text(v);
+          assert.match(t, /Could not check this name right now, so it is not shown as available\. Try again/);
+          assert.equal(await v.page.textContent(".namehdr .badge"), "Could not check");
+          assert.doesNotMatch(t, /Not registered|Register it|Available/);
+          if (name === "solo") {
+            S.cx = "up";
+            await v.page.click("[data-again]");
+            await until(v.page, () => /resolves to/i.test(document.body.innerText));
+            S.cx = cx;
+          }
+        } finally { await v.close(); }
+      }
+    } finally { S.cx = "up"; }
+  });
+}
+test("name page: the resolver's 404 reads \"Not registered\"; standalone needs the front door; a label outside the name rule is not asked; the resolver up shows the name", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, cx: "up" });
+  const miss = await open("/explorer#/name/nobody", 1280, () => !document.querySelector("main .skel"));
+  try {
+    assert.match(await text(miss), /^N\s+nobody\.csd\s+Not registered\. Register it on \/names$/, "the initial on its disc, the name, the miss");
+    assert.equal(await miss.page.locator("[data-again]").count(), 0);
+  } finally { await miss.close(); }
+  const alone = await open("/#/name/solo", 1280, () => !document.querySelector("main .skel"));
+  try { assert.match(await text(alone), /need the cairn front door/); } finally { await alone.close(); }
+  const bad = await open("/explorer#/name/bad-", 1280, () => !document.querySelector("main .skel"));
+  try {
+    assert.match(await text(bad), /Not a \.csd name/);
+    assert.deepEqual(bad.asked.filter((x) => x.startsWith("/trade/api/cairnx/name/")), [], "never asked");
+  } finally { await bad.close(); }
+  const up = await open("/explorer#/name/solo", 1280, () => /resolves to/i.test(document.body.innerText));
+  try { assert.deepEqual(up.errors, []); assert.doesNotMatch(await text(up), /Could not check|Not registered/); } finally { await up.close(); }
+});
+
+// The token page and the home's tokens panel read the resolver the same way.
+test("token page: 404 \"No token with that ticker\"; 503 \"Could not check this token\" with Try again; standalone needs the front door; up shows the token", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, cx: "up" });
+  try {
+    const miss = await open("/explorer#/token/NOPE", 1280, () => !document.querySelector("main .skel"));
+    try { assert.match(await text(miss), /^Token\s+NOPE\s+No token with that ticker on CairnX\./); } finally { await miss.close(); }
+    S.cx = "503";
+    const down = await open("/explorer#/token/ZED", 1280, () => !document.querySelector("main .skel"));
+    try {
+      const t = await text(down);
+      assert.match(t, /^Token\s+ZED\s+Could not check this token right now\. Try again$/);
+      assert.doesNotMatch(t, /front door|No token/);
+      S.cx = "up";
+      await down.page.click("[data-again]");
+      await until(down.page, () => /metadata/.test(document.body.innerText));
+    } finally { await down.close(); }
+    const alone = await open("/#/token/ZED", 1280, () => !document.querySelector("main .skel"));
+    try { assert.match(await text(alone), /Token data needs the cairn front door/); } finally { await alone.close(); }
+  } finally { S.cx = "up"; }
+});
+test("home tokens panel: the resolver down reads \"Could not check the CairnX tokens\", never the standalone line; standalone says it has no resolver; up lists them", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true });
+  const note = (v: View) => v.page.evaluate(() => [...document.querySelectorAll(".panel")].find((p: any) => /^Tokens on CairnX/.test(p.querySelector("h2")?.textContent ?? ""))!.innerText as string);
+  try {
+    for (const [cx, at, want, not] of [["503", "/explorer", /Could not check the CairnX tokens right now\. Try again/, /standalone/],
+      ["up", "/", /this standalone view has no token resolver/, /Could not check/], ["up", "/explorer", /Every token is CairnX/, /Could not check|standalone/]] as const) {
+      S.cx = cx;
+      const v = await open(at, 1280, () => !!document.querySelector("#pu-hr") && /Tokens on CairnX[\s\S]+\S/.test(document.body.innerText) && !!document.querySelector("#tok-note, .ex-unread"));
+      try {
+        await until(v.page, () => /Could not check the CairnX|standalone view has no token|Every token is/.test(document.body.innerText));
+        const t = await note(v);
+        assert.match(t, want, `${cx} ${at}`);
+        assert.doesNotMatch(t, not, `${cx} ${at}`);
+      } finally { await v.close(); }
+    }
+  } finally { S.cx = "up"; }
+});
+
+// With the verdicts unread, a record reads as the request it makes and the ledger says why, in one quiet line; with them
+// read there is no such line. On a transaction's page the same for its one record.
+test("verdicts unread: one quiet line on the home ledger and the domain page, every record a request and none struck; read, no line; standalone says so", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, cx: "up" });
+  INDEXER["/domain/cairnx:v1/proposals"] = PROPS.slice(0, 3);
+  const LINE = "Could not check these records with the CairnX resolver right now, so none is shown as applied. Try again";
+  try {
+    for (const [records, at, path, line] of [["500", "/explorer", "", LINE], ["on", "/explorer", "", null],
+      ["500", "/explorer", "#/domain/cairnx%3Av1", LINE], ["on", "/", "", "This standalone view has no CairnX resolver to ask, so each record reads as the request it makes."]] as const) {
+      S.records = records;
+      const v = await open(at + path, 1280, () => document.querySelectorAll("td.act").length >= 3);
+      try {
+        assert.deepEqual(v.errors, []);
+        assert.equal(await v.page.evaluate(() => document.querySelector("#verdict-line")?.textContent ?? null), line, `${records} ${at}${path}`);
+        const struck = await v.page.locator(".cx-void").count();
+        assert.equal(struck, records === "on" && at === "/explorer" ? 1 : 0, "struck only with a read verdict");
+        if (line) for (const a of await v.page.evaluate(() => [...document.querySelectorAll("td.act")].map((c: any) => c.textContent))) assert.match(a, /Mint request for/);
+      } finally { await v.close(); }
+    }
+  } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; S.records = "on"; }
+});
+test("transaction page, the resolver failing: an Attest on an offer reads as its request with the record's quiet line, never \"Bought\"", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, cx: "503" });
+  try {
+    const v = await open(`/explorer#/tx/${ATTESTS.fill.txid}`, 1280, decoded);
+    try {
+      assert.equal(await v.page.textContent("#txaction"), `${ATTEST_LINES.unread}Could not check this record with the CairnX resolver right now, so it is not shown as applied. Try again`);
+      assert.equal(await v.page.locator("#txaction .cx-void").count(), 0);
+    } finally { await v.close(); }
+  } finally { S.cx = "up"; }
+});
+
+// On a name's own page the owner and the address it resolves to are addresses, in groups of four; the owner's primary
+// name stands beside it only when it is another name.
+test("name page: owner and resolves-to as grouped addresses, the primary name beside them only when it is another name", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, cx: "up" });
+  const rows = (v: View) => v.page.evaluate(() => [...document.querySelectorAll(".ex-detail .kv > div")].filter((d: any) => /^(owner|resolves to)$/.test(d.textContent))
+    .map((d: any) => { const v = d.nextElementSibling, a = v.querySelector("a.addrl");
+      return { link: a.textContent, groups: a.querySelectorAll(".g4").length, named: a.classList.contains("hasname"), chip: v.querySelector(".chip")?.textContent ?? null }; }));
+  // the detail form of an address: 0x and its first eight digits, an ellipsis, its last eight, in four groups
+  const grouped = `${MINER.slice(0, 10)}\u2026${MINER.slice(34)}`;
+  PRIMARIES[MINER] = "solo";   // so the page's address labelling would name these rows, were they left to it
+  try {
+    for (const [name, chip] of [["twin", "primary name solo.csd"], ["solo", null]] as const) {
+      const v = await open(`/explorer#/name/${name}`, 1280, () => /resolves to/i.test(document.body.innerText));
+      try {
+        await sleep(400); // past the page's name labelling, which must leave these two alone
+        assert.deepEqual(v.errors, []);
+        assert.deepEqual(await rows(v), Array(2).fill({ link: grouped, groups: 4, named: false, chip }), name);
+      } finally { await v.close(); }
+    }
+  } finally { delete PRIMARIES[MINER]; }
+});
+
+// The search: a number, a hash or an address as pasted (spaces, separators, no 0x), a name in one word, and anything else
+// a domain only when the indexer knows it; otherwise "Nothing found" naming what was searched.
+test("search: each kind of query lands on its page; \"hello world\" and 40 x's are \"Nothing found\" naming the query; a known domain is its page", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, cx: "up" });
+  INDEXER["/domain/cairnx:v1/proposals"] = PROPS.slice(0, 3);
+  const h = TIP - 3;
+  try {
+    const v = await open("/explorer", 1280, () => !!document.querySelector("#pu-hr"));
+    try {
+      const go = async (q: string, want: string) => {
+        await v.page.fill("#q", q); await v.page.press("#q", "Enter");
+        for (const end = Date.now() + 5000; (await v.page.evaluate(() => location.hash)) !== want && Date.now() < end;) await sleep(50);
+        await until(v.page, () => !document.querySelector("main .skel"));
+        return v.page.evaluate(() => location.hash as string);
+      };
+      for (const [q, want] of [[h.toLocaleString("en-US"), `#/block/${h}`], [` ${String(h).slice(0, 3)} ${String(h).slice(3)} `, `#/block/${h}`],
+        [MINER.slice(2), `#/address/${MINER}`], ["0x" + MINER.slice(2).toUpperCase(), `#/address/${MINER}`], ["solo.csd", "#/name/solo"], ["Solo", "#/name/solo"],
+        [PROVEN, `#/tx/${PROVEN}`], ["0x" + "ab".repeat(32), "#/tx/0x" + "ab".repeat(32)], ["999999", "#/block/999999"], ["twin.CSD", "#/name/twin"],
+        ["cairnx:v1", "#/domain/cairnx%3Av1"]] as const) {
+        assert.equal(await go(q, want), want, JSON.stringify(q));
+      }
+      for (const q of ["hello world", "x".repeat(40)]) {
+        assert.equal(await go(q, "#/search/" + encodeURIComponent(q)), "#/search/" + encodeURIComponent(q), q);
+        // this query's miss, not the one before it
+        for (const end = Date.now() + 5000; !(await v.page.evaluate((q: string) => document.body.innerText.includes(`matches \u201c${q}\u201d.`), q)) && Date.now() < end;) await sleep(50);
+        assert.equal(await v.page.textContent("h2.ex-title"), "Nothing found");
+        assert.match(await text(v), new RegExp(`domain on this indexer matches \u201c${q}\u201d\\.`));
+      }
+      assert.deepEqual(v.errors, []);
+    } finally { await v.close(); }
+    // a link to a domain with no proposals: the same miss
+    const d = await open("/explorer#/domain/hello%20world", 1280, () => /Nothing found/.test(document.body.innerText));
+    try { assert.match(await text(d), /no proposals in the domain \u201chello world\u201d\./); } finally { await d.close(); }
+  } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; }
+});
+
+// A domain's ledger: the indexer's newest 100, its total from /domains, then 100 more a read.
+test("domain page: the total from /domains over the newest 100, Load more to the end; without the total \"Latest 100\"", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, cx: "up", records: "on", paged: true, fail: "" });
+  INDEXER["/domain/cairnx:v1/proposals"] = PROPS;
+  PAGED_TOTAL = PROPS.length;
+  const state = (v: View) => v.page.evaluate(() => ({ count: (document.querySelector("#domcount")?.textContent ?? "").split(".")[0], rows: document.querySelectorAll("#domrows tr").length,
+    more: document.querySelector("#domloadmore")?.textContent ?? null }));
+  try {
+    for (const [fail, head, more] of [["", "130 proposals", "Load more (100 of 130)"], ["/domains", "Latest 100", "Load more (100)"]] as const) {
+      S.fail = fail;
+      const v = await open("/explorer#/domain/cairnx%3Av1", 1280, () => document.querySelectorAll("#domrows tr").length > 0);
+      try {
+        assert.deepEqual(await state(v), { count: head, rows: 100, more });
+        await v.page.click("#domloadmore");
+        await until(v.page, () => document.querySelectorAll("#domrows tr").length === 130);
+        assert.deepEqual(await state(v), { count: fail ? "Latest 130" : head, rows: 130, more: null });
+        assert.equal(await v.page.locator(".cx-noeffect").count(), 1, "the refused mint among them, once");
+      } finally { await v.close(); }
+    }
+  } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; S.paged = false; S.fail = ""; PAGED_TOTAL = null; }
+});
+
+// The activity is read again on every new block, by the same poll; a record not shown before enters as a new block does.
+test("home activity: a record that lands with a new block enters at the top with the block's row-in; the rows under it and a poll with nothing new move nothing", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, cx: "up", records: "on", newer: 0 });
+  const later = cxProp(140, { v: 1, t: "mint", ticker: "CAIRN", amount: "100" });
+  later.height = TIP + 1;
+  applied(later);
+  INDEXER["/domain/cairnx:v1/proposals"] = PROPS.slice(1, 4);
+  const moving = (page: any) => page.evaluate(() => [...document.querySelectorAll("#actfeed tr")].flatMap((r: any) => r.getAnimations().map((a: any) =>
+    [r.querySelector("td.r a").getAttribute("href").slice(5), a.animationName, a.effect.getTiming().duration])));
+  try {
+    const v = await open("/explorer", 1280, () => document.querySelectorAll("#actfeed tr.actrow").length === 3, { clock: true });
+    try {
+      assert.deepEqual(await moving(v.page), [], "the first paint enters nothing");
+      INDEXER["/domain/cairnx:v1/proposals"] = [later, ...PROPS.slice(1, 4)];
+      S.newer = 1;
+      await v.page.clock.runFor(12_000);
+      await until(v.page, () => document.querySelectorAll("#actfeed tr.actrow").length === 4);
+      assert.deepEqual(await moving(v.page), [[later.txid, "ex-row-in", 460]]);
+      assert.match(await v.page.textContent("#actfeed tr:first-child td.act"), /^\s*Minted CAIRN/);
+      await v.page.clock.runFor(12_000);
+      await sleep(300);
+      assert.deepEqual((await moving(v.page)).map((m: any) => m[0]), [later.txid], "nothing new: no second entrance");
+    } finally { await v.close(); }
+  } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; S.newer = 0; delete VERDICTS[later.txid]; }
+});
+
+// A route change crossfades the two views on the shared curve: the page's view transition, 320 ms; with reduced motion
+// the same crossfade. The first paint runs none. Without the API the new view fades in.
+const VT_PROBE = () => { const o = (document as any).startViewTransition; if (o) (document as any).startViewTransition = function (cb: any) { (window as any).__vt = ((window as any).__vt || 0) + 1; return o.call(document, cb); }; };
+const NO_VT = () => { delete (Document.prototype as any).startViewTransition; };
+// polled from here: a function named inside a page callback would need a helper the page lacks
+async function crossfade(page: any): Promise<any[]> {
+  for (const end = Date.now() + 3000; Date.now() < end; await sleep(10)) {
+    // a CSS animation's curve is on its keyframes (its own timing easing is linear)
+    const a = await page.evaluate(() => document.getAnimations().map((x: any) => ({ el: x.effect?.pseudoElement ?? x.effect?.target?.id ?? "", ms: x.effect?.getTiming().duration,
+      ease: x.effect?.getTiming().easing !== "linear" ? x.effect?.getTiming().easing : x.effect?.getKeyframes()[0]?.easing, op: !!x.effect?.getKeyframes().some((k: any) => "opacity" in k) }))
+      .filter((x: any) => /view-transition-(old|new)\(root\)/.test(x.el) || (x.el === "view" && x.op)));
+    if (a.length) return a;
+  }
+  return [];
+}
+for (const [mode, init, reduced] of [["view transition", VT_PROBE, false], ["view transition, reduced motion", VT_PROBE, true], ["no view transition API", NO_VT, false]] as const) {
+  test(`a route change crossfades the views (${mode})`, { skip: why || false }, async () => {
+    Object.assign(S, { market: "off", series: true, shell: true, cx: "up" });
+    const v = await open("/explorer", 1280, () => !!document.querySelector("#blkfeed tr"), { init, reduced });
+    try {
+      assert.equal(await v.page.evaluate(() => (window as any).__vt ?? 0), 0, "the first paint swaps at once");
+      const hash = bhash(TIP - 3);
+      await v.page.evaluate((h: string) => { location.hash = "#/block/" + h; }, hash);
+      const seen = await crossfade(v.page);
+      if (init === NO_VT) assert.deepEqual(seen.map((a) => [a.el, a.ms, a.ease]), [["view", 200, "cubic-bezier(0.16, 1, 0.3, 1)"]]);
+      else {
+        assert.equal(await v.page.evaluate(() => (window as any).__vt), 1);
+        // the old view out and the new one in (Chromium runs a fade and a blend on each), all 320 ms on the shared curve
+        assert.deepEqual([...new Set(seen.map((a) => JSON.stringify([a.el, a.ms, a.ease])))].sort(), [["::view-transition-new(root)", 320, "cubic-bezier(0.16, 1, 0.3, 1)"],
+          ["::view-transition-old(root)", 320, "cubic-bezier(0.16, 1, 0.3, 1)"]].map((x) => JSON.stringify(x)));
+      }
+      await until(v.page, () => !document.querySelector("main .skel") && !!document.querySelector("h2.ex-title"));
+      assert.deepEqual(v.errors, []);
+    } finally { await v.close(); }
+  });
+}
+
+// The charts' reference levels (the 120 s target, the emission so far) are dashed lines without an axis label, which
+// would cover a tick; the block-times scale has its top half a 50 s step above a tick, so no label sits cut at the edge.
+test("charts: the target and the emission so far as dashed lines with no axis label; the block-times domain puts the padded top half a 50 s step above a tick", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true });
+  const v = await open("/explorer", 1280, charted);
+  try {
+    const c = await v.page.evaluate(() => Object.fromEntries(["#btchart", "#emchart"].map((s) => { const d = document.querySelector(`${s} canvas`).dataset; return [s, { lines: d.priceLines, extra: d.extra, hi: Number(d.domainHi) }]; })));
+    assert.deepEqual([c["#btchart"].lines, c["#btchart"].extra], ["0", "120/120 dashed"]);
+    assert.equal(c["#emchart"].lines, "0");
+    assert.match(c["#emchart"].extra, /^(\d+(\.\d+)?)\/\1 dashed$/, "one level across the schedule");
+    const top = c["#btchart"].hi * (1 + 0.18 / 0.7);
+    assert.ok(c["#btchart"].hi >= 240, "room for the target");
+    assert.ok(Math.abs((top % 50) - 25) < 1e-6, `the padded top ${top} half a step above a tick`);
+  } finally { await v.close(); }
+});
+
+// A registered name draws cairn's identity avatar, seeded as /names seeds a name; without the module, or for a name
+// nobody holds, its initial on the neutral disc.
+test("name page: cairn's identity avatar for a registered name, seeded by the name; the neutral disc without the module and for a name nobody holds", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, cx: "up" });
+  const av = (v: View) => v.page.evaluate(() => { const a = document.querySelector(".namehdr > :first-child") as any;
+    return { avatar: a.classList.contains("ui-avatar"), seed: a.dataset.seed ?? null, letter: a.textContent, painted: /gradient/.test(a.style.background) }; });
+  try {
+    for (const [avatar, name, want] of [[true, "solo", { avatar: true, seed: "solo", letter: "", painted: true }], [false, "solo", { avatar: false, seed: null, letter: "S", painted: false }],
+      [true, "nobody", { avatar: false, seed: null, letter: "N", painted: false }]] as const) {
+      S.avatar = avatar;
+      const v = await open(`/explorer#/name/${name}`, 1280, () => !!document.querySelector(".namehdr"));
+      try {
+        assert.deepEqual(await av(v), want, `${name}, module ${avatar ? "present" : "absent"}`);
+        assert.deepEqual(v.errors, []);
+      } finally { await v.close(); }
+    }
+  } finally { S.avatar = true; }
+});
+
+// every element.animate() the page asks for, on the element it moves
+const SLIDES = () => { const o = (Element as any).prototype.animate; (Element as any).prototype.animate = function (k: any[], t: any) {
+  ((window as any).__slides ??= []).push({ n: this, what: `${k[0].transform} ${k[0].opacity} to ${k[1].opacity} over ${t.duration} ms` }); return o.call(this, k, t); }; };
+// A CSD/USD figure that moved on a re-read updates as the preview's price: it slides in from the side it moved to with a
+// short tint (reduced motion: the tint only); one that did not move stays still.
+for (const reduced of [false, true]) {
+  test(`market: a price that moved slides in and flashes up${reduced ? " (reduced motion: the flash only)" : ""}; the figures that did not move stay still`, { skip: why || false }, async () => {
+    Object.assign(S, { market: "fresh", thin: false, partial: false, series: true, shell: true });
+    const v = await open("/explorer", 1280, () => !!document.querySelector("#csd-mkt .mkt-fig"), { clock: true, reduced, init: SLIDES });
+    const moving = () => v.page.evaluate(() => [...document.querySelectorAll("#csd-mkt .mkt-fig")].map((f: any) => { const n = f.querySelector(".mkt-n");
+      return [f.dataset.label, [...n.classList].filter((c: string) => /^ex-flash/.test(c)).concat(((window as any).__slides ?? []).filter((x: any) => x.n === n).map((x: any) => x.what))]; })
+      .filter((x: any) => x[1].length));
+    try {
+      assert.deepEqual(await moving(), [], "the first paint moves nothing");
+      PRICE.last = 0.0466;
+      await minutes(v.page, 3); // past the 2 min re-read
+      await until(v.page, () => !!document.querySelector("#csd-mkt .mkt-n.ex-flash-up, #csd-mkt .mkt-n.ex-flash-down"));
+      assert.deepEqual(await moving(), [["price", reduced ? ["ex-flash-up"] : ["ex-flash-up", "translateY(60%) 0 to 1 over 320 ms"]]]);
+      assert.equal((await figures(v.page))[0].value, "0.0466 USD");
+    } finally { await v.close(); PRICE.last = 0.0455; }
+  });
+}
+
+// The block page: a Next link to the block above it, the indexer's tip says so; difficulty as a grouped integer.
+test("block page: Next links the block above, the indexer's tip has none yet; difficulty as a grouped integer", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true });
+  const at = (h: number) => ({ [`/block-height/${h}`]: bhash(h), [`/block/${bhash(h)}`]: block(h), [`/block/${bhash(h)}/txids`]: [] });
+  Object.assign(INDEXER, at(TIP - 2), at(TIP - 1), at(TIP));
+  const key = (v: View, k: string) => v.page.evaluate((k: string) => [...document.querySelectorAll(".kv > div")].find((d: any) => d.textContent === k)!.nextElementSibling.textContent as string, k);
+  try {
+    const mid = await open(`/explorer#/block/${bhash(TIP - 2)}`, 1280, () => !!document.querySelector("#blknext"));
+    try {
+      assert.equal(await mid.page.getAttribute("#blknext a", "href"), `#/block/${bhash(TIP - 1)}`);
+      // bits 0x1b00c636: the target is 0xc636 << 192, so the difficulty is 0xffff·2^208 over it
+      const d = Number((0xffffn * 2n ** 208n * 1000n) / (0xc636n << 192n)) / 1000;
+      assert.equal(await key(mid, "difficulty"), `${Math.round(d).toLocaleString("en-US")} · bits 0x1b00c636`);
+    } finally { await mid.close(); }
+    const top = await open(`/explorer#/block/${bhash(TIP)}`, 1280, () => !!document.querySelector("#blknext"));
+    try { assert.equal(await top.page.textContent("#blknext"), "None yet: this is the indexer's tip"); } finally { await top.close(); }
+  } finally { for (const h of [TIP - 2, TIP - 1, TIP]) for (const k of Object.keys(at(h))) delete INDEXER[k]; }
+});
+
+// Every negative figure carries the one minus sign, U+2212.
+test("address ledger: an amount paid out reads with the minus sign U+2212, never a hyphen", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true });
+  const v = await open(`/explorer#/address/${WALLET}`, 1280, () => !document.querySelector("#txrows td[id^=dir-]") && document.querySelectorAll("#txrows tr").length === 25);
+  try {
+    const amounts: string[] = await v.page.evaluate(() => [...document.querySelectorAll("#txrows td.num:last-child")].map((c: any) => c.textContent));
+    assert.deepEqual([...new Set(amounts)], ["−0.25 CSD"]);
+  } finally { await v.close(); }
+});
+
+// Side by side the two home lists end level: as many rows each, the same row height, the block list capped at what it
+// shows; the activity's View all opens the domain's ledger.
+test("home at 1280 px: latest blocks and the activity show 12 rows each of one height and end level, also after a new block; View all opens the domain", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, cx: "up", records: "on", newer: 0 });
+  INDEXER["/domain/cairnx:v1/proposals"] = PROPS.slice(0, 30);
+  const cols = (page: any) => page.evaluate(() => {
+    const [blocks, acts] = ["#blkfeed tr", "#actfeed tr"].map((sel) => { const rs = [...document.querySelectorAll(sel)].map((r: any) => r.getBoundingClientRect());
+      return { n: rs.length, heights: [...new Set(rs.map((r) => Math.round(r.height)))], end: Math.round(rs.at(-1)!.bottom) }; });
+    return { blocks, acts, more: !!document.querySelector("#actshowmore"), all: document.querySelector("#actcol h2 .h-side > a")?.getAttribute("href") ?? null };
+  });
+  try {
+    const v = await open("/explorer", 1280, () => document.querySelectorAll("#actfeed tr.actrow").length > 0, { clock: true });
+    try {
+      for (const when of ["first paint", "after a new block"]) {
+        const c = await cols(v.page);
+        assert.equal(c.blocks.n, 12, when); assert.equal(c.acts.n, 12, when);
+        assert.equal(c.blocks.heights.length, 1, `${when}: one block row height`);
+        assert.deepEqual(c.acts.heights, c.blocks.heights, `${when}: the same row height in both lists`);
+        assert.equal(c.acts.end, c.blocks.end, `${when}: the two lists end level`);
+        assert.deepEqual([c.more, c.all], [false, "#/domain/cairnx%3Av1"]);
+        S.newer = 1;
+        await v.page.clock.runFor(12_000);
+        await until(v.page, () => document.querySelector("#blkfeed tr")?.getAttribute("data-h") === String(121_801));
+        await sleep(300);
+      }
+      // the record cut to its line keeps its whole text in its title, and a refusal's tag whole after it
+      const cut = await v.page.evaluate(() => { const t = document.querySelector("#actfeed tr:first-child .act-t") as any, tag = t.parentElement.querySelector(".cx-noeffect");
+        return { title: t.title, tag: tag ? tag.getBoundingClientRect().right <= t.closest("td").getBoundingClientRect().right + 0.5 : null }; });
+      assert.match(cut.title, /^Mint request for CAIRN: 100 base units$/);
+      assert.equal(cut.tag, true, "the refusal's tag inside its cell");
+    } finally { await v.close(); }
+  } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; S.newer = 0; }
+});
+
+// A stacked ledger (390 px) keeps its heads on one line: the row's id, the record under it, the figure at the right.
+test("at 390 px the stacked ledgers' heads sit on one line", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, cx: "up", records: "on" });
+  INDEXER["/domain/cairnx:v1/proposals"] = PROPS.slice(0, 3);
+  const heads = (v: View) => v.page.evaluate(() => { const ths = [...document.querySelectorAll("table.stack thead th")].filter((t: any) => t.getBoundingClientRect().width > 0) as any[];
+    return { tops: [...new Set(ths.map((t) => Math.round(t.getBoundingClientRect().top)))].length, text: ths.map((t) => t.textContent) }; });
+  try {
+    for (const [path, ready, text] of [[`/explorer#/address/${WALLET}`, () => document.querySelectorAll("#txrows tr").length > 0, ["Txid", "Record", "Amount"]],
+      ["/explorer#/name/twin", () => /history \(/i.test(document.body.innerText), ["Tx", "Record", "Block"]],
+      ["/explorer#/domain/cairnx%3Av1", () => document.querySelectorAll("#domrows tr").length > 0, ["Proposal", "Record", "Height"]]] as const) {
+      const v = await open(path, 390, ready);
+      try {
+        const h = await heads(v);
+        assert.equal(h.tops, 1, `${path}: ${h.text.join(", ")}`);
+        assert.deepEqual(await v.page.evaluate(() => [...document.querySelectorAll("table.stack thead th")].filter((t: any) => t.getBoundingClientRect().width > 0)
+          .sort((a: any, b: any) => a.getBoundingClientRect().left - b.getBoundingClientRect().left).map((t: any) => t.textContent)), text);
+      } finally { await v.close(); }
+    }
+  } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; }
+});
+
+// A token's trust badge, the design direction's three, from cairn's list of the tokens it lists (bound to their deploys)
+// judged by /trade's rule; with the list unread, no badge rather than a verdict.
+test("token page: Verified for a listed deploy, Look-alike for another deploy of a listed ticker, Unverified when not listed, no badge with the list unread", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, cx: "up", trust: true });
+  const ZED_DEPLOY = "0x" + "de".repeat(32);
+  const look = (v: View) => v.page.evaluate(() => { const b = document.querySelector("h2.ex-title .badge") as any;
+    const row = [...document.querySelectorAll(".kv > div")].find((d: any) => d.textContent === "listing") as any;
+    return { badge: b ? b.textContent : null, cls: b ? b.className : null, said: row ? row.nextElementSibling.textContent : null }; });
+  try {
+    for (const [list, trust, want] of [
+      [{ ZED: { deployId: ZED_DEPLOY } }, true, { badge: "Verified", cls: "badge ok", said: "Listed by Cairn for this deploy. A display convenience, not a consensus claim." }],
+      [{ ZED: { deployId: "0x" + "01".repeat(32) } }, true, { badge: "Look-alike", cls: "badge caution", said: "Same ticker as a listed token, different deploy. Anyone can deploy any ticker." }],
+      [{}, true, { badge: "Unverified", cls: "badge", said: "Not listed. Check the deployer before you buy." }],
+      [{ ZED: { deployId: ZED_DEPLOY } }, false, { badge: null, cls: null, said: null }]] as const) {
+      TRUST_LIST.verified = list as any; S.trust = trust;
+      const v = await open("/explorer#/token/ZED", 1280, () => /metadata/.test(document.body.innerText));
+      try {
+        assert.deepEqual(await look(v), want, JSON.stringify([list, trust]));
+        assert.deepEqual(v.errors, []);
+        assert.deepEqual(await offPalette(v.page), []);
+      } finally { await v.close(); }
+    }
+  } finally { TRUST_LIST.verified = {}; S.trust = true; }
+});
+
+// A sibling read that failed is not kept for the session: the next view asks again. Here the resolver is down while the
+// home opens (no decimals, no address names) and answers by the time a name is opened.
+test("a failed resolver read is asked again by the next view: a token price in its decimals and an address under its name", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, cx: "503" });
+  PRIMARIES[MINER] = "solo";
+  try {
+    const v = await open("/explorer", 1280, () => !!document.querySelector("#pu-hr") && !!document.querySelector(".row a.addrl[data-named]"));
+    try {
+      assert.equal(await v.page.evaluate(() => document.querySelector(".row a.addrl").textContent), `${MINER.slice(0, 8)}…${MINER.slice(-6)}`, "hex while the resolver is down");
+      S.cx = "up";
+      await v.page.evaluate(() => { location.hash = "#/name/twin"; });
+      await until(v.page, () => /for sale/i.test(document.body.innerText) && /history \(/i.test(document.body.innerText));
+      assert.equal(await v.page.textContent(".panel:has(h2:text-is('For sale')) .action"), "Market Listed for 123.45 QTOK · open offer", "the decimals read again");
+      await v.page.evaluate(() => { location.hash = "#/token/ZED"; });
+      await until(v.page, () => /metadata/.test(document.body.innerText) && !!document.querySelector(".kv a.addrl[data-named]"));
+      assert.equal(await v.page.evaluate(() => document.querySelector(".kv a.addrl").textContent), "solo.csd", "the name read again");
+      assert.deepEqual(v.errors, []);
+    } finally { await v.close(); }
+  } finally { S.cx = "up"; delete PRIMARIES[MINER]; }
+});
+
+// An address's CairnX holdings in the token's decimals; with the decimals unread, labelled base units, never base units
+// shown as whole tokens.
+test("address page: CairnX holdings in the token's decimals; with the decimals unread, labelled base units", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, cx: "up", cxFail: "" });
+  const held = (v: View) => v.page.evaluate(() => [...document.querySelectorAll("#cxpanel > div")].map((d: any) => d.textContent));
+  try {
+    for (const [fail, tokens] of [["", "123.45 QTOK (+1 locked in offers)"], ["/tokens", "12,345 base units QTOK (+100 base units locked in offers)"]] as const) {
+      S.cxFail = fail;
+      const v = await open(`/explorer#/address/${WALLET}`, 1280, () => !!document.querySelector("#cxpanel:not([hidden])"));
+      try {
+        assert.deepEqual(await held(v), ["tokens", tokens, "names", "twin.csd"], fail || "decimals read");
+        assert.deepEqual(v.errors, []);
+      } finally { await v.close(); }
+    }
+  } finally { S.cxFail = ""; }
+});
+
+// ── the code review of the fix round: a rate limit is no miss, verdicts bound to their view, a name without its record,
+// a malformed escape, the trust badge's deploy ──
+const LIMITED = "Too many requests, try again in a minute: the front door limits how often one connection reads.";
+const failedView = async (v: View) => ({ title: await v.page.textContent("h2.ex-title"), text: await text(v), retry: await v.page.locator("#retry").count() });
+
+// cairn's explorerLimiter answers a 429 for /explorer/api and /trade/api alike. Only a 400 or a 404 is the indexer holding
+// no such record; a 429 is the failed state with Try again on every route, and the view loads once the reads answer.
+for (const [route, fail, path] of [["transaction", "/tx/", `/explorer#/tx/${PROVEN}`], ["block", "/block-height/", `/explorer#/block/${TIP - 3}`],
+  ["address", "/address/", `/explorer#/address/${WALLET}`], ["proposal", "/proposal/", `/explorer#/proposal/${CONTENT_PROPS.good.txid}`],
+  ["domain", "/domain/", "/explorer#/domain/cairnx%3Av1"], ["search", "/domains", "/explorer#/search/hello%20world"],
+  ["a txid the indexer lacks whose block read is limited", "/block/", `/explorer#/tx/0x${"cd".repeat(32)}`]] as const) {
+  test(`a 429 on the ${route} route is the failed state with Try again, never "Nothing found"`, { skip: why || false }, async () => {
+    Object.assign(S, { market: "off", series: true, shell: true, cx: "up", fail: fail, failCode: 429 });
+    INDEXER["/domain/cairnx:v1/proposals"] = PROPS.slice(0, 3);
+    try {
+      const v = await open(path, 1280, () => /Nothing found|Could not load/.test(document.body.innerText));
+      try {
+        const f = await failedView(v);
+        assert.equal(f.title, "Could not load this view");
+        assert.match(f.text, new RegExp(LIMITED.replace(/[.:]/g, "\\$&")));
+        assert.doesNotMatch(f.text, /Nothing found|no record/);
+        assert.equal(f.retry, 1);
+        assert.deepEqual(v.errors, []);
+        // the honest path: the reads answer and Try again loads the view (the domain query a miss, as it is)
+        S.fail = "";
+        await v.page.click("#retry");
+        await until(v.page, () => !document.querySelector("main .skel") && !/Could not load/.test(document.body.innerText));
+        assert.doesNotMatch(await text(v), /Too many requests/);
+      } finally { await v.close(); }
+    } finally { S.fail = ""; S.failCode = 500; INDEXER["/domain/cairnx:v1/proposals"] = []; }
+  });
+}
+test("home: /blocks/recent limited is the failed state, with no block-by-block reads after it", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, fail: "/blocks/recent", failCode: 429 });
+  try {
+    const v = await open("/explorer", 1280, () => /Could not load|Latest blocks/.test(document.body.innerText));
+    try {
+      assert.match(await text(v), /^Could not load this view\s+Too many requests/);
+      assert.deepEqual(v.asked.filter((x) => /\/block-height\//.test(x)), [], "no fallback reads");
+    } finally { await v.close(); }
+  } finally { S.fail = ""; S.failCode = 500; }
+});
+
+// A home panel whose own read fails says so, never that there is nothing: the domains, miners, top holders, activity and
+// the hashrate series.
+test("home: each panel whose read failed says it could not check, never an empty answer", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, cx: "up", failCode: 500,
+    fail: ["/domains", "/analytics/miners", "/analytics/richlist", "/domain/cairnx:v1/proposals", "/analytics/series", "/analytics/supply"] });
+  INDEXER["/domain/cairnx:v1/proposals"] = PROPS.slice(0, 3);
+  try {
+    const v = await open("/explorer", 1280, () => !!document.querySelector("#hrchart .cc-empty") && !!document.querySelector("#actfeed td"));
+    try {
+      const t: string = await v.page.evaluate(() => document.body.innerText);
+      for (const w of ["the on-chain domains", "the miners", "the top holders", "the CairnX activity"]) assert.match(t, new RegExp(`Could not check ${w} right now\\. Try again`), w);
+      assert.equal(await v.page.textContent("#hrchart .cc-empty"), "Could not load the hashrate series right now");
+      // a figure without its read is a dash, not a dash with a unit
+      assert.deepEqual(await v.page.evaluate(() => [...document.querySelectorAll(".pulse .pu .n")].slice(1).map((n: any) => n.textContent)), ["-", "-", "-"]);
+      assert.doesNotMatch(t, /No domain records yet|No recent miners|No holders yet|No CairnX records in this indexer yet|no hashrate series from this indexer/);
+      assert.deepEqual(v.errors, []);
+    } finally { await v.close(); }
+  } finally { S.fail = ""; INDEXER["/domain/cairnx:v1/proposals"] = []; }
+});
+
+// On a transaction's page a failed proof read leaves inclusion unchecked (never "No proof"), and an Attest whose proposal
+// read failed is an attestation all the same (never "a plain chain transaction").
+test("transaction page: a failed proof read reads \"Inclusion not checked\"; an Attest whose proposal read failed reads as an attestation", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, cx: "up", failCode: 500, fail: `/tx/${PROVEN}/merkle-proof` });
+  try {
+    const p = await open(`/explorer#/tx/${PROVEN}`, 1280, () => !/Verifying/.test(document.querySelector("#inclbadge")?.textContent ?? "Verifying"));
+    try { assert.equal(await p.page.textContent("#inclbadge"), "Inclusion not checked: the proof read failed"); } finally { await p.close(); }
+    S.fail = "/proposal/";
+    const a = await open(`/explorer#/tx/${ATTESTS.fill.txid}`, 1280, decoded);
+    try {
+      assert.equal(await a.page.textContent("#txaction"), "Record AttestationCould not check what it attests right now. Try again");
+      assert.doesNotMatch(await text(a), /plain chain transaction/);
+    } finally { await a.close(); }
+  } finally { S.fail = ""; }
+});
+
+// A failed Load more is not the end of the ledger.
+test("address page: a failed Load more keeps its button, saying so, and loads the next page once the read answers", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, cx: "up", failCode: 500, fail: `/address/${WALLET}/txs/chain/` });
+  try {
+    const v = await open(`/explorer#/address/${WALLET}`, 1280, () => !!document.querySelector("#txloadmore"));
+    try {
+      await v.page.click("#txloadmore");
+      await until(v.page, () => document.querySelector("#txloadmore")?.textContent === "Could not load more. Try again");
+      assert.equal(await v.page.locator("#txrows tr").count(), 25);
+      S.fail = "";
+      await v.page.click("#txloadmore");
+      await until(v.page, () => document.querySelectorAll("#txrows tr").length === 50);
+    } finally { await v.close(); }
+  } finally { S.fail = ""; }
+});
+
+// Each ledger's verdict line says what holds for every row it shows: it appears when a later page's verdicts fail and
+// goes once a later read answers the rows still unread, which are then worded by their verdicts.
+for (const [where, path, rowsSel, more] of [["address", `/explorer#/address/${WALLET}`, "#txrows tr", "#txloadmore"], ["domain", "/explorer#/domain/cairnx%3Av1", "#domrows tr", "#domloadmore"]] as const) {
+  test(`${where} page: the verdict line follows every row shown, across Load more, both ways`, { skip: why || false }, async () => {
+    Object.assign(S, { market: "off", series: true, shell: true, cx: "up", paged: true, fail: "" });
+    INDEXER["/domain/cairnx:v1/proposals"] = PROPS; PAGED_TOTAL = PROPS.length;
+    const line = (v: View) => v.page.evaluate(() => document.querySelector("#verdict-line")?.textContent ?? null);
+    const words = (v: View) => v.page.evaluate((sel: string) => [...document.querySelectorAll(`${sel} td.act`)].map((c: any) => /Minted|Mint request/.exec(c.textContent)?.[0] ?? c.textContent), rowsSel);
+    const decodedAll = () => [...document.querySelectorAll("td.act")].every((c: any) => !!c.querySelector(".what"));
+    try {
+      for (const failFirst of [true, false]) {
+        S.records = failFirst ? "500" : "on";
+        const v = await open(path, 1280, () => document.querySelectorAll("td.act").length > 0 && [...document.querySelectorAll("td.act")].every((c: any) => !!c.querySelector(".what")));
+        try {
+          assert.equal((await line(v)) !== null, failFirst, `first page, verdicts ${failFirst ? "failing" : "read"}`);
+          if (failFirst) assert.ok((await words(v)).every((w: string) => w === "Mint request"), "every row its request");
+          S.records = failFirst ? "on" : "500";
+          const before = await v.page.locator(rowsSel).count();
+          await v.page.click(more);
+          await until(v.page, () => !document.querySelector("#txloadmore:disabled, #domloadmore:disabled"));
+          for (const end = Date.now() + 10_000; (await v.page.locator(rowsSel).count()) === before && Date.now() < end;) await sleep(100);
+          await until(v.page, decodedAll); await sleep(300);
+          assert.equal((await line(v)) !== null, !failFirst, `after Load more, verdicts ${failFirst ? "read" : "failing"}`);
+          const w = await words(v);
+          // rows 2 and 3 are applied mints on both ledgers (the domain's first row is the refused one)
+          if (failFirst) assert.ok(w.slice(1, 3).every((x: string) => x === "Minted"), `the first page worded again: ${w.slice(0, 3)}`);
+          else assert.ok(w.slice(1, 3).every((x: string) => x === "Minted") && w.slice(before).every((x: string) => x === "Mint request"), `old rows keep their verdicts, new ones requests: ${w.slice(before, before + 2)}`);
+        } finally { await v.close(); }
+      }
+    } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; S.paged = false; PAGED_TOTAL = null; S.records = "on"; }
+  });
+}
+
+// One view's failed verdict read never reaches another view's line: each view keeps its own verdicts.
+test("a verdict read that failed on the home leaves the next view's verdict line alone", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, cx: "up", records: "on" });
+  const lone = cxProp(150, { v: 1, t: "mint", ticker: "CAIRN", amount: "100" });
+  INDEXER["/domain/cairnx:v1/proposals"] = [lone];
+  S.failIds = new Set([lone.txid]);
+  try {
+    const v = await open("/explorer", 1280, () => !!document.querySelector("#actfeed .actrow"));
+    try {
+      assert.match(await v.page.textContent("#actnote"), /^Could not check these records/, "the home's own read failed");
+      // the home's txid still fails: a book shared between views would ask for it again here
+      INDEXER["/domain/cairnx:v1/proposals"] = PROPS.slice(0, 3);
+      await v.page.evaluate(() => { location.hash = "#/domain/cairnx%3Av1"; });
+      await until(v.page, () => document.querySelectorAll("#domrows tr").length === 3);
+      assert.equal(await v.page.evaluate(() => document.querySelector("#verdict-line")?.textContent ?? null), null);
+      assert.equal(await v.page.locator(".cx-noeffect").count(), 1, "its own verdicts read");
+    } finally { await v.close(); }
+  } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; S.failIds = new Set(); }
+});
+
+// The history of a name lists refused records too: with no applied verdict each row reads as its request.
+test("name history: with the verdicts unread every row reads as its request under the line", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, cx: "up", records: "500" });
+  try {
+    const v = await open("/explorer#/name/twin", 1280, () => /history \(/i.test(document.body.innerText));
+    try {
+      assert.match(await v.page.textContent("#verdict-line"), /^Could not check these records/);
+      assert.deepEqual(await v.page.evaluate(() => [...document.querySelectorAll("table.stack tbody td.act")].map((c: any) => c.textContent)), ["Market Fill request", "Market Fill request"]);
+    } finally { await v.close(); }
+  } finally { S.records = "on"; }
+});
+
+// A 200 without a name record ({} or []) is not the resolver's answer for a name.
+for (const name of ["empty", "list"]) {
+  test(`name page: a 200 without a name record (${name === "empty" ? "{}" : "[]"}) is "Could not check", never a registered name`, { skip: why || false }, async () => {
+    Object.assign(S, { market: "off", series: true, shell: true, cx: "up" });
+    const v = await open(`/explorer#/name/${name}`, 1280, () => !document.querySelector("main .skel"));
+    try {
+      const t = await text(v);
+      assert.match(t, /Could not check this name right now, so it is not shown as available\. Try again/);
+      assert.doesNotMatch(t, /A \.csd name on Compute Substrate|Owner|Not registered/);
+    } finally { await v.close(); }
+  });
+}
+
+// A malformed escape in a route's value is a miss naming it as typed, never a failed read.
+test("a malformed escape in a name, token or domain route is \"Nothing found\" quoting it", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, cx: "up" });
+  for (const [route, raw] of [["name", "%E0%A4%A"], ["token", "%zz"], ["domain", "%zz"]] as const) {
+    const v = await open(`/explorer#/${route}/${raw}`, 1280, () => /Nothing found|Could not load/.test(document.body.innerText));
+    try {
+      assert.equal(await v.page.textContent("h2.ex-title"), "Nothing found", route);
+      assert.match(await text(v), new RegExp(`no record at ${raw}\\.`));
+      assert.deepEqual(v.errors, []);
+    } finally { await v.close(); }
+  }
+});
+
+// Verified says "for this deploy", so it needs an entry bound to this token's deploy; an entry without one, or a level
+// this page does not know, shows no badge rather than a sentence that does not hold.
+test("token page: no badge for a listed entry without a deploy, or for a trust level the page does not know", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, cx: "up", trust: true });
+  try {
+    for (const entry of [{ name: "Zed" }, { deployId: "0x" + "de".repeat(32), level: "pending" }]) {
+      TRUST_LIST.verified = { ZED: entry } as any;
+      const v = await open("/explorer#/token/ZED", 1280, () => /metadata/.test(document.body.innerText));
+      try {
+        assert.equal(await v.page.locator("h2.ex-title .badge").count(), 0, JSON.stringify(entry));
+        assert.doesNotMatch(await text(v), /Listed by Cairn|Not listed|Look-alike|Verified/);
+      } finally { await v.close(); }
+    }
+  } finally { TRUST_LIST.verified = {}; }
+});
