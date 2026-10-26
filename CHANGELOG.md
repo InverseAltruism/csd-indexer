@@ -4,8 +4,8 @@
 
 - `GET /address/:a/coinbase` and `GET /miners/coinbase?limit=N` (#17): lifetime coinbase totals per address from a
   maintained table, `coinbase_totals`, kept equal to the aggregate over `outputs` and `txs` inside every block write
-  and unwind and rebuilt from the rows at every boot (about 0.3 s on Postgres at mainnet size), so a read is one row.
-  cairn's miner statistics read these instead of the node's lifetime walk. SQLite transactions begin IMMEDIATE, so a
+  and unwind and rebuilt from the rows at every boot (about 0.3 s on Postgres at mainnet size), so a read is one row,
+  for cairn's miner statistics (cairn #145). SQLite transactions begin IMMEDIATE, so a
   writer waits for another process's write lock instead of failing.
 - The explorer on cairn's shell and the design direction (#16, #18): the site header, theme and tokens from cairn's
   origin (a fallback block on a direct hit), measured against the approved preview; a failed or rate-limited read is
