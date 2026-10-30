@@ -291,6 +291,14 @@ export function buildApp() {
   app.get("/analytics/miners", h(async (req, res) => res.json(await analytics.miners(String(req.query.window ?? "1d")))));
   app.get("/analytics/richlist", h(async (req, res) => res.json(await analytics.richlist(Number(req.query.limit ?? 100)))));
   app.get("/analytics/supply", h(async (_req, res) => res.json(await analytics.supply())));
+  // CoinMarketCap-style supply reads: the body is only the figure in whole CSD; an empty index answers 503 without one.
+  const supplyText = (pick: (f: analytics.SupplyFigures) => bigint) => h(async (_req, res) => {
+    const f = await analytics.supplyFigures();
+    if (!f) return res.status(503).type("text/plain").send("index not ready");
+    return res.type("text/plain").send(analytics.csdDecimal(pick(f)));
+  });
+  app.get("/analytics/supply/total", supplyText((f) => f.total));
+  app.get("/analytics/supply/circulating", supplyText((f) => f.circulating));
   app.get("/analytics/series", h(async (req, res) => res.json(await analytics.series(String(req.query.window ?? "1d"), Number(req.query.points ?? 56)))));
 
   return app;

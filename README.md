@@ -103,6 +103,15 @@ The extras:
 - `GET /analytics/miners?window=`, `/analytics/richlist?limit=`, `/analytics/supply`,
   `/analytics/series?window=&points=`: miner shares and hashrate, the largest holders, supply and
   emission, and time series.
+  `/analytics/supply` gives each supply figure in base units as a decimal string: `emitted_supply`
+  (coinbase outputs less fees), `burned_supply` (the unspent balance of the zero address
+  `0x0000000000000000000000000000000000000000`, which the genesis coinbase pays and nobody holds a
+  key for), `total_supply` (emitted less burned) and `circulating_supply` (equal to the total: CSD
+  launched by proof of work with no premine and no team, locked or reserve wallets).
+- `GET /analytics/supply/total` and `/analytics/supply/circulating`: only that figure in whole CSD,
+  as `text/plain` (for example `6553149.49800771`, or `6553150` when whole), exact to the base unit,
+  for listing sites such as CoinMarketCap. An empty index answers 503 and an error 500, never a
+  number.
 - `GET /health`: version, backend, indexed height, the node-reported tip and chainwork, and `stale`.
   The tip fields come from the node and are not proof-of-work checked by the indexer: use them as a
   liveness hint, not to pick a fork.
