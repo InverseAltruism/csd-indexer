@@ -7,8 +7,8 @@
 // big() normalizes to BigInt for math, amt() serializes (a stray BigInt would crash
 // JSON.stringify; total emission crosses 2^53 in a few years and must never 500 these endpoints).
 import { store } from "./db.js";
-import { amt, tipRow as tipRowCanonical } from "./queries.js";
-import { workForBits } from "@inversealtruism/csd-codec";
+import { addressStats, amt, tipRow as tipRowCanonical } from "./queries.js";
+import { COIN, workForBits } from "@inversealtruism/csd-codec";
 
 // nominal blocks per window at the 120s target (heights, not wall-time; deterministic)
 const WINDOWS: Record<string, number> = { "1d": 720, "7d": 5040, "30d": 21600 };
@@ -62,15 +62,15 @@ async function tipKey(): Promise<string | null> {
 }
 // Exported so server.ts can give /health's counts() the same once-per-block treatment: /health is
 // the failover-LB poll target, so its four COUNT(*) full scans were the most-hit unmemoized cost.
-export function memoByTip<A extends unknown[]>(fn: (...args: A) => Promise<unknown>): (...args: A) => Promise<unknown> {
+export function memoByTip<A extends unknown[], R>(fn: (...args: A) => Promise<R>): (...args: A) => Promise<R> {
   let curKey: string | null = null;
-  const cache = new Map<string, unknown>();
-  return async (...args: A): Promise<unknown> => {
+  const cache = new Map<string, R>();
+  return async (...args: A): Promise<R> => {
     const key = await tipKey();
     if (key === null) return fn(...args);                 // no tip indexed → compute, don't cache
     if (key !== curKey) { cache.clear(); curKey = key; }  // tip moved → drop stale-tip entries
     const mk = JSON.stringify(args);
-    if (cache.has(mk)) return cache.get(mk);
+    if (cache.has(mk)) return cache.get(mk) as R;
     const value = await fn(...args);
     cache.set(mk, value);
     return value;
@@ -178,18 +178,53 @@ async function emittedSupply(): Promise<bigint> {
   return cb - fees;
 }
 
-async function supplyImpl(): Promise<unknown> {
+// Nobody holds a key for the zero address (the genesis coinbase pays it), so its unspent balance is burned.
+const BURN_ADDR = "0x" + "00".repeat(20);
+
+async function burnedSupply(): Promise<bigint> {
+  return BigInt((await addressStats(BURN_ADDR)).balance);
+}
+
+/** Supply figures in base units at the indexed tip; null on an empty index. */
+export interface SupplyFigures { height: number; emitted: bigint; burned: bigint; total: bigint; circulating: bigint }
+
+async function supplyFiguresImpl(): Promise<SupplyFigures | null> {
   const tip = await tipRow();
-  if (!tip) return { ok: false, error: "no blocks indexed" };
+  if (!tip) return null;
   const emitted = await emittedSupply();
+  const burned = await burnedSupply();
+  const total = emitted - burned;
+  // Fair-launch PoW chain: no premine and no team, locked or reserve wallets, so every unburned coin circulates.
+  return { height: Number(tip.height), emitted, burned, total, circulating: total };
+}
+export const supplyFigures = memoByTip(supplyFiguresImpl);
+
+const COIN_BASE = BigInt(COIN);
+const COIN_DECIMALS = String(COIN_BASE).length - 1;
+
+/** Base units as an exact whole-CSD decimal ("6553149.49800771", "6553150"); a negative amount throws. */
+export function csdDecimal(base: bigint): string {
+  if (base < 0n) throw new RangeError("negative supply");
+  const whole = (base / COIN_BASE).toString();
+  const frac = (base % COIN_BASE).toString().padStart(COIN_DECIMALS, "0").replace(/0+$/, "");
+  return frac ? `${whole}.${frac}` : whole;
+}
+
+async function supplyImpl(): Promise<unknown> {
+  const f = await supplyFigures();
+  if (!f) return { ok: false, error: "no blocks indexed" };
+  const emitted = f.emitted;
   const max = maxSupply();
-  const h = Number(tip.height);
+  const h = f.height;
   const era = Math.floor(h / HALVING_INTERVAL);
   const nextHalving = (era + 1) * HALVING_INTERVAL;
   const remaining = nextHalving - h;
   return {
     ok: true, height: h,
     emitted_supply: emitted.toString(),
+    burned_supply: f.burned.toString(),
+    total_supply: f.total.toString(),
+    circulating_supply: f.circulating.toString(),
     max_supply: max.toString(),
     pct_emitted: Number((emitted * 1_000_000n) / max) / 10_000,
     block_reward: blockReward(h).toString(),

@@ -11,7 +11,7 @@ process.env.CSD_INDEX_DB = DB;
 process.env.CSD_INDEX_PG_SCHEMA = "t_memo";
 
 const { store, resetStoreForTests, closeDb } = await import("../src/db.js");
-const { supply, miners, richlist } = await import("../src/analytics.js");
+const { supply, supplyFigures, miners, richlist } = await import("../src/analytics.js");
 await resetStoreForTests();
 test.after(async () => { await closeDb(); });
 
@@ -36,6 +36,8 @@ test("same tip → cached object (hit); new block → recompute (bust)", async (
   const r1 = await supply();
   const r2 = await supply();
   assert.equal(r1, r2, "two supply() calls at the same tip return the cached object (===)");
+  const f1 = await supplyFigures();
+  assert.equal(f1, await supplyFigures(), "supply figures (the plain-text routes' source) cached at the same tip");
 
   const m1 = await miners("all");
   assert.equal(m1, await miners("all"), "miners cached at the same tip");
@@ -52,6 +54,7 @@ test("same tip → cached object (hit); new block → recompute (bust)", async (
   const r3 = await supply();
   assert.notEqual(r3, r1, "after a new block supply() recomputes a fresh object");
   assert.equal((r3 as { height: number }).height, 4, "fresh result reflects the new tip height");
+  assert.equal((await supplyFigures())?.height, 4, "supply figures recomputed at the new tip");
   assert.ok(
     BigInt((r3 as { emitted_supply: string }).emitted_supply) > BigInt((r1 as { emitted_supply: string }).emitted_supply),
     "emitted supply grew with the new block (recomputed, not stale)",

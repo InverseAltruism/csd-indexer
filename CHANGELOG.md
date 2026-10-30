@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- `GET /analytics/supply/total` and `GET /analytics/supply/circulating`: the total and circulating supply in whole CSD
+  as a bare `text/plain` number, exact (bigint math, trailing zeros trimmed), the form CoinMarketCap asks a listing to
+  serve; an empty index answers 503 without a number. Total supply is emitted supply less the unspent balance of the
+  zero address, which the genesis coinbase pays and nobody holds a key for; circulating supply equals the total, since
+  CSD launched by proof of work with no premine and no reserve wallets. `/analytics/supply` gains `burned_supply`,
+  `total_supply` and `circulating_supply` (base units, as `emitted_supply`); its other fields are unchanged.
+  `test/analytics.test.ts`, `test/analytics-memo.test.ts`.
+
 ## 0.3.6
 
 - The explorer takes the site's shell parts by name (Plan 89 wave R11): its tab icons are the site's (the Cairn mark,
