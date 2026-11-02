@@ -119,7 +119,10 @@ The extras:
 Live updates:
 - Server-sent events: `GET /stream/all` (every event), `/stream/blocks`, `/stream/domain/:d`.
 - WebSocket `/ws`: send `{"track-all": true}`, or `{"track-domain": [...]}`, `{"track-address": [...]}`,
-  `{"track-proposal": id}`. Over the WebSocket, block events go only to track-all clients.
+  `{"track-proposal": id}`. Over the WebSocket, block events go only to track-all clients. Each subscribe is
+  acknowledged with what the socket now tracks; a frame that is not a JSON object is ignored, a field that is not
+  the documented array adds nothing, and a frame over 64 KiB or one that is not valid WebSocket closes that socket
+  (1009, 1007).
 
 ## The explorer
 

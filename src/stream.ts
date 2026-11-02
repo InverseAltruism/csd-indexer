@@ -55,6 +55,10 @@ export function sseHandler(filter?: (e: IndexEvent) => boolean) {
 }
 
 const capAdd = (set: Set<string>, items: Iterable<string>) => { for (const x of items) { if (set.size >= MAX_SUB_KEYS) break; set.add(x); } };
+// A subscribe field of another type than its documented one adds nothing.
+const list = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
+// Largest subscribe frame; ws refuses a longer one with 1009 before buffering it.
+const WS_MAX_FRAME = 64 * 1024;
 
 // ── WebSocket: ws://…/ws with {track-domain:[…]}, {track-address:[…]}, {track-proposal:id} ──
 type Sub = { domains: Set<string>; addresses: Set<string>; proposals: Set<string>; all: boolean };
@@ -74,23 +78,30 @@ function matches(sub: Sub, e: IndexEvent): boolean {
 }
 
 export function attachWs(server: Server): WebSocketServer {
-  const wss = new WebSocketServer({ server, path: "/ws" });
+  const wss = new WebSocketServer({ server, path: "/ws", maxPayload: WS_MAX_FRAME });
   wss.on("connection", (ws: WebSocket) => {
     if (wsOpen >= MAX_WS) { ws.close(1013, "too many clients"); return; }
     wsOpen++;
     const sub: Sub = { domains: new Set(), addresses: new Set(), proposals: new Set(), all: false };
     const off = bus.onEvent((e) => { if (ws.readyState === ws.OPEN && matches(sub, e)) ws.send(JSON.stringify(e)); });
+    // A throw from these listeners, or an `error` emitted with none, is uncaught and ends the process, the sync loop
+    // with the API (test/stream.test.ts); a frame that still throws past the shape checks closes its own socket only.
     ws.on("message", (raw) => {
-      // bound the message size and the per-client subscription-set growth (DoS hardening)
-      const rawLen = Array.isArray(raw) ? raw.reduce((n, b) => n + b.length, 0) : (raw as Buffer).length;
-      if (rawLen > 64 * 1024) return;
-      let msg: any; try { msg = JSON.parse(String(raw)); } catch { return; }
-      if (msg["track-all"]) sub.all = true;
-      capAdd(sub.domains, (msg["track-domain"] ?? []).map(String));
-      capAdd(sub.addresses, (msg["track-address"] ?? []).map((a: any) => String(a).toLowerCase()));
-      capAdd(sub.proposals, (msg["track-proposal"] ? [].concat(msg["track-proposal"]) : []).map(String));
-      ws.send(JSON.stringify({ ack: true, tracking: { domains: [...sub.domains], addresses: [...sub.addresses], proposals: [...sub.proposals], all: sub.all } }));
+      try {
+        let msg: unknown; try { msg = JSON.parse(String(raw)); } catch { return; }
+        if (msg === null || typeof msg !== "object" || Array.isArray(msg)) return;
+        const m = msg as Record<string, unknown>;
+        if (m["track-all"]) sub.all = true;
+        capAdd(sub.domains, list(m["track-domain"]).map(String));
+        capAdd(sub.addresses, list(m["track-address"]).map((a) => String(a).toLowerCase()));
+        const p = m["track-proposal"];
+        capAdd(sub.proposals, (Array.isArray(p) ? p : p ? [p] : []).map(String));
+        ws.send(JSON.stringify({ ack: true, tracking: { domains: [...sub.domains], addresses: [...sub.addresses], proposals: [...sub.proposals], all: sub.all } }));
+      } catch {
+        ws.close(1011, "subscribe frame not handled");
+      }
     });
+    ws.on("error", () => { /* a protocol error (an oversize or malformed frame): ws closes the socket with its code */ });
     ws.on("close", () => { off(); wsOpen--; });
     ws.send(JSON.stringify({ hello: true }));
   });
