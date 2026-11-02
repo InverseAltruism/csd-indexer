@@ -13,12 +13,13 @@ import { COIN, workForBits } from "@inversealtruism/csd-codec";
 // nominal blocks per window at the 120s target (heights, not wall-time; deterministic)
 const WINDOWS: Record<string, number> = { "1d": 720, "7d": 5040, "30d": 21600 };
 
-// Canonicalize the public args BEFORE they reach the memo cache key (below), so an attacker varying
-// ?window / ?limit cannot defeat the per-tip dedup or grow the cache one entry per distinct value:
-// every unknown window collapses to "all" (minersImpl already treats unknown as all-time), and limit
-// clamps to the same [1,500] range richlistImpl uses. Bounds the cache to 4 window keys + the limit set.
+// Public args are canonicalized before they reach the memo key (below), so varying ?window, ?limit or ?points
+// cannot add a scan per tip: an unknown window collapses to "all", the rich list is read once per tip at
+// RICHLIST_MAX and every ?limit is a slice of it. A tip's cache then holds 4 miners entries, one rich list, and at
+// most 4 x 200 series entries, each a read of at most 201 block rows (test/analytics-memo.test.ts).
 const normWindow = (w: string): string => (Object.hasOwn(WINDOWS, w) ? w : "all");
-const normLimit = (limit: number): number => Math.max(1, Math.min(500, Math.floor(Number(limit)) || 100));
+const RICHLIST_MAX = 500;
+const normLimit = (limit: number): number => Math.max(1, Math.min(RICHLIST_MAX, Math.floor(Number(limit)) || 100));
 // /analytics/series bucket count: same canonicalize-before-memo rule, [1,200], default 56.
 const SERIES_POINTS_DEFAULT = 56;
 const SERIES_POINTS_MAX = 200;
@@ -49,8 +50,10 @@ async function tipRow(): Promise<{ height: number; time: number; chainwork: stri
 // blocks; so a request flood would otherwise stall ingestion at scale. Their result changes ONLY
 // when the canonical tip changes (a new block or a reorg), so cache keyed on the tip identity
 // (height + hash → a same-height reorg also busts it). Args are canonicalized by the exported
-// wrappers (normWindow/normLimit) BEFORE keying, so the dedup holds even under garbage-varied params
-// and the cache stays bounded to the small fixed arg set. Returns the cached object by reference
+// wrappers (normWindow/normPoints) BEFORE keying, so the dedup holds even under garbage-varied params
+// and the cache stays bounded to the small fixed arg set. The promise is cached before it settles, so
+// concurrent reads at a new tip share one computation; a rejected one is dropped, so the next read
+// computes again. Returns the cached object by reference
 // (callers only serialize it, never mutate). No tip yet (empty chain) → never caches; cache holds only
 // current-tip entries (cleared on tip change). The tipKey()-then-impl-tipRow() gap is a benign TOCTOU:
 // a result computed at T+1 could be stored under key T, but it is evicted on the next call (which sees
@@ -64,16 +67,18 @@ async function tipKey(): Promise<string | null> {
 // the failover-LB poll target, so its four COUNT(*) full scans were the most-hit unmemoized cost.
 export function memoByTip<A extends unknown[], R>(fn: (...args: A) => Promise<R>): (...args: A) => Promise<R> {
   let curKey: string | null = null;
-  const cache = new Map<string, R>();
+  const cache = new Map<string, Promise<R>>();
   return async (...args: A): Promise<R> => {
     const key = await tipKey();
     if (key === null) return fn(...args);                 // no tip indexed → compute, don't cache
     if (key !== curKey) { cache.clear(); curKey = key; }  // tip moved → drop stale-tip entries
     const mk = JSON.stringify(args);
-    if (cache.has(mk)) return cache.get(mk) as R;
-    const value = await fn(...args);
-    cache.set(mk, value);
-    return value;
+    const hit = cache.get(mk);
+    if (hit) return hit;
+    const p = fn(...args);
+    cache.set(mk, p);
+    p.catch(() => { if (cache.get(mk) === p) cache.delete(mk); });
+    return p;
   };
 }
 
@@ -148,15 +153,17 @@ async function minersImpl(window: string): Promise<unknown> {
   };
 }
 
-async function richlistImpl(limit = 100): Promise<unknown> {
+interface Holder { rank: number; addr: string; balance: number | string; utxos: number; pct_of_emitted: number }
+type Richlist = { ok: false; error: string } | { ok: true; height: number; count: number; emitted_supply: string; holders: Holder[] };
+
+async function richlistImpl(): Promise<Richlist> {
   const tip = await tipRow();
   if (!tip) return { ok: false, error: "no blocks indexed" };
-  const lim = normLimit(limit);
   const rows = await store().all<{ addr: string; balance: number | bigint; utxos: number | bigint }>(`
     SELECT addr, SUM(value) AS balance, COUNT(*) AS utxos
     FROM outputs WHERE spent_txid IS NULL AND addr IS NOT NULL
     GROUP BY addr ORDER BY balance DESC, addr ASC LIMIT ?
-  `, lim);
+  `, RICHLIST_MAX);
   const emitted = await emittedSupply();
   return {
     ok: true, height: Number(tip.height), count: rows.length, emitted_supply: emitted.toString(),
@@ -286,14 +293,19 @@ async function seriesImpl(window: string, points: number): Promise<unknown> {
   return { window, from, to, points: out };
 }
 
-// Public endpoints (server.ts); args canonicalized (normWindow/normLimit) THEN memoized per canonical
+// Public endpoints (server.ts); args canonicalized (normWindow/normPoints) THEN memoized per canonical
 // tip, so the cache key is bounded and the dedup fires for repeated AND garbage-varied params. The
 // *Impl functions above are the uncached source of truth (and what the offline analytics test exercises
-// through these exports). supply() is argless.
+// through these exports). supply() is argless; richlist() slices the one memoized list.
 const minersMemo = memoByTip(minersImpl);
 const richlistMemo = memoByTip(richlistImpl);
 export const miners = (window: string): Promise<unknown> => minersMemo(normWindow(window));
-export const richlist = (limit = 100): Promise<unknown> => richlistMemo(normLimit(limit));
+export const richlist = async (limit = 100): Promise<unknown> => {
+  const r = await richlistMemo();
+  if (!r.ok) return r;
+  const holders = r.holders.slice(0, normLimit(limit));
+  return { ...r, count: holders.length, holders };
+};
 export const supply = memoByTip(supplyImpl);
 const seriesMemo = memoByTip(seriesImpl);
 export const series = (window: string, points = SERIES_POINTS_DEFAULT): Promise<unknown> => seriesMemo(normWindow(window), normPoints(points));

@@ -178,6 +178,7 @@ test("supply routes: only the number in whole CSD, as text/plain", async () => {
 test("supply routes: an empty index answers 503 without a number", () => {
   for (const r of [EMPTY.total, EMPTY.circulating]) {
     assert.equal(r.status, 503);
+    assert.equal(r.type, "text/plain; charset=utf-8");
     assert.doesNotMatch(r.body, /\d/);
   }
 });
@@ -187,4 +188,27 @@ test("blockReward halves per era and hits zero after 64", () => {
   assert.equal(blockReward(1_051_199), 5_000_000_000n);
   assert.equal(blockReward(1_051_200), 2_500_000_000n);
   assert.equal(blockReward(64 * 1_051_200), 0n);
+});
+
+// Listing sites publish these figures as CSD's supply: a store error must answer 500 without a number, and the failed
+// read must not be kept for the tip (the next read answers the figure). Last in the file: it adds a block.
+test("supply routes: a store error on the supply query answers 500 without a number; the next read answers", async () => {
+  await s.run(SQL_BLOCK, 11, id(1011), id(1010), id(2011), 1_700_000_000 + 11 * 120, 0x1e00ffff, 11, 1, 1, "11000");
+  const st = s as unknown as { get: (...a: unknown[]) => Promise<unknown> };
+  const get = st.get.bind(s);
+  st.get = (...a: unknown[]) => (/SUM\(o\.value\)/.test(String(a[0])) ? Promise.reject(new Error("db down")) : get(...a));
+  try {
+    for (const path of ["/analytics/supply/total", "/analytics/supply/circulating"]) {
+      const r = await getText(path);
+      assert.equal(r.status, 500, path);
+      assert.doesNotMatch(r.body, /\d/, path);
+    }
+  } finally {
+    delete (st as { get?: unknown }).get;
+  }
+  for (const path of ["/analytics/supply/total", "/analytics/supply/circulating"]) {
+    const r = await getText(path);
+    assert.equal(r.status, 200, path);
+    assert.equal(r.body, "498.76543211", path);
+  }
 });

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- `/analytics/richlist` reads the top 500 holders once per tip and answers each `?limit` with a slice of it; each
+  distinct limit from 1 to 500 was a full `GROUP BY` scan of the unspent outputs per tip, so a caller varying the
+  limit could run 500 scans a block. The answer for every limit is unchanged. `memoByTip` caches the computation's
+  promise before it settles, so concurrent reads at a new tip (every open explorer tab, `/health`'s counts,
+  `/domains`) share one scan instead of each running it, and drops a rejected one, so a failed read is not kept for
+  the tip. `test/analytics-memo.test.ts`; `test/analytics.test.ts` now also pins that a store error on the supply
+  query answers the plain-text supply routes with 500 and no number, and that the empty index's 503 is `text/plain`.
 - A WebSocket client could end the indexer process, the sync loop with the API: a subscribe frame of `null`, or
   with `track-domain` or `track-address` not an array, threw in the message handler, and a frame ws refuses (one
   that is not UTF-8) was emitted as an `error` with no listener. The handler now ignores a frame that is not a JSON
