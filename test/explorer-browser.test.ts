@@ -167,11 +167,9 @@ const NAMES: Record<string, unknown> = {
 };
 function ADDRESS(k: string, _q: URLSearchParams): unknown {
   if (k === `/address/${BUYER}`) return { address: BUYER, chain_stats: { balance: 0, funded: 0, spent: 0, tx_count: ATT_BY_ID.size } };
-  if (k === `/address/${BUYER}/utxo`) return [];
   if (k === `/address/${BUYER}/txs`) return Object.values(ATTESTS).map(attTx);
   if (k.startsWith("/tx/") && ATT_BY_ID.has(k.slice(4))) return attTx(ATT_BY_ID.get(k.slice(4))!);
-  if (k === `/address/${WALLET}`) return { address: WALLET, chain_stats: { balance: 0, funded: 0, spent: 0, tx_count: 50 } };
-  if (k === `/address/${WALLET}/utxo`) return [];
+  if (k === `/address/${WALLET}`) return { address: WALLET, chain_stats: { balance: 0, funded: 0, spent: 0, tx_count: 50, utxo_count: 1234 } };
   if (k === `/address/${WALLET}/txs`) return PAGE1.map(txRow);
   if (k === `/address/${WALLET}/txs/chain/${PAGE1[PAGE1.length - 1]!.txid}`) return PAGE2.map(txRow);
   const prop = k.startsWith("/proposal/") ? [...PROPS, ...Object.values(CONTENT_PROPS), OFFER, SWAP].find((p) => p.txid === k.slice(10)) : undefined;
@@ -1086,6 +1084,24 @@ test("address page: the address grouped in fours on screen, copied whole by sele
     assert.equal(await v.page.evaluate(() => navigator.clipboard.readText()), WALLET);
     assert.deepEqual(v.errors, []);
   } finally { await v.close(); }
+});
+
+// The address page's UTXO figure is /address/:a's utxo_count: the page does not read /utxo, which answers rows a page at a
+// time. An indexer older than the page (no utxo_count) shows a dash.
+test("address page: the UTXO count is chain_stats.utxo_count, with no /utxo read; without the field a dash", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true });
+  for (const [who, want] of [[WALLET, "1,234"], [BUYER, "-"]] as const) {
+    const v = await open(`/explorer#/address/${who}`, 1280, () => !!document.querySelector(".kv .g4"));
+    try {
+      const shown = await v.page.evaluate(() => {
+        const cells = [...document.querySelectorAll(".kv > div")] as any[];
+        return cells[cells.findIndex((c) => c.textContent === "UTXOs") + 1]?.textContent;
+      });
+      assert.equal(shown, want, who);
+      assert.deepEqual(REQS.filter((p) => p.endsWith("/utxo")), [], "no /utxo read");
+      assert.deepEqual(v.errors, []);
+    } finally { await v.close(); }
+  }
 });
 
 // The indexer's state, read from /health: live, the latest-blocks heading says so and the search has its row to itself;

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- `GET /address/:a` gains `chain_stats.utxo_count` (one index-backed count of the unspent outputs), and the explorer's
+  address page shows it instead of reading `/address/:a/utxo` only to count the rows. `/address/:a/utxo` answers at
+  most 1,000 rows a call, in (block height, txid, vout) order, with `after=<block_height>:<txid>:<vout>` for the next
+  page; it answered up to 100,000 rows a call, so an address built with many small outputs made every call serialise
+  its whole set on the indexer's event loop. A caller that reads the whole set must now follow
+  `after` (cairn-sdk's `addressUtxo` reads one call). The row shape is unchanged. `test/address-utxo.test.ts`, and the
+  explorer browser test checks the page makes no `/utxo` read.
 - `/analytics/richlist` reads the top 500 holders once per tip and answers each `?limit` with a slice of it; each
   distinct limit from 1 to 500 was a full `GROUP BY` scan of the unspent outputs per tip, so a caller varying the
   limit could run 500 scans a block. The answer for every limit is unchanged. `memoByTip` caches the computation's

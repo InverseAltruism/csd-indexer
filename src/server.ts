@@ -197,9 +197,18 @@ export function buildApp() {
     const ids = await q.addressTxids(req.params.a!, { height: h0, txid: last });
     res.json(await q.txsWithOutputs(ids.map((r) => r.txid)));
   }));
+  // One page of q.UTXO_PAGE; the next page is ?after=<block_height>:<txid>:<vout> of the last row. outputs.vout is a
+  // 4-byte integer on Postgres, so a larger vout is refused here rather than failing the query.
   app.get("/address/:a/utxo", h(async (req, res) => {
     if (!ADDR.test(req.params.a!.toLowerCase())) return bad(res, "want /address/0x<40-hex>");
-    res.json((await q.addressUtxos(req.params.a!)).map((o) => ({ txid: o.txid, vout: o.vout, value: o.value, status: { confirmed: true, block_height: o.height } })));
+    let after: q.UtxoCursor | null = null;
+    if (req.query.after !== undefined) {
+      const m = /^(\d{1,16}):(0x[0-9a-fA-F]{64}):(\d{1,10})$/.exec(String(req.query.after));
+      const height = Number(m?.[1]), vout = Number(m?.[3]);
+      if (!m || !Number.isSafeInteger(height) || vout > 2 ** 31 - 1) return bad(res, "want after=<height>:<txid>:<vout> of the previous page's last row");
+      after = { height, txid: m[2]!.toLowerCase(), vout };
+    }
+    res.json((await q.addressUtxos(req.params.a!, after)).map((o) => ({ txid: o.txid, vout: o.vout, value: o.value, status: { confirmed: true, block_height: o.height } })));
   }));
 
   // ── CSD extras ──

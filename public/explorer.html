@@ -1481,7 +1481,7 @@ async function txPage(v,id){
 
 async function addrPage(v,a){
   await warmCx();
-  const [info,utxos,txs]=await Promise.all([j('/address/'+a),j('/address/'+a+'/utxo'),j('/address/'+a+'/txs')]);
+  const [info,txs]=await Promise.all([j('/address/'+a),j('/address/'+a+'/txs')]);
   const s=info.chain_stats;
   v.innerHTML='';
   const lbl=labelOf(a);
@@ -1491,7 +1491,7 @@ async function addrPage(v,a){
     <div>received</div><div class="v">${fmtCSD(s.funded)}</div>
     <div>spent</div><div class="v">${fmtCSD(s.spent)}</div>
     <div>tx count</div><div class="v">${fmtInt(s.tx_count)}</div>
-    <div>UTXOs</div><div class="v">${fmtInt(utxos.length)}</div>
+    <div>UTXOs</div><div class="v">${s.utxo_count!=null?fmtInt(s.utxo_count):'-'}</div>
   </div><div class="kv" id="cxpanel" hidden></div></div>`));
 
   // ── CairnX holdings (token balances + .csd names), cairn front door only ──
