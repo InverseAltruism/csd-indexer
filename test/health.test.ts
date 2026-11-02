@@ -4,16 +4,22 @@
 // runs once per tip and re-runs on a new block, (3) freshness fields stay live (not memoized).
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { tmpDb } from "./_tmpdb.js";
 
 const DB = tmpDb("health");
 process.env.CSD_INDEX_DB = DB;
 process.env.CSD_INDEX_PG_SCHEMA = "t_health";
+process.env.CSD_INDEX_CHECKPOINT_FLOOR = "123456";
 
 const { store, resetStoreForTests, closeDb } = await import("../src/db.js");
 const { memoByTip } = await import("../src/analytics.js");
 const { counts } = await import("../src/queries.js");
-const { buildApp } = await import("../src/server.js");
+const { buildApp, readCommit } = await import("../src/server.js");
 await resetStoreForTests();
 
 const A = "0x" + "aa".repeat(20);
@@ -71,4 +77,30 @@ test("health freshness: seconds_since_tip tracks the NEW tip immediately (not me
   assert.equal(after.blocks, 4, "served counts refresh with the tip");
   assert.ok(Number(after.seconds_since_tip) <= Number(before.seconds_since_tip) - 100,
     "freshness must be computed from the live tip row, not a cached one");
+});
+
+// What the process loaded: the tree's HEAD read once at start, so a pull without a restart shows as a mismatch, and the
+// checkpoint floor in force. The live unit runs as another user than the tree's owner, where git refuses the tree
+// unless safe.directory names it; GIT_TEST_ASSUME_DIFFERENT_OWNER makes git treat this tree that way.
+const ROOT = fileURLToPath(new URL("..", import.meta.url));
+const HEAD = execFileSync("git", ["-C", ROOT, "rev-parse", "--short", "HEAD"], { encoding: "utf8" }).trim();
+
+test("health: build.commit is the tree's HEAD and checkpoint_floor the floor in force", async () => {
+  const before = Date.now();
+  const j = await health();
+  const build = j.build as { commit: string; startedAt: number };
+  assert.equal(build.commit, HEAD);
+  assert.ok(Number.isSafeInteger(build.startedAt) && build.startedAt <= before, "startedAt is the start, not this read");
+  assert.equal(j.checkpoint_floor, 123456);
+});
+
+test("readCommit: the HEAD on a tree another user owns; \"unknown\" outside a checkout", () => {
+  process.env.GIT_TEST_ASSUME_DIFFERENT_OWNER = "1";
+  try {
+    assert.throws(() => execFileSync("git", ["-C", ROOT, "rev-parse", "HEAD"], { stdio: ["ignore", "pipe", "pipe"] }),
+      (e: { stderr?: Buffer }) => /dubious ownership/.test(String(e.stderr)), "plain git refuses the tree");
+    assert.equal(readCommit(ROOT), HEAD);
+  } finally { delete process.env.GIT_TEST_ASSUME_DIFFERENT_OWNER; }
+  const bare = mkdtempSync(join(tmpdir(), "csd-idx-nogit-"));
+  try { assert.equal(readCommit(bare), "unknown"); } finally { rmSync(bare, { recursive: true, force: true }); }
 });

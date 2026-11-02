@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- `/health` gains `build` (`commit`: the checkout's HEAD this process loaded, read once at start; `startedAt`) and
+  `checkpoint_floor` (the unwind floor in force), so a live query tells a tag from a later commit and shows which
+  floor a process holds. The commit is read with a command-scope `safe.directory`, since a service user that does
+  not own the tree gets "dubious ownership" from git otherwise, and is `unknown` when git or the checkout is missing.
+  `test/health.test.ts`.
 - CI's exact-pin step checks csd-crypto as well as csd-codec and csd-light; a caret on csd-crypto (the signer and
   payee address derivation) passed it. `test/ci-workflow.test.ts` runs the step's script on this package.json and on
   a copy with each of the three floated.
