@@ -103,26 +103,33 @@ const closed = (ws: WebSocket, ms = 2000) => new Promise<number>((resolve, rejec
 // would keep an in-process server alive.
 const boot = `const { serve } = await import(${JSON.stringify(new URL("../src/server.ts", import.meta.url).href)});
   const s = serve(0, "127.0.0.1"); s.on("listening", () => console.log("port " + s.address().port));`;
-const child = spawn(process.execPath, [...process.execArgv, "--input-type=module", "-e", boot],
-  { env: { ...process.env, CSD_INDEX_DB: tmpDb("stream-child"), CSD_INDEX_PG_SCHEMA: "t_stream_child" }, stdio: ["ignore", "pipe", "pipe"] });
-let childErr = "";
-child.stderr.on("data", (d) => { childErr += d; });
-const exited = new Promise<string>((r) => child.once("exit", (code) =>
-  r(`server exited (${code}): ${childErr.split("\n").find((l) => /Error/.test(l)) ?? childErr}`)));
-const CHILD = await new Promise<number>((resolve, reject) => {
-  let out = "";
-  child.stdout.on("data", (d) => { out += d; const m = /port (\d+)/.exec(out); if (m) resolve(Number(m[1])); });
-  void exited.then(reject);
-});
-const alive = async () => {
-  assert.equal(await Promise.race([exited, new Promise<string>((r) => setTimeout(() => r("running"), 200))]), "running");
-  assert.equal((await fetch(`http://127.0.0.1:${CHILD}/health`)).status, 200, "the API answers");
-};
-const acked = async (ws: WebSocket, pred: (m: any) => boolean, what: string) => {
-  const m = await Promise.race([next(ws, (x) => x.ack === true && pred(x)), exited]);
-  assert.notEqual(typeof m, "string", `${what}: ${m}`);
-  return m;
-};
+const children: ReturnType<typeof spawn>[] = [];
+async function serverChild(name: string, env: Record<string, string> = {}) {
+  const child = spawn(process.execPath, [...process.execArgv, "--input-type=module", "-e", boot],
+    { env: { ...process.env, CSD_INDEX_DB: tmpDb(name), CSD_INDEX_PG_SCHEMA: `t_${name.replace(/-/g, "_")}`, ...env }, stdio: ["ignore", "pipe", "pipe"] });
+  children.push(child);
+  let err = "";
+  child.stderr!.on("data", (d) => { err += d; });
+  const exited = new Promise<string>((r) => child.once("exit", (code) =>
+    r(`server exited (${code}): ${err.split("\n").find((l) => /Error/.test(l)) ?? err}`)));
+  const port = await new Promise<number>((resolve, reject) => {
+    let out = "";
+    child.stdout!.on("data", (d) => { out += d; const m = /port (\d+)/.exec(out); if (m) resolve(Number(m[1])); });
+    void exited.then(reject);
+  });
+  const alive = async () => {
+    assert.equal(await Promise.race([exited, new Promise<string>((r) => setTimeout(() => r("running"), 200))]), "running");
+    assert.equal((await fetch(`http://127.0.0.1:${port}/health`)).status, 200, "the API answers");
+  };
+  const acked = async (ws: WebSocket, pred: (m: any) => boolean, what: string) => {
+    const m = await Promise.race([next(ws, (x) => x.ack === true && pred(x)), exited]);
+    assert.notEqual(typeof m, "string", `${what}: ${m}`);
+    return m;
+  };
+  return { port, exited, alive, acked };
+}
+const main = await serverChild("stream-child");
+const CHILD = main.port, alive = main.alive, acked = main.acked, exited = main.exited;
 
 test("WS: malformed subscribe frames leave the process running; the same socket's honest subscribe is acked", async () => {
   for (const frame of ["null", '{"track-domain":"x"}', '{"track-address":5}', '{"track-proposal":null,"track-domain":{}}', "7", '"s"']) {
@@ -168,6 +175,24 @@ test("WS: a text frame that is not UTF-8 closes that socket (1007) and the proce
   await alive();
 });
 
+// A socket over the client cap is closed with 1013 at once, but the frames it sent before the close is acknowledged still
+// reach ws's receiver: a protocol error there is emitted on that socket too.
+test("WS: over the client cap (1013), a bad frame on the refused socket leaves the process running; the held socket is served", async () => {
+  const capped = await serverChild("stream-cap", { CSD_INDEX_MAX_WS: "1" });
+  const held = await openWs(capped.port);
+  for (const [what, send] of [["not UTF-8", (ws: WebSocket) => ws.send(Buffer.from([0x7b, 0xc3, 0x28, 0x7d]), { binary: false })],
+    ["over 64 KiB", (ws: WebSocket) => ws.send("x".repeat(65 * 1024))]] as const) {
+    const ws = new WebSocket(`ws://127.0.0.1:${capped.port}/ws`);
+    clients.push(ws);
+    const code = Promise.race([closed(ws), capped.exited]);
+    ws.once("open", () => send(ws));
+    assert.equal(await code, 1013, what);
+    await capped.alive();
+  }
+  held.send(JSON.stringify({ "track-domain": ["cairn:wall"] }));
+  assert.deepEqual((await capped.acked(held, () => true, "held")).tracking.domains, ["cairn:wall"]);
+});
+
 test("SSE /stream/blocks streams block + reorg events", async () => {
   const ctrl = new AbortController();
   const res = await fetch(`http://127.0.0.1:${PORT}/stream/blocks`, { signal: ctrl.signal });
@@ -188,4 +213,4 @@ test("SSE /stream/blocks streams block + reorg events", async () => {
   ctrl.abort();
 });
 
-test.after(() => { for (const ws of clients) ws.terminate(); child.kill(); server.close(); });
+test.after(() => { for (const ws of clients) ws.terminate(); for (const c of children) c.kill(); server.close(); });

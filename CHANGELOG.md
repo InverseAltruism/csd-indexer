@@ -33,7 +33,7 @@
   with `track-domain` or `track-address` not an array, threw in the message handler, and a frame ws refuses (one
   that is not UTF-8) was emitted as an `error` with no listener. The handler now ignores a frame that is not a JSON
   object and a field that is not an array, closes only its own socket (1011) if handling still throws, and every
-  socket has an `error` listener. Frames are capped at 64 KiB by ws's `maxPayload` (closed with 1009 before they
+  socket, one refused over the client cap (1013) included, gets an `error` listener before anything else. Frames are capped at 64 KiB by ws's `maxPayload` (closed with 1009 before they
   are buffered; the default was 100 MiB, checked only after buffering). `test/stream.test.ts` runs these against a
   server in a child process.
 - `GET /analytics/supply/total` and `GET /analytics/supply/circulating`: the total and circulating supply in whole CSD

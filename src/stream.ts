@@ -80,12 +80,15 @@ function matches(sub: Sub, e: IndexEvent): boolean {
 export function attachWs(server: Server): WebSocketServer {
   const wss = new WebSocketServer({ server, path: "/ws", maxPayload: WS_MAX_FRAME });
   wss.on("connection", (ws: WebSocket) => {
+    // First, before the cap's early return: a socket closed with 1013 still has its earlier frames read, and ws emits a
+    // protocol error (an oversize or malformed frame) on the socket before closing it with its code.
+    ws.on("error", () => { /* ws closes the socket with the error's code itself */ });
     if (wsOpen >= MAX_WS) { ws.close(1013, "too many clients"); return; }
     wsOpen++;
     const sub: Sub = { domains: new Set(), addresses: new Set(), proposals: new Set(), all: false };
     const off = bus.onEvent((e) => { if (ws.readyState === ws.OPEN && matches(sub, e)) ws.send(JSON.stringify(e)); });
-    // A throw from these listeners, or an `error` emitted with none, is uncaught and ends the process, the sync loop
-    // with the API (test/stream.test.ts); a frame that still throws past the shape checks closes its own socket only.
+    // A throw from these listeners, like an `error` emitted with no listener, is uncaught and ends the process, the sync
+    // loop with the API (test/stream.test.ts); a frame that still throws past the shape checks closes its own socket only.
     ws.on("message", (raw) => {
       try {
         let msg: unknown; try { msg = JSON.parse(String(raw)); } catch { return; }
@@ -101,7 +104,6 @@ export function attachWs(server: Server): WebSocketServer {
         ws.close(1011, "subscribe frame not handled");
       }
     });
-    ws.on("error", () => { /* a protocol error (an oversize or malformed frame): ws closes the socket with its code */ });
     ws.on("close", () => { off(); wsOpen--; });
     ws.send(JSON.stringify({ hello: true }));
   });
