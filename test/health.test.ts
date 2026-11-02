@@ -94,13 +94,19 @@ test("health: build.commit is the tree's HEAD and checkpoint_floor the floor in 
   assert.equal(j.checkpoint_floor, 123456);
 });
 
+// The host's own git config is left out (no global or system file), so a safe.directory entry there (actions/checkout
+// adds the workspace to the global config) can neither make the refusal vanish nor stand in for readCommit's own.
+const OTHER_OWNER = { GIT_TEST_ASSUME_DIFFERENT_OWNER: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_SYSTEM: "/dev/null" };
 test("readCommit: the HEAD on a tree another user owns; \"unknown\" outside a checkout", () => {
-  process.env.GIT_TEST_ASSUME_DIFFERENT_OWNER = "1";
+  const saved = Object.fromEntries(Object.keys(OTHER_OWNER).map((k) => [k, process.env[k]]));
+  Object.assign(process.env, OTHER_OWNER);
   try {
     assert.throws(() => execFileSync("git", ["-C", ROOT, "rev-parse", "HEAD"], { stdio: ["ignore", "pipe", "pipe"] }),
       (e: { stderr?: Buffer }) => /dubious ownership/.test(String(e.stderr)), "plain git refuses the tree");
     assert.equal(readCommit(ROOT), HEAD);
-  } finally { delete process.env.GIT_TEST_ASSUME_DIFFERENT_OWNER; }
+  } finally {
+    for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  }
   const bare = mkdtempSync(join(tmpdir(), "csd-idx-nogit-"));
   try { assert.equal(readCommit(bare), "unknown"); } finally { rmSync(bare, { recursive: true, force: true }); }
 });
