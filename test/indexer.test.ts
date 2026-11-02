@@ -7,6 +7,7 @@
 // CSD_INDEX_PG_SCHEMA below) to run the IDENTICAL suite against Postgres.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { verifyMerkleProof, merkleRoot } from "@inversealtruism/csd-codec";
 import { tmpDb } from "./_tmpdb.js";
 
@@ -117,6 +118,11 @@ test("records Propose and Attest as full per-row events", async () => {
   const atts = await store().all<any>("SELECT * FROM attestations WHERE proposal_id=?", txid("prop1"));
   assert.equal(atts.length, 1);
   assert.equal(Number(atts[0].score), 80);
+  // the author is input 0's key (hash160 of its pubkey, recomputed with node:crypto), not the address output 0 pays
+  const signer = "0x" + createHash("ripemd160").update(createHash("sha256").update(Buffer.from(pub, "hex")).digest()).digest("hex");
+  assert.notEqual(signer, ADDR_A);
+  assert.equal(p.proposer, signer, "proposer");
+  assert.equal(atts[0].attester, signer, "attester");
 });
 
 test("merkle proof for an indexed tx verifies under the L0 convention", async () => {

@@ -1,21 +1,23 @@
-// Pure decode helpers — verified against a REAL on-chain signature/address pair
-// (non-self-fulfilling: the address is recomputed independently with @noble in the
-// SDK's crypto and must match what deriveAddr produces from the live script_sig).
+// Pure decode helpers. deriveAddr (csd-crypto's signerAddrFromScriptSig) is checked against a real on-chain scriptSig
+// and its signer: every proposer and attester the indexer stores, and the resolver trusts, comes from it.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { deriveAddr, addrFromScriptPubkey, appType } from "../src/decode.js";
 
-// A real CSD_SIG_V1 script_sig observed on-chain (height 27031, Propose tx):
+// Input 0 of the cairnx:v1 Propose 0x43e9c34f7c8cead5808ada276835946a9307236c53fe9b932c17219a51c6d2c6, mined at height
+// 65,507 (csd-sdk's GOLDEN_PROPOSE_TX carries the same tx). The node verified its signature against this pubkey, and
+// the tx pays its change to the signer's address.
 const REAL_SCRIPT_SIG =
-  "0x40d6c1118d1f001e47a9b65a74f8d2a13fa325064832e17793bfeb2f4840c7017e70418802f6d5174c5336d0ecaea8092af83e5c225ce3d42f927a7f572eb3dbc221038e2468cae294322";
+  "0x40560c786b3fbbbb3ca566e586fc5b5cfaf78853fd55618ccebc1c9c5bd929b3225fbd6525c03919ebb289e5cb4a5abbb5d4e7ce79db6432de795acea25a5c1c6c21038e2468cae294322e242d476f20b581cd06def39782a4e76a12139b150338a35d";
+const REAL_SIGNER = "0x44d92872a5b65d37d60ed532f41efe7c5aed59ec";
 
-test("deriveAddr extracts a 20-byte addr from a CSD_SIG_V1 script_sig", () => {
-  // truncated above for brevity in the literal; build a syntactically valid one:
-  const sig = "ab".repeat(64);          // 64-byte sig
-  const pub = "02" + "cd".repeat(32);   // 33-byte compressed pubkey
-  const ss = "0x40" + sig + "21" + pub;
-  const addr = deriveAddr(ss);
-  assert.ok(addr && /^0x[0-9a-f]{40}$/.test(addr), "should be a 0x-prefixed 20-byte hex");
+test("deriveAddr gives the known signer of a real on-chain scriptSig", () => {
+  assert.equal(deriveAddr(REAL_SCRIPT_SIG), REAL_SIGNER);
+  // the address is the pubkey's hash160, recomputed here with node:crypto (OpenSSL), not csd-crypto's @noble code
+  const pub = Buffer.from(REAL_SCRIPT_SIG.slice(-66), "hex");
+  assert.equal(REAL_SCRIPT_SIG.slice(-68, -66), "21");
+  assert.equal("0x" + createHash("ripemd160").update(createHash("sha256").update(pub).digest()).digest("hex"), REAL_SIGNER);
 });
 
 test("deriveAddr rejects malformed script_sigs", () => {
@@ -49,11 +51,4 @@ test("appType classifies coinbase, Propose, Attest, and Transfer", () => {
   assert.equal(appType({ app: { type: "Attest" } }, false), "Attest");
   assert.equal(appType({ app: { type: "None" } }, false), "Transfer");
   assert.equal(appType({}, false), "Transfer");
-});
-
-// keep the real sample referenced so it isn't dead — it documents the on-chain shape
-test("real on-chain script_sig has the CSD_SIG_V1 framing", () => {
-  const h = REAL_SCRIPT_SIG.slice(2);
-  assert.equal(h.slice(0, 2), "40");      // 64-byte sig marker
-  assert.equal(h.slice(130, 132), "21");  // 33-byte pubkey marker
 });
