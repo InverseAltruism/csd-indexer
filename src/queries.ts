@@ -126,11 +126,13 @@ export async function addressUtxos(addr: string, after: UtxoCursor | null): Prom
 }
 export async function addressStats(addr: string): Promise<{ funded: number | string; spent: number | string; balance: number | string; tx_count: number; utxo_count: number }> {
   const a = addr.toLowerCase();
-  const funded = (await store().get<{ v: number | bigint }>("SELECT COALESCE(SUM(value),0) v FROM outputs WHERE addr=?", a))?.v ?? 0;
-  const spent = (await store().get<{ v: number | bigint }>("SELECT COALESCE(SUM(value),0) v FROM outputs WHERE addr=? AND spent_txid IS NOT NULL", a))?.v ?? 0;
+  // one pass over the address's outputs (idx_out_addr) for both sums and the unspent count
+  const o = await store().get<{ funded: number | bigint; spent: number | bigint; unspent: number | bigint }>(
+    "SELECT COALESCE(SUM(value),0) funded, COALESCE(SUM(CASE WHEN spent_txid IS NOT NULL THEN value ELSE 0 END),0) spent, " +
+    "COUNT(*) - COUNT(spent_txid) unspent FROM outputs WHERE addr=?", a);
   const txc = (await store().get<{ n: number }>("SELECT COUNT(DISTINCT txid) n FROM address_history WHERE addr=?", a))?.n ?? 0;
-  const unspent = (await store().get<{ n: number }>("SELECT COUNT(*) n FROM outputs WHERE addr=? AND spent_txid IS NULL", a))?.n ?? 0;
-  return { funded: amt(funded), spent: amt(spent), balance: amt(BigInt(funded) - BigInt(spent)), tx_count: Number(txc), utxo_count: Number(unspent) };
+  const funded = o?.funded ?? 0, spent = o?.spent ?? 0;
+  return { funded: amt(funded), spent: amt(spent), balance: amt(BigInt(funded) - BigInt(spent)), tx_count: Number(txc), utxo_count: Number(o?.unspent ?? 0) };
 }
 
 // Coinbase lifetime totals read from the maintained coinbase_totals table (db.ts), one row per address, with

@@ -15,7 +15,8 @@
   max supply. It now follows the rule of /trade's token cards: "fixed supply" only once an issuer-mint token is minted
   to its max, otherwise "issuer mint", and the token page says how much more the issuer can mint. Open mint is
   unchanged. `test/explorer-browser.test.ts`.
-- `GET /address/:a` gains `chain_stats.utxo_count` (one index-backed count of the unspent outputs), and the explorer's
+- `GET /address/:a` gains `chain_stats.utxo_count` (the unspent outputs, counted in the same pass over the address's
+  outputs that sums funded and spent, which were two queries before), and the explorer's
   address page shows it instead of reading `/address/:a/utxo` only to count the rows. `/address/:a/utxo` answers at
   most 1,000 rows a call, in (block height, txid, vout) order, with `after=<block_height>:<txid>:<vout>` for the next
   page; it answered up to 100,000 rows a call, so an address built with many small outputs made every call serialise
