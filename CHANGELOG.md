@@ -2,6 +2,41 @@
 
 ## Unreleased
 
+- `/health` gains `build` (`commit`: the first 7 characters of the checkout's HEAD this process loaded, as cairn's
+  `/api/health` gives it, read once at start; `startedAt`) and `checkpoint_floor` (the unwind floor in force), so a
+  live query tells a tag from a later commit and shows which floor a process holds. The commit is read with a command-scope `safe.directory`, since a service user that does
+  not own the tree gets "dubious ownership" from git otherwise, and is `unknown` when git or the checkout is missing.
+  `test/health.test.ts`.
+- CI's exact-pin step checks csd-crypto as well as csd-codec and csd-light; a caret on csd-crypto (the signer and
+  payee address derivation) passed it. `test/ci-workflow.test.ts` runs the step's script on this package.json and on
+  a copy with each of the three floated.
+- The explorer called every issuer-mint token "fixed supply" (home card) and "Fixed supply: only the issuer could mint
+  (no dilution)" (token page), and a deploy record "issuer-mint (fixed)", though cairnx lets the issuer mint up to the
+  max supply. It now follows the rule of /trade's token cards: "fixed supply" only once an issuer-mint token is minted
+  to its max, otherwise "issuer mint", and the token page says how much more the issuer can mint. Open mint is
+  unchanged. `test/explorer-browser.test.ts`.
+- `GET /address/:a` gains `chain_stats.utxo_count` (the unspent outputs, counted in the same pass over the address's
+  outputs that sums funded and spent, which were two queries before), and the explorer's address page shows it
+  instead of reading `/address/:a/utxo` only to count the rows. `/address/:a/utxo` answers at most 1,000 rows a call,
+  in (block height, txid, vout) order, with `after=<block_height>:<txid>:<vout>` for the next page; it answered up to
+  100,000 rows a call, so an address built with many small outputs made every call serialise its whole set on the
+  indexer's event loop. A caller that reads the whole set must now follow `after` (cairn-sdk's `addressUtxo` reads
+  one call). The row shape is unchanged. `test/address-utxo.test.ts`, and the
+  explorer browser test checks the page makes no `/utxo` read.
+- `/analytics/richlist` reads the top 500 holders once per tip and answers each `?limit` with a slice of it; each
+  distinct limit from 1 to 500 was a full `GROUP BY` scan of the unspent outputs per tip, so a caller varying the
+  limit could run 500 scans a block. The answer for every limit is unchanged. `memoByTip` caches the computation's
+  promise before it settles, so concurrent reads at a new tip (every open explorer tab, `/health`'s counts,
+  `/domains`) share one scan instead of each running it, and drops a rejected one, so a failed read is not kept for
+  the tip. `test/analytics-memo.test.ts`; `test/analytics.test.ts` now also pins that a store error on the supply
+  query answers the plain-text supply routes with 500 and no number, and that the empty index's 503 is `text/plain`.
+- A WebSocket client could end the indexer process, the sync loop with the API: a subscribe frame of `null`, or
+  with `track-domain` or `track-address` not an array, threw in the message handler, and a frame ws refuses (one
+  that is not UTF-8) was emitted as an `error` with no listener. The handler now ignores a frame that is not a JSON
+  object and a field that is not an array, closes only its own socket (1011) if handling still throws, and every
+  socket, one refused over the client cap (1013) included, gets an `error` listener before anything else. Frames are capped at 64 KiB by ws's `maxPayload` (closed with 1009 before they
+  are buffered; the default was 100 MiB, checked only after buffering). `test/stream.test.ts` runs these against a
+  server in a child process.
 - `GET /analytics/supply/total` and `GET /analytics/supply/circulating`: the total and circulating supply in whole CSD
   as a bare `text/plain` number, exact (bigint math, trailing zeros trimmed), the form CoinMarketCap asks a listing to
   serve; an empty index answers 503 without a number. Total supply is emitted supply less the unspent balance of the

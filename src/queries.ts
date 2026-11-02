@@ -110,17 +110,29 @@ export async function addressTxidHeight(addr: string, txid: string): Promise<num
     "SELECT height FROM address_history WHERE addr=? AND txid=? LIMIT 1", addr.toLowerCase(), txid.toLowerCase());
   return r ? Number(r.height) : null;
 }
-export async function addressUtxos(addr: string): Promise<OutRow[]> {
-  // bounded result; value already arrives exact (number or bigint) from the store
-  const rows = await store().all<OutRow>("SELECT * FROM outputs WHERE addr=? AND spent_txid IS NULL ORDER BY height, txid, vout LIMIT 100000", addr.toLowerCase());
+// An address's unspent outputs, one page at a time in (height, txid, vout) order; `after` is the last row of the
+// previous page. A page shorter than UTXO_PAGE is the last. The `height >= ?` term repeats what the keyset implies so
+// a planner walking idx_out_height starts at the cursor instead of below it.
+export const UTXO_PAGE = 1000;
+export interface UtxoCursor { height: number; txid: string; vout: number }
+export async function addressUtxos(addr: string, after: UtxoCursor | null): Promise<OutRow[]> {
+  const a = addr.toLowerCase();
+  const rows = after == null
+    ? await store().all<OutRow>("SELECT * FROM outputs WHERE addr=? AND spent_txid IS NULL ORDER BY height, txid, vout LIMIT ?", a, UTXO_PAGE)
+    : await store().all<OutRow>(
+      "SELECT * FROM outputs WHERE addr=? AND spent_txid IS NULL AND height >= ? AND (height > ? OR (height = ? AND (txid > ? OR (txid = ? AND vout > ?)))) " +
+      "ORDER BY height, txid, vout LIMIT ?", a, after.height, after.height, after.height, after.txid, after.txid, after.vout, UTXO_PAGE);
   return rows.map((r) => ({ ...r, value: amt(r.value as never) }));
 }
-export async function addressStats(addr: string): Promise<{ funded: number | string; spent: number | string; balance: number | string; tx_count: number }> {
+export async function addressStats(addr: string): Promise<{ funded: number | string; spent: number | string; balance: number | string; tx_count: number; utxo_count: number }> {
   const a = addr.toLowerCase();
-  const funded = (await store().get<{ v: number | bigint }>("SELECT COALESCE(SUM(value),0) v FROM outputs WHERE addr=?", a))?.v ?? 0;
-  const spent = (await store().get<{ v: number | bigint }>("SELECT COALESCE(SUM(value),0) v FROM outputs WHERE addr=? AND spent_txid IS NOT NULL", a))?.v ?? 0;
+  // one pass over the address's outputs (idx_out_addr) for both sums and the unspent count
+  const o = await store().get<{ funded: number | bigint; spent: number | bigint; unspent: number | bigint }>(
+    "SELECT COALESCE(SUM(value),0) funded, COALESCE(SUM(CASE WHEN spent_txid IS NOT NULL THEN value ELSE 0 END),0) spent, " +
+    "COUNT(*) - COUNT(spent_txid) unspent FROM outputs WHERE addr=?", a);
   const txc = (await store().get<{ n: number }>("SELECT COUNT(DISTINCT txid) n FROM address_history WHERE addr=?", a))?.n ?? 0;
-  return { funded: amt(funded), spent: amt(spent), balance: amt(BigInt(funded) - BigInt(spent)), tx_count: Number(txc) };
+  const funded = o?.funded ?? 0, spent = o?.spent ?? 0;
+  return { funded: amt(funded), spent: amt(spent), balance: amt(BigInt(funded) - BigInt(spent)), tx_count: Number(txc), utxo_count: Number(o?.unspent ?? 0) };
 }
 
 // Coinbase lifetime totals read from the maintained coinbase_totals table (db.ts), one row per address, with

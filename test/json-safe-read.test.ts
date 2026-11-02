@@ -73,7 +73,7 @@ test("/address/:a: 200, funded, spent and balance past 2^53 as decimal strings",
   const r = await get(`/address/${HOLDER}`);
   assert.equal(r.status, 200);
   assert.deepEqual(r.body.chain_stats, {
-    funded: (2n * BIG_FEE).toString(), spent: BIG_FEE.toString(), balance: BIG_FEE.toString(), tx_count: 0,
+    funded: (2n * BIG_FEE).toString(), spent: BIG_FEE.toString(), balance: BIG_FEE.toString(), tx_count: 0, utxo_count: 1,
   });
 });
 

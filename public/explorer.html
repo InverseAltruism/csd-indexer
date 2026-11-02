@@ -807,6 +807,9 @@ const tag=(name,cls,text)=>{const e=document.createElement(name);if(cls)e.classN
 // SECURITY: dec comes from RAW on-chain records (attacker-controlled) on the home activity feed:
 // clamp it so a crafted decimals (e.g. 7_000_000) can't blow up 10**dec / padStart into a DoS.
 const fmtAmt=(v,dec)=>{try{dec=Number(dec)||0;if(dec<0||dec>30)return esc(v);const n=BigInt(v);const d=BigInt(10)**BigInt(dec);const i=n/d,f=n%d;return f?`${group(i)}.${String(f).padStart(dec,'0').replace(/0+$/,'')}`:group(i);}catch{return esc(v);}};
+// A token's supply kind by the rule of /trade's token cards (cairn public/trade/manage.js): an issuer-mint token is
+// fixed only once minted to its max supply; below it the issuer can still mint the rest.
+const supplyKind=(t)=>t.mint!=='issuer'?'open':BigInt(t.minted)>=BigInt(t.supply)?'fixed':'issuer';
 // token decimals and the resolver's gate heights, read once per session (cairn front door only): action lines show
 // HUMAN amounts when known, labeled base units otherwise (never a silent 10^n shift), and name what a record did at
 // its height when the gates are known
@@ -889,7 +892,7 @@ function describeCairnx(rec,height,verdict){
     const done=!!verdict&&verdict.applied===true, say=(applied,request)=>done?applied:request;
     const giveTok = rec.give&&rec.give.ticker, giveName = rec.give&&rec.give.name;
     switch(rec.t){
-      case 'deploy': return `${kind('Token')}<span class="what">${say('Deployed token','Deploy request for token')} <b>${esc(rec.ticker)}</b></span>: supply ${fmtAmt(rec.supply,rec.decimals)}, ${rec.mint==='issuer'?'issuer-mint (fixed)':'open mint'}${rec.name?` · “${esc(rec.name)}”`:''}`;
+      case 'deploy': return `${kind('Token')}<span class="what">${say('Deployed token','Deploy request for token')} <b>${esc(rec.ticker)}</b></span>: supply ${fmtAmt(rec.supply,rec.decimals)}, ${rec.mint==='issuer'?'issuer mint':'open mint'}${rec.name?` · “${esc(rec.name)}”`:''}`;
       case 'mint': return `${kind('Token')}<span class="what">${say('Minted','Mint request for')} <b>${esc(rec.ticker)}</b></span>${rec.amount?`: ${amt(rec.amount,rec.ticker)}`:''}`;
       case 'transfer': return `${kind('Token')}<span class="what">${say('Transferred','Transfer request for')} <b>${amt(rec.amount,rec.ticker)}</b> <b>${esc(rec.ticker)}</b></span> to ${addrLink(rec.to)}`;
       case 'offer': {
@@ -1184,7 +1187,7 @@ async function home(v){
     const names=sibData(await sib(SIB.cairnx,'/names'));
     $('#tok-count',tokPanel).textContent=`${toks.length} listed`;
     const tokCard=(t)=>{const pct=Number(t.supply)>0?Number(BigInt(t.minted)*100n/BigInt(t.supply)):0;
-      return `<a class="coin" href="#/token/${esc(t.ticker)}"><span class="tk">${esc(t.ticker)}</span><span class="nm">${esc(t.name||'CairnX token')}, ${t.mint==='issuer'?'fixed supply':'open mint'}</span>
+      return `<a class="coin" href="#/token/${esc(t.ticker)}"><span class="tk">${esc(t.ticker)}</span><span class="nm">${esc(t.name||'CairnX token')}, ${{fixed:'fixed supply',issuer:'issuer mint',open:'open mint'}[supplyKind(t)]}</span>
         <div class="meta"><span>minted <b>${fmtAmt(t.minted,t.decimals)}</b></span><span>max <b>${fmtAmt(t.supply,t.decimals)}</b></span></div>
         <div class="bar"><i style="width:${Math.max(2,pct)}%"></i></div></a>`;};
     $('#tok-top',tokPanel).innerHTML=toks.slice(0,3).map(tokCard).join('');
@@ -1295,7 +1298,9 @@ async function tokenPage(v,ticker){
   v.appendChild(el(`<div class="panel"><h2 class="ex-title">Token ${esc(t.ticker)} <span class="dim">${esc(t.name||'CairnX token')}</span>${badge?' '+badge:''}</h2>
     <div class="kv">
       ${said?`<div>listing</div><div class="v">${said}</div>`:''}
-      <div>kind</div><div class="v">${t.mint==='issuer'?'Fixed supply: only the issuer could mint (no dilution)':'Open mint (up to '+fmtAmt(t.mintLimit||'0',t.decimals)+' per mint)'}</div>
+      <div>kind</div><div class="v">${{fixed:'Fixed supply: the issuer has minted the whole max supply',
+        issuer:`Issuer mint: the issuer can mint ${fmtAmt((BigInt(t.supply)-BigInt(t.minted)).toString(),t.decimals)} more, up to the max supply`,
+        open:'Open mint (up to '+fmtAmt(t.mintLimit||'0',t.decimals)+' per mint)'}[supplyKind(t)]}</div>
       <div>minted / max</div><div class="v"><b>${fmtAmt(t.minted,t.decimals)}</b> / ${fmtAmt(t.supply,t.decimals)} <span class="dim">(${pct.toFixed(1)}%)</span></div>
       <div>decimals</div><div class="v">${esc(t.decimals)}</div>
       <div>deployed</div><div class="v">block ${link('/block/'+t.height,fmtInt(t.height))} by ${addrLinkG(t.deployer)} <span class="dim">· tx ${txidLink(t.deployId)}</span></div>
@@ -1481,7 +1486,7 @@ async function txPage(v,id){
 
 async function addrPage(v,a){
   await warmCx();
-  const [info,utxos,txs]=await Promise.all([j('/address/'+a),j('/address/'+a+'/utxo'),j('/address/'+a+'/txs')]);
+  const [info,txs]=await Promise.all([j('/address/'+a),j('/address/'+a+'/txs')]);
   const s=info.chain_stats;
   v.innerHTML='';
   const lbl=labelOf(a);
@@ -1491,7 +1496,7 @@ async function addrPage(v,a){
     <div>received</div><div class="v">${fmtCSD(s.funded)}</div>
     <div>spent</div><div class="v">${fmtCSD(s.spent)}</div>
     <div>tx count</div><div class="v">${fmtInt(s.tx_count)}</div>
-    <div>UTXOs</div><div class="v">${fmtInt(utxos.length)}</div>
+    <div>UTXOs</div><div class="v">${s.utxo_count!=null?fmtInt(s.utxo_count):'-'}</div>
   </div><div class="kv" id="cxpanel" hidden></div></div>`));
 
   // ── CairnX holdings (token balances + .csd names), cairn front door only ──

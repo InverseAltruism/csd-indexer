@@ -4,7 +4,10 @@
 // go unscanned).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const ci = readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
 const lines = ci.split("\n");
@@ -48,4 +51,32 @@ test("the sqlite job installs the pinned playwright-core's headless shell and re
   const run = job.slice(job.indexOf("run: npm test"));
   assert.match(run, /^run: npm test\n\s+env: \{ EXPLORER_BROWSER_REQUIRED: "1" \}/);
   assert.ok(job.indexOf("playwright-core install") < job.indexOf("run: npm test"), "the browser is installed before the tests");
+});
+
+// The exact-pin step run as CI runs it (its `node -e` script in a directory holding the package.json), on this repo's
+// package.json and on copies with one determinism dependency given a caret.
+const pinScript = (() => {
+  const i = lines.findIndex((l) => /- name: determinism deps exact-pinned/.test(l));
+  const m = /node -e '([\s\S]*?)'\s*$/.exec(stepAt(i));
+  assert.ok(m, "the exact-pin step runs a node -e script");
+  return m[1]!;
+})();
+const runPin = (manifest: unknown) => {
+  const dir = mkdtempSync(join(tmpdir(), "csd-idx-pin-"));
+  try {
+    writeFileSync(join(dir, "package.json"), JSON.stringify(manifest));
+    return spawnSync(process.execPath, ["-e", pinScript], { cwd: dir, encoding: "utf8" });
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+};
+
+test("the exact-pin step passes this package.json and fails a caret on csd-codec, csd-crypto or csd-light", () => {
+  const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { dependencies: Record<string, string> };
+  const ok = runPin(pkg);
+  assert.equal(ok.status, 0, ok.stderr);
+  for (const name of ["@inversealtruism/csd-codec", "@inversealtruism/csd-crypto", "@inversealtruism/csd-light"]) {
+    assert.ok(ok.stdout.includes(`${name} exact-pinned at ${pkg.dependencies[name]}`), `${name} is checked`);
+    const floated = runPin({ ...pkg, dependencies: { ...pkg.dependencies, [name]: `^${pkg.dependencies[name]}` } });
+    assert.equal(floated.status, 1, `a caret on ${name} fails the step`);
+    assert.ok(floated.stderr.includes(`::error::${name} must be EXACT-pinned`), floated.stderr);
+  }
 });

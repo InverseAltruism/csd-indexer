@@ -72,8 +72,12 @@ Standard explorer endpoints (the widely used Esplora shape, so existing tools wo
 - `GET /blocks/tip/height` (503 while the index is empty), `/blocks/tip/hash`, `/blocks/recent`
 - `GET /block/:hash[/txids|/txs]`, `/block-height/:h`
 - `GET /tx/:id[/status]`
-- `GET /address/:a`, `/address/:a/txs`, `/address/:a/txs/chain/:last_seen_txid` (the next page),
-  `/address/:a/utxo`
+- `GET /address/:a` (its `chain_stats` also carry `utxo_count`, the number of unspent outputs), `/address/:a/txs`,
+  `/address/:a/txs/chain/:last_seen_txid` (the next page), `/address/:a/utxo`: at most 1,000 unspent outputs in
+  (block height, txid, vout) order; pass `after=<block_height>:<txid>:<vout>` of the last row for the next page, and
+  a page shorter than 1,000 is the last (a malformed `after` is 400). A client that reads only the first answer gets
+  the first 1,000. The pages are not a snapshot: between calls a new block or a reorg can add, spend or remove rows
+  below or above the cursor.
 - `GET /address/:a/coinbase`: lifetime count and sum of the coinbase outputs paying the address on the indexed
   chain, with `indexed_height`; 400 on a malformed address, 503 on an empty index.
 
@@ -112,14 +116,20 @@ The extras:
   as `text/plain` (for example `6553149.49800771`, or `6553150` when whole), exact to the base unit,
   for listing sites such as CoinMarketCap. An empty index answers 503 and an error 500, never a
   number.
-- `GET /health`: version, backend, indexed height, the node-reported tip and chainwork, and `stale`.
+- `GET /health`: version, backend, indexed height, the node-reported tip and chainwork, and `stale`; `build`
+  (`commit`, the first 7 characters of the checkout's HEAD this process loaded, or `unknown`, and `startedAt` in
+  milliseconds), read once at start, so a pull without a restart shows as a mismatch with the tree; and
+  `checkpoint_floor`, the height below which this process does not unwind.
   The tip fields come from the node and are not proof-of-work checked by the indexer: use them as a
   liveness hint, not to pick a fork.
 
 Live updates:
 - Server-sent events: `GET /stream/all` (every event), `/stream/blocks`, `/stream/domain/:d`.
 - WebSocket `/ws`: send `{"track-all": true}`, or `{"track-domain": [...]}`, `{"track-address": [...]}`,
-  `{"track-proposal": id}`. Over the WebSocket, block events go only to track-all clients.
+  `{"track-proposal": id}`. Over the WebSocket, block events go only to track-all clients. Each subscribe is
+  acknowledged with what the socket now tracks; a frame that is not a JSON object is ignored, a field that is not
+  the documented array adds nothing, and a frame over 64 KiB or one that is not valid WebSocket closes that socket
+  (1009, 1007).
 
 ## The explorer
 

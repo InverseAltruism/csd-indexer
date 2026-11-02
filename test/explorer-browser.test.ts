@@ -167,11 +167,9 @@ const NAMES: Record<string, unknown> = {
 };
 function ADDRESS(k: string, _q: URLSearchParams): unknown {
   if (k === `/address/${BUYER}`) return { address: BUYER, chain_stats: { balance: 0, funded: 0, spent: 0, tx_count: ATT_BY_ID.size } };
-  if (k === `/address/${BUYER}/utxo`) return [];
   if (k === `/address/${BUYER}/txs`) return Object.values(ATTESTS).map(attTx);
   if (k.startsWith("/tx/") && ATT_BY_ID.has(k.slice(4))) return attTx(ATT_BY_ID.get(k.slice(4))!);
-  if (k === `/address/${WALLET}`) return { address: WALLET, chain_stats: { balance: 0, funded: 0, spent: 0, tx_count: 50 } };
-  if (k === `/address/${WALLET}/utxo`) return [];
+  if (k === `/address/${WALLET}`) return { address: WALLET, chain_stats: { balance: 0, funded: 0, spent: 0, tx_count: 50, utxo_count: 1234 } };
   if (k === `/address/${WALLET}/txs`) return PAGE1.map(txRow);
   if (k === `/address/${WALLET}/txs/chain/${PAGE1[PAGE1.length - 1]!.txid}`) return PAGE2.map(txRow);
   const prop = k.startsWith("/proposal/") ? [...PROPS, ...Object.values(CONTENT_PROPS), OFFER, SWAP].find((p) => p.txid === k.slice(10)) : undefined;
@@ -195,6 +193,9 @@ const CONTENT_PROPS = { good: contentProp(1, sha(GOOD)), binary: contentProp(2, 
   absent: contentProp(4, sha(Buffer.from("not held"))), edgeHtml: contentProp(5, sha(Buffer.from("edge"))), otherHash: contentProp(6, sha(Buffer.from("other"))),
   noHeader: contentProp(7, NOHEADER), upperCase: contentProp(8, "0x" + sha(GOOD).slice(2).toUpperCase()), e502: contentProp(9, sha(GOOD).replace(/.$/, "0")),
   dropped: contentProp(10, sha(Buffer.from("drop"))), noHash: contentProp(11, "") };
+// The resolver's /cairnx/tokens; a test that needs more tokens adds them and restores the list.
+const QTOK = { ticker: "QTOK", name: "Quarter", decimals: 2, supply: "100000000", minted: "100000", mint: "issuer" };
+const TOKENS: { ticker: string; name: string; decimals: number; supply: string; minted: string; mint: string; mintLimit?: string }[] = [QTOK];
 const REQS: string[] = [];
 const json = (res: ServerResponse, status: number, body: unknown, extra: Record<string, string> = {}) => {
   res.writeHead(status, { "content-type": "application/json", ...extra }); res.end(JSON.stringify(body));
@@ -260,7 +261,7 @@ const server = createServer(async (req, res) => {
     if (k === `/primary/${MINER}`) return json(res, 200, { ok: true, address: MINER, name: "solo" });
     if (k.startsWith("/name/") && k.slice(6) in NAMES) return json(res, 200, NAMES[k.slice(6)]);
     if (k === "/name-history/twin") return json(res, 200, { ok: true, name: "twin", events: [ATTESTS.fill, ATTESTS.refusedFill].map((a) => ({ txid: a.txid, height: a.height, pos: 3, kind: "fill" })) });
-    if (k === "/tokens") return json(res, 200, [{ ticker: "QTOK", name: "Quarter", decimals: 2, supply: "100000000", minted: "100000", mint: "issuer" }]);
+    if (k === "/tokens") return json(res, 200, TOKENS);
     if (k === "/records" && (url.searchParams.get("ids") ?? "").split(",").some((id) => S.failIds.has(id))) return json(res, 500, { ok: false, error: "resolver down" });
     if (k === "/records") {
       if (S.records === "404") return json(res, 404, { ok: false, error: "not a cairnx read endpoint" });
@@ -275,6 +276,8 @@ const server = createServer(async (req, res) => {
     if (k === "/health") return S.gates ? json(res, 200, { ok: true, gates: { V25: V25_AT } }) : json(res, 404, { ok: false, error: "not found" });
     if (k === "/token/ZED") return json(res, 200, { ticker: "ZED", name: "Zed", decimals: 0, supply: "1000", minted: "10", mint: "issuer", height: TIP - 5,
       deployer: MINER, deployId: "0x" + "de".repeat(32), tmeta: "0x" + "4d".repeat(32), holders: {} });
+    const tok = TOKENS.find((t) => t.ticker !== "QTOK" && k === `/token/${t.ticker}`);
+    if (tok) return json(res, 200, { ...tok, height: TIP - 6, deployer: MINER, deployId: "0x" + "df".repeat(32), holders: {} });
     if (k.startsWith("/token/")) return json(res, 404, { ok: false, error: "unknown ticker" });
     // a 200 that carries no name record: not the resolver's answer for a name
     if (k === "/name/empty") return json(res, 200, {});
@@ -822,7 +825,7 @@ test("domain page: record lines separate their parts with a colon or comma, neve
       assert.deepEqual(v.errors, []);
       const acts: string[] = await v.page.evaluate(() => [...document.querySelectorAll("td.act")].map((c: any) => c.textContent));
       assert.deepEqual(acts, [
-        "Token Deployed token ZED: supply 1,000, issuer-mint (fixed)",
+        "Token Deployed token ZED: supply 1,000, issuer mint",
         "Token Minted ZED: 5 base units",
         "Market Listed name zed.csd for 1 CSD, open offer",
         "Market Bid 1 CSD for name zed.csd: non-binding; a seller answers with a reserved offer",
@@ -906,6 +909,32 @@ test("name history and a domain's proposals: one line per row at 1280 px, the re
       }
     }
   } finally { INDEXER["/domain/cairnx:v1/proposals"] = []; }
+});
+
+// The supply rule of /trade's token cards (cairn public/trade/manage.js): an issuer-mint token is fixed only once minted
+// to its max supply; below it the issuer can still mint the rest, so neither the card nor the page may call it fixed.
+test("token supply wording: issuer mint below the max says what the issuer can still mint; fixed only when minted out", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true });
+  TOKENS.push({ ticker: "FULL", name: "Full", decimals: 0, supply: "500", minted: "500", mint: "issuer" },
+    { ticker: "OPEN", name: "Open", decimals: 0, supply: "900", minted: "900", mint: "open", mintLimit: "5" });
+  const kindRow = (page: any) => page.evaluate(() => [...document.querySelectorAll(".kv > div")].find((d: any) => d.textContent === "kind")!.nextElementSibling.textContent);
+  try {
+    for (const [ticker, want] of [["ZED", "Issuer mint: the issuer can mint 990 more, up to the max supply"],
+      ["FULL", "Fixed supply: the issuer has minted the whole max supply"], ["OPEN", "Open mint (up to 5 per mint)"]] as const) {
+      const v = await open(`/explorer#/token/${ticker}`, 1280, () => /metadata|holders/.test(document.body.innerText));
+      try {
+        assert.equal(await kindRow(v.page), want, ticker);
+        assert.doesNotMatch(await v.page.evaluate(() => document.body.innerText), /dilution/i, ticker);
+        assert.deepEqual(v.errors, []);
+      } finally { await v.close(); }
+    }
+    const home = await open("/explorer", 1280, () => document.querySelectorAll("#tok-top .coin").length === 3);
+    try {
+      assert.deepEqual(await home.page.evaluate(() => [...document.querySelectorAll("#tok-top .coin .nm")].map((n: any) => n.textContent)),
+        ["Quarter, issuer mint", "Full, fixed supply", "Open, open mint"]);
+      assert.deepEqual(home.errors, []);
+    } finally { await home.close(); }
+  } finally { TOKENS.splice(1); }
 });
 
 test("token page: the metadata hash is described as what it is, with no claim about a content swarm", { skip: why || false }, async () => {
@@ -1086,6 +1115,24 @@ test("address page: the address grouped in fours on screen, copied whole by sele
     assert.equal(await v.page.evaluate(() => navigator.clipboard.readText()), WALLET);
     assert.deepEqual(v.errors, []);
   } finally { await v.close(); }
+});
+
+// The address page's UTXO figure is /address/:a's utxo_count: the page does not read /utxo, which answers rows a page at a
+// time. An indexer older than the page (no utxo_count) shows a dash.
+test("address page: the UTXO count is chain_stats.utxo_count, with no /utxo read; without the field a dash", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true });
+  for (const [who, want] of [[WALLET, "1,234"], [BUYER, "-"]] as const) {
+    const v = await open(`/explorer#/address/${who}`, 1280, () => !!document.querySelector(".kv .g4"));
+    try {
+      const shown = await v.page.evaluate(() => {
+        const cells = [...document.querySelectorAll(".kv > div")] as any[];
+        return cells[cells.findIndex((c) => c.textContent === "UTXOs") + 1]?.textContent;
+      });
+      assert.equal(shown, want, who);
+      assert.deepEqual(REQS.filter((p) => p.endsWith("/utxo")), [], "no /utxo read");
+      assert.deepEqual(v.errors, []);
+    } finally { await v.close(); }
+  }
 });
 
 // The indexer's state, read from /health: live, the latest-blocks heading says so and the search has its row to itself;

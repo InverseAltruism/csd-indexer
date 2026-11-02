@@ -6,7 +6,8 @@ import express, { type Request, type Response } from "express";
 import { createServer, type Server } from "node:http";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { CFG, host, port } from "./config.js";
 import { store } from "./db.js";
 import * as q from "./queries.js";
@@ -18,15 +19,31 @@ import { sseHandler, attachWs } from "./stream.js";
 const TXID = /^0x[0-9a-f]{64}$/;
 const ADDR = /^0x[0-9a-f]{40}$/;
 
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+
 // Package version, read once at boot. Exposed in /health as the cross-host skew tell (the same
 // fix class as cairnx's /cairnx/health version field): version drift between two indexer hosts
 // is invisible until responses diverge unless the health surface says what is running.
 const PKG_VERSION: string = (() => {
   try {
-    const p = join(dirname(fileURLToPath(import.meta.url)), "..", "package.json");
-    return String((JSON.parse(readFileSync(p, "utf8")) as { version?: string }).version ?? "unknown");
+    return String((JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")) as { version?: string }).version ?? "unknown");
   } catch { return "unknown"; }
 })();
+
+/** The checkout's HEAD, 7 hex characters as cairn's /api/health gives it, or "unknown" (git absent, not a checkout, or
+ *  any other failure). */
+export function readCommit(root: string): string {
+  try {
+    // A service user other than the tree's owner gets "dubious ownership" from git unless safe.directory names the
+    // tree; the command-scope setting changes no git config on the host.
+    const dir = realpathSync(root);
+    const out = execFileSync("git", ["-c", `safe.directory=${dir}`, "-C", dir, "rev-parse", "HEAD"],
+      { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] }).trim();
+    return /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(out) ? out.slice(0, 7) : "unknown";
+  } catch { return "unknown"; }
+}
+// What this process loaded, read once at start: a pull without a restart shows as a mismatch with the tree.
+const BUILD = { commit: readCommit(ROOT), startedAt: Date.now() };
 
 export function buildApp() {
   const app = express();
@@ -38,7 +55,7 @@ export function buildApp() {
   const nf = (res: Response, msg = "not found") => res.status(404).json({ error: msg });
 
   // ── public explorer UI (single self-contained SPA; verifies inclusion in-browser) ──
-  const PUBLIC = join(dirname(fileURLToPath(import.meta.url)), "..", "public");
+  const PUBLIC = join(ROOT, "public");
   app.get("/", (_req, res) => res.sendFile(join(PUBLIC, "explorer.html")));
   app.use("/static", express.static(PUBLIC));
 
@@ -61,7 +78,7 @@ export function buildApp() {
   // can sit at equal height on different forks, and a wedged node serves a stale-but-answering
   // tip. All original fields (ok, indexed_height, counts) are preserved; the rest are additive.
   //
-  // CAIRN-IDX-FAILOVER-1; TRUST CAVEAT (READ BEFORE ROUTING ON THESE FIELDS):
+  // TRUST CAVEAT (READ BEFORE ROUTING ON THESE FIELDS):
   // tip_hash / chainwork / tip_height / seconds_since_tip are NODE-REPORTED and are NOT
   // PoW-verified by the indexer. seconds_since_tip is derived from `header.time`, which we
   // store verbatim from the node (indexer.ts writeBlock), so a wedged-but-answering node can
@@ -88,6 +105,8 @@ export function buildApp() {
     res.json({
       ok: true,
       version: PKG_VERSION,                         // cross-host version-skew tell (additive)
+      build: BUILD,                                 // the commit this process loaded and when it started
+      checkpoint_floor: CFG.checkpointFloor,        // the unwind floor in force (test/checkpoint-floor.test.ts)
       backend: store().backend,                     // "sqlite" | "postgres"; makes a storage cutover observable
       indexed_height,
       tip_height: tipH,
@@ -197,9 +216,18 @@ export function buildApp() {
     const ids = await q.addressTxids(req.params.a!, { height: h0, txid: last });
     res.json(await q.txsWithOutputs(ids.map((r) => r.txid)));
   }));
+  // One page of q.UTXO_PAGE; the next page is ?after=<block_height>:<txid>:<vout> of the last row. outputs.vout is a
+  // 4-byte integer on Postgres, so a larger vout is refused here rather than failing the query.
   app.get("/address/:a/utxo", h(async (req, res) => {
     if (!ADDR.test(req.params.a!.toLowerCase())) return bad(res, "want /address/0x<40-hex>");
-    res.json((await q.addressUtxos(req.params.a!)).map((o) => ({ txid: o.txid, vout: o.vout, value: o.value, status: { confirmed: true, block_height: o.height } })));
+    let after: q.UtxoCursor | null = null;
+    if (req.query.after !== undefined) {
+      const m = /^(\d{1,16}):(0x[0-9a-fA-F]{64}):(\d{1,10})$/.exec(String(req.query.after));
+      const height = Number(m?.[1]), vout = Number(m?.[3]);
+      if (!m || !Number.isSafeInteger(height) || vout > 2 ** 31 - 1) return bad(res, "want after=<height>:<txid>:<vout> of the previous page's last row");
+      after = { height, txid: m[2]!.toLowerCase(), vout };
+    }
+    res.json((await q.addressUtxos(req.params.a!, after)).map((o) => ({ txid: o.txid, vout: o.vout, value: o.value, status: { confirmed: true, block_height: o.height } })));
   }));
 
   // ── CSD extras ──
