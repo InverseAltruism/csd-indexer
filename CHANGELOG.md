@@ -2,9 +2,9 @@
 
 ## Unreleased
 
-- `/health` gains `build` (`commit`: the checkout's HEAD this process loaded, read once at start; `startedAt`) and
-  `checkpoint_floor` (the unwind floor in force), so a live query tells a tag from a later commit and shows which
-  floor a process holds. The commit is read with a command-scope `safe.directory`, since a service user that does
+- `/health` gains `build` (`commit`: the first 7 characters of the checkout's HEAD this process loaded, as cairn's
+  `/api/health` gives it, read once at start; `startedAt`) and `checkpoint_floor` (the unwind floor in force), so a
+  live query tells a tag from a later commit and shows which floor a process holds. The commit is read with a command-scope `safe.directory`, since a service user that does
   not own the tree gets "dubious ownership" from git otherwise, and is `unknown` when git or the checkout is missing.
   `test/health.test.ts`.
 - CI's exact-pin step checks csd-crypto as well as csd-codec and csd-light; a caret on csd-crypto (the signer and
@@ -16,12 +16,12 @@
   to its max, otherwise "issuer mint", and the token page says how much more the issuer can mint. Open mint is
   unchanged. `test/explorer-browser.test.ts`.
 - `GET /address/:a` gains `chain_stats.utxo_count` (the unspent outputs, counted in the same pass over the address's
-  outputs that sums funded and spent, which were two queries before), and the explorer's
-  address page shows it instead of reading `/address/:a/utxo` only to count the rows. `/address/:a/utxo` answers at
-  most 1,000 rows a call, in (block height, txid, vout) order, with `after=<block_height>:<txid>:<vout>` for the next
-  page; it answered up to 100,000 rows a call, so an address built with many small outputs made every call serialise
-  its whole set on the indexer's event loop. A caller that reads the whole set must now follow
-  `after` (cairn-sdk's `addressUtxo` reads one call). The row shape is unchanged. `test/address-utxo.test.ts`, and the
+  outputs that sums funded and spent, which were two queries before), and the explorer's address page shows it
+  instead of reading `/address/:a/utxo` only to count the rows. `/address/:a/utxo` answers at most 1,000 rows a call,
+  in (block height, txid, vout) order, with `after=<block_height>:<txid>:<vout>` for the next page; it answered up to
+  100,000 rows a call, so an address built with many small outputs made every call serialise its whole set on the
+  indexer's event loop. A caller that reads the whole set must now follow `after` (cairn-sdk's `addressUtxo` reads
+  one call). The row shape is unchanged. `test/address-utxo.test.ts`, and the
   explorer browser test checks the page makes no `/utxo` read.
 - `/analytics/richlist` reads the top 500 holders once per tip and answers each `?limit` with a slice of it; each
   distinct limit from 1 to 500 was a full `GROUP BY` scan of the unspent outputs per tip, so a caller varying the

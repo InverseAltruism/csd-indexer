@@ -83,7 +83,7 @@ test("health freshness: seconds_since_tip tracks the NEW tip immediately (not me
 // checkpoint floor in force. The live unit runs as another user than the tree's owner, where git refuses the tree
 // unless safe.directory names it; GIT_TEST_ASSUME_DIFFERENT_OWNER makes git treat this tree that way.
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
-const HEAD = execFileSync("git", ["-C", ROOT, "rev-parse", "--short", "HEAD"], { encoding: "utf8" }).trim();
+const HEAD = execFileSync("git", ["-C", ROOT, "rev-parse", "HEAD"], { encoding: "utf8" }).trim().slice(0, 7);
 
 test("health: build.commit is the tree's HEAD and checkpoint_floor the floor in force", async () => {
   const before = Date.now();
@@ -103,4 +103,13 @@ test("readCommit: the HEAD on a tree another user owns; \"unknown\" outside a ch
   } finally { delete process.env.GIT_TEST_ASSUME_DIFFERENT_OWNER; }
   const bare = mkdtempSync(join(tmpdir(), "csd-idx-nogit-"));
   try { assert.equal(readCommit(bare), "unknown"); } finally { rmSync(bare, { recursive: true, force: true }); }
+});
+
+// cairn's /api/health gives 7 characters; git's --short follows the host's core.abbrev, which may be longer.
+test("readCommit: 7 characters whatever core.abbrev the host sets", () => {
+  Object.assign(process.env, { GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "core.abbrev", GIT_CONFIG_VALUE_0: "12" });
+  try {
+    assert.equal(execFileSync("git", ["-C", ROOT, "rev-parse", "--short", "HEAD"], { encoding: "utf8" }).trim().length, 12, "the setting reaches git");
+    assert.equal(readCommit(ROOT), HEAD);
+  } finally { for (const k of ["GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0"]) delete process.env[k]; }
 });

@@ -117,9 +117,9 @@ The extras:
   for listing sites such as CoinMarketCap. An empty index answers 503 and an error 500, never a
   number.
 - `GET /health`: version, backend, indexed height, the node-reported tip and chainwork, and `stale`; `build`
-  (`commit`, the checkout's HEAD this process loaded, or `unknown`, and `startedAt` in milliseconds), read once at
-  start, so a pull without a restart shows as a mismatch with the tree; and `checkpoint_floor`, the height below
-  which this process does not unwind.
+  (`commit`, the first 7 characters of the checkout's HEAD this process loaded, or `unknown`, and `startedAt` in
+  milliseconds), read once at start, so a pull without a restart shows as a mismatch with the tree; and
+  `checkpoint_floor`, the height below which this process does not unwind.
   The tip fields come from the node and are not proof-of-work checked by the indexer: use them as a
   liveness hint, not to pick a fork.
 

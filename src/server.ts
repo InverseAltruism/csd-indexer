@@ -30,15 +30,16 @@ const PKG_VERSION: string = (() => {
   } catch { return "unknown"; }
 })();
 
-/** The checkout's HEAD as git's short hash, or "unknown" (git absent, not a checkout, or any other failure). */
+/** The checkout's HEAD, 7 hex characters as cairn's /api/health gives it, or "unknown" (git absent, not a checkout, or
+ *  any other failure). */
 export function readCommit(root: string): string {
   try {
     // A service user other than the tree's owner gets "dubious ownership" from git unless safe.directory names the
     // tree; the command-scope setting changes no git config on the host.
     const dir = realpathSync(root);
-    const out = execFileSync("git", ["-c", `safe.directory=${dir}`, "-C", dir, "rev-parse", "--short", "HEAD"],
+    const out = execFileSync("git", ["-c", `safe.directory=${dir}`, "-C", dir, "rev-parse", "HEAD"],
       { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] }).trim();
-    return /^[0-9a-f]{7,40}$/.test(out) ? out : "unknown";
+    return /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(out) ? out.slice(0, 7) : "unknown";
   } catch { return "unknown"; }
 }
 // What this process loaded, read once at start: a pull without a restart shows as a mismatch with the tree.
