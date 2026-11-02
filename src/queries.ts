@@ -111,7 +111,8 @@ export async function addressTxidHeight(addr: string, txid: string): Promise<num
   return r ? Number(r.height) : null;
 }
 // An address's unspent outputs, one page at a time in (height, txid, vout) order; `after` is the last row of the
-// previous page. A page shorter than UTXO_PAGE is the last.
+// previous page. A page shorter than UTXO_PAGE is the last. The `height >= ?` term repeats what the keyset implies so
+// a planner walking idx_out_height starts at the cursor instead of below it.
 export const UTXO_PAGE = 1000;
 export interface UtxoCursor { height: number; txid: string; vout: number }
 export async function addressUtxos(addr: string, after: UtxoCursor | null): Promise<OutRow[]> {
@@ -119,8 +120,8 @@ export async function addressUtxos(addr: string, after: UtxoCursor | null): Prom
   const rows = after == null
     ? await store().all<OutRow>("SELECT * FROM outputs WHERE addr=? AND spent_txid IS NULL ORDER BY height, txid, vout LIMIT ?", a, UTXO_PAGE)
     : await store().all<OutRow>(
-      "SELECT * FROM outputs WHERE addr=? AND spent_txid IS NULL AND (height > ? OR (height = ? AND (txid > ? OR (txid = ? AND vout > ?)))) " +
-      "ORDER BY height, txid, vout LIMIT ?", a, after.height, after.height, after.txid, after.txid, after.vout, UTXO_PAGE);
+      "SELECT * FROM outputs WHERE addr=? AND spent_txid IS NULL AND height >= ? AND (height > ? OR (height = ? AND (txid > ? OR (txid = ? AND vout > ?)))) " +
+      "ORDER BY height, txid, vout LIMIT ?", a, after.height, after.height, after.height, after.txid, after.txid, after.vout, UTXO_PAGE);
   return rows.map((r) => ({ ...r, value: amt(r.value as never) }));
 }
 export async function addressStats(addr: string): Promise<{ funded: number | string; spent: number | string; balance: number | string; tx_count: number; utxo_count: number }> {

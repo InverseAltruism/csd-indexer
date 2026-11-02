@@ -76,7 +76,8 @@ Standard explorer endpoints (the widely used Esplora shape, so existing tools wo
   `/address/:a/txs/chain/:last_seen_txid` (the next page), `/address/:a/utxo`: at most 1,000 unspent outputs in
   (block height, txid, vout) order; pass `after=<block_height>:<txid>:<vout>` of the last row for the next page, and
   a page shorter than 1,000 is the last (a malformed `after` is 400). A client that reads only the first answer gets
-  the first 1,000.
+  the first 1,000. The pages are not a snapshot: between calls a new block or a reorg can add, spend or remove rows
+  below or above the cursor.
 - `GET /address/:a/coinbase`: lifetime count and sum of the coinbase outputs paying the address on the indexed
   chain, with `indexed_height`; 400 on a malformed address, 503 on an empty index.
 
