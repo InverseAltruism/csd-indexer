@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- CI's exact-pin step checks csd-crypto as well as csd-codec and csd-light; a caret on csd-crypto (the signer and
+  payee address derivation) passed it. `test/ci-workflow.test.ts` runs the step's script on this package.json and on
+  a copy with each of the three floated.
 - The explorer called every issuer-mint token "fixed supply" (home card) and "Fixed supply: only the issuer could mint
   (no dilution)" (token page), and a deploy record "issuer-mint (fixed)", though cairnx lets the issuer mint up to the
   max supply. It now follows the rule of /trade's token cards: "fixed supply" only once an issuer-mint token is minted
