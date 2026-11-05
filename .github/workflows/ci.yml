@@ -6,9 +6,11 @@ concurrency: { group: "ci-${{ github.ref }}", cancel-in-progress: true }
 # No job needs to write: every job reads the repo and the public npm registry only.
 permissions:
   contents: read
+# Each job names its runner image instead of ubuntu-latest: playwright-core installs its pinned headless shell only on
+# images it supports, and the move of ubuntu-latest to 26.04 stopped that install (cairn's CI, 2026-11-05).
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with: { persist-credentials: false }
@@ -47,7 +49,7 @@ jobs:
   # CAIRN-IDX-PG-1: the entire Postgres scale-path (toPg, int8/numeric exactParser, schema sanitize, reorg
   # under pg, analytics money-math) shipped with ZERO CI coverage. Re-run the same suites with CSD_INDEX_PG set.
   test-postgres:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     services:
       postgres:
         image: postgres:16
@@ -67,7 +69,7 @@ jobs:
         run: npm test
   # Full-history secret scan with the repo's .gitleaks.toml; the release binary is checked against its sha256.
   secrets:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with: { fetch-depth: 0, persist-credentials: false }

@@ -45,6 +45,14 @@ test("the secret scan: pinned gitleaks, this repo's config, full history, merge 
   assert.match(ci, /--log-opts="[^"]*--full-history[^"]*--all[^"]*--diff-merges=first-parent[^"]*"/);
 });
 
+test("every job names its runner image, not a moving -latest one", () => {
+  // playwright-core installs its pinned headless shell only on images it supports; ubuntu-latest moving to 26.04
+  // stopped that install on 2026-11-05.
+  const images = [...ci.matchAll(/^ {4}runs-on: *(\S+)/gm)].map((m) => m[1]!);
+  assert.equal(images.length, 3);
+  for (const img of images) assert.doesNotMatch(img, /latest/, img);
+});
+
 test("the sqlite job installs the pinned playwright-core's headless shell and requires the browser tests", () => {
   const job = ci.slice(ci.indexOf("\n  test:\n"), ci.indexOf("\n  test-postgres:\n"));
   assert.match(job, /run: npx playwright-core install --with-deps chromium-headless-shell\n/);

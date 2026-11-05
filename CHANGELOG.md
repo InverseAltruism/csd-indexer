@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- CI: every job runs on `ubuntu-24.04` instead of `ubuntu-latest`. GitHub moved `ubuntu-latest` to 26.04, where
+  playwright-core refuses to install its headless shell (cairn's CI failed at that step on 2026-11-05).
+  `test/ci-workflow.test.ts` refuses a job on a `-latest` image.
 - `/health` gains `build` (`commit`: the first 7 characters of the checkout's HEAD this process loaded, as cairn's
   `/api/health` gives it, read once at start; `startedAt`) and `checkpoint_floor` (the unwind floor in force), so a
   live query tells a tag from a later commit and shows which floor a process holds. The commit is read with a command-scope `safe.directory`, since a service user that does
