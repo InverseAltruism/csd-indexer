@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.7
 
 - CI: every job runs on `ubuntu-24.04` instead of `ubuntu-latest`. GitHub moved `ubuntu-latest` to 26.04, where
   playwright-core refuses to install its headless shell (cairn's CI failed at that step on 2026-11-05).
