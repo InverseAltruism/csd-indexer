@@ -15,6 +15,13 @@ export const deriveAddr = signerAddrFromScriptSig;
 /** addr20 (lowercase 0x form) from an output script_pubkey; null for anything the node's parser refuses. */
 export { addrFromScriptPubkey } from "@inversealtruism/csd-crypto";
 
+/** A Propose's domain or uri as both stores keep it: each U+0000 becomes U+0001 (Postgres TEXT refuses U+0000 and
+ *  node:sqlite reads TEXT only up to it). JSON refuses both unescaped, so the stored text parses as JSON exactly when
+ *  the node's does (test/storable-text.test.ts). */
+export function storableText(s: string): string {
+  return s.replaceAll("\u0000", "\u0001");
+}
+
 export type AppType = "Propose" | "Attest" | "Coinbase" | "Transfer";
 
 /** Classify a tx by its app field; `isCoinbase` is decided by the caller (pos 0). */

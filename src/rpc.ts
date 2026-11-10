@@ -11,6 +11,7 @@ import { CFG } from "./config.js";
 import { LWMA_WINDOW, type BlockHeader } from "@inversealtruism/csd-codec";
 import { type ContenderPlausibleOpts, contenderPlausible as routeContenderPlausible, expectedBitsFromWindow, tipHeaderPowOk } from "@inversealtruism/csd-light";
 import { store } from "./db.js";
+import { storableText } from "./decode.js";
 
 export interface RpcHeader { bits: number; merkle: string; nonce: number; prev: string; time: number; version: number; }
 export interface RpcTxIn { prev_txid?: string; prevTxid?: string; vout?: number; script_sig?: string; }
@@ -234,6 +235,13 @@ export async function blockByHeight(h: number): Promise<RpcBlock | null> {
     // (every sampled height echoes the request) is unchanged. `typeof` first: Number(null)===0
     // would otherwise let a null height pass for h=0.
     if (typeof b.height !== "number" || !Number.isSafeInteger(b.height) || b.height !== h) return null;
+    // A Propose's domain and uri are the only author-written text the indexer reads from a block (the other fields it
+    // reads are hex or numbers), so from here on writeBlock and the event bus see only the stored form.
+    for (const t of b.txs) {
+      const app = t?.app;
+      if (app && typeof app.domain === "string") app.domain = storableText(app.domain);
+      if (app && typeof app.uri === "string") app.uri = storableText(app.uri);
+    }
     return b as RpcBlock;
   } catch { return null; }
 }
