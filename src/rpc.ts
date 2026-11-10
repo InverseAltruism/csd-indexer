@@ -235,8 +235,8 @@ export async function blockByHeight(h: number): Promise<RpcBlock | null> {
     // (every sampled height echoes the request) is unchanged. `typeof` first: Number(null)===0
     // would otherwise let a null height pass for h=0.
     if (typeof b.height !== "number" || !Number.isSafeInteger(b.height) || b.height !== h) return null;
-    // A Propose's domain and uri are the only author-written text the indexer reads from a block (the other fields it
-    // reads are hex or numbers), so from here on writeBlock and the event bus see only the stored form.
+    // A Propose's domain and uri are author-written text: from here on writeBlock and the event bus see their stored
+    // form. Another author-written field the indexer starts to read goes through storableText here too.
     for (const t of b.txs) {
       const app = t?.app;
       if (app && typeof app.domain === "string") app.domain = storableText(app.domain);

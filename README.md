@@ -167,5 +167,6 @@ breakdowns, rankings, address history) is reproducible rather than signed: the w
 is to run your own indexer and confirm you get the same numbers. A proposal's `domain` and `uri` are the
 node's text with one change, on both backends: each U+0000 is stored and served as U+0001. JSON refuses both
 characters unescaped, so a uri is JSON here exactly when it is JSON on the chain; a consumer that compares a row with
-the node's bytes applies the same replacement first. SQLite serves tens of readers, not
+the node's bytes applies the same replacement first, and a `domain` or `uri` that holds U+0001 here may hold U+0000
+on the chain, so a hash over the text is checked against the node's bytes. SQLite serves tens of readers, not
 hundreds (see SQLite or Postgres above). MIT licensed.
