@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.8
 
 - The domain and uri of a Propose are text its author chooses. The indexer now stores and serves each U+0000 in them as
   U+0001, the same on SQLite and Postgres, and the rows, the API and the event stream carry that one string
