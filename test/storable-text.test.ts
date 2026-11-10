@@ -93,7 +93,7 @@ test("a Propose with U+0000 in its domain or uri: the tip advances and every rea
     { domain: "cairnx:v1", uri: CANON, payload_hash: hex(CANON) },
     { domain: `cairnx:v1${NUL}`, uri: CANON, payload_hash: hex(CANON) },
     { domain: "cairnx:v1", uri: `${CANON}${NUL}junk`, payload_hash: hex(CANON) },
-    { domain: "csd:apps", uri: `{"a":"x${NUL}y"}`, payload_hash: hex("other") },
+    { domain: "csd:apps", uri: `{"a":"x${NUL}y${NUL}z"}`, payload_hash: hex("other") },
   ];
   CHAIN = chain("nul", props);
   const events = await indexChain();
@@ -142,7 +142,7 @@ test("HAPPY PATH: the same records without U+0000 are stored and served exactly 
 // legal in a JSON string (U+FFFD, a space, the text \u0000) turns the first shape into valid JSON.
 test("a uri holding U+0000 is not JSON, and neither is its stored form", () => {
   const shapes = [
-    `{"a":"x${NUL}y"}`,          // inside a string
+    `{"a":"x${NUL}y${NUL}z"}`,   // inside a string, twice
     `${CANON}${NUL}junk`,        // after a whole record
     `${CANON}${NUL}`,
     `${NUL}${CANON}`,
