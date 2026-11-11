@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.9
 
 - A transaction id keeps the place of its first occurrence: the lowest height the indexed chain holds it at and its
   position in that block (the rule of csd-sdk `packages/cairnx/CONVENTION.md` section 32, M4). When a block holds a
