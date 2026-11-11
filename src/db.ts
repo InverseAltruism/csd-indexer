@@ -90,6 +90,9 @@ const DDL = `
   -- Per-address count and sum of the coinbase outputs in outputs JOIN txs (COINBASE_OUTPUTS below), kept equal
   -- to that aggregate by indexer.ts coinbaseTotalsWrites inside every writeBlock and unwindAbove transaction.
   CREATE TABLE IF NOT EXISTS coinbase_totals (addr TEXT PRIMARY KEY, outputs BIGINT NOT NULL, value BIGINT NOT NULL);
+  -- A block's positions that hold a txid whose txs row sits at an earlier place (indexer.ts writeBlock). With the
+  -- txs rows of the height they are the block's whole ordered tx list (queries.ts BLOCK_TX_LIST).
+  CREATE TABLE IF NOT EXISTS tx_repeats (height BIGINT NOT NULL, pos INTEGER NOT NULL, txid TEXT NOT NULL, PRIMARY KEY (height, pos));
 
   CREATE INDEX IF NOT EXISTS idx_txs_height       ON txs(height);
   CREATE INDEX IF NOT EXISTS idx_txs_signer       ON txs(signer);
@@ -337,7 +340,7 @@ export async function checkpoint(): Promise<void> { await store().checkpoint(); 
 /** TEST ONLY: drop every table so a suite starts from nothing (works on both backends). */
 export async function resetStoreForTests(): Promise<void> {
   const s = store();
-  for (const t of ["address_history", "attestations", "proposals", "outputs", "txs", "blocks", "meta", "coinbase_totals"]) {
+  for (const t of ["address_history", "attestations", "proposals", "outputs", "txs", "tx_repeats", "blocks", "meta", "coinbase_totals"]) {
     await s.exec(`DROP TABLE IF EXISTS ${t}`);
   }
   await s.exec(DDL);

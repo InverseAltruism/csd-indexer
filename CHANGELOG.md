@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased
+
+- A transaction id keeps the place of its first occurrence: the lowest height the indexed chain holds it at and its
+  position in that block (the rule of csd-sdk `packages/cairnx/CONVENTION.md` section 32, M4). When a block holds a
+  txid that `txs` already holds, from a lower height or from earlier in the same block, `writeBlock` lists that
+  position in the new table `tx_repeats` and writes nothing else: the rows in `txs`, `outputs`, `proposals` and
+  `attestations` stay where they are, no spend marker and no `address_history` row is written, and the event stream
+  carries no second proposal or attestation event. Before, the later block's write moved the one row to its own
+  height. An output keeps its first spender. `/tx/:id`, its status and proof, the address lists, `/proposals`,
+  `/attestations` and the per-domain and per-proposal lists therefore name one place per txid, the same at every
+  snapshot, and after an unwind and replay every table equals a fresh index of the chain that is left.
+- A block's transaction list is complete. `/block/:hash/txids`, `/block/:hash/txs` and the list a merkle proof is
+  built from read `txs` and `tx_repeats` together, so each block that holds a txid lists it at its position and the
+  proof of any transaction folds to the header root of its block. In `/block/:hash/txs` the row of a txid first held
+  by an earlier block is that transaction's one row, with the earlier height and position.
+- `tx_repeats(height, pos, txid)` is created at start on an existing database of either backend, with no manual step
+  and no change to a stored row. On a chain where no txid is held twice it stays empty, and the rows, the API answers
+  and the events are what 0.3.8 gives. A block write issues one more statement than before, the `tx_repeats` clear of
+  its height; per transaction the count is unchanged (one primary-key read on `txs` takes the place of one
+  coinbase-totals read).
+- Not changed: an output a later occurrence creates again stays one row in its first state, so balances, the unspent
+  list, `coinbase_totals` and the supply figures count it once. With `CSD_INDEX_FROM` above 0 the indexer holds
+  nothing below that height, and first means first at or above it (README "Honest limits").
+- `test/first-occurrence.test.ts` (through `syncOnce` against a mock node: the place in every table, one event, whole
+  blocks and folding proofs, and the tables after each reorg against a fresh sync; seeded walks of writes and unwinds
+  against a fresh index; a database created before the table), `test/first-occurrence-floor.test.ts`, and
+  `test/coinbase-totals.test.ts`, whose case for a coinbase held again now checks that its first outputs stay counted.
+
 ## 0.3.8
 
 - The domain and uri of a Propose are text its author chooses. The indexer now stores and serves each U+0000 in them as

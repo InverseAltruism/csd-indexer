@@ -53,16 +53,20 @@ export async function blockByHash(hash: string): Promise<BlockRow | null> {
 export async function recentBlocks(limit = 25): Promise<BlockRow[]> {
   return jsonSafeAll(await store().all<BlockRow>("SELECT * FROM blocks ORDER BY height DESC LIMIT ?", limit));
 }
+// A block's (txid, pos) list: its txs rows plus its tx_repeats rows, the positions whose txid has its row at an
+// earlier place (indexer.ts writeBlock). Binds the height twice.
+const BLOCK_TX_LIST = "(SELECT txid, pos FROM txs WHERE height=? UNION ALL SELECT txid, pos FROM tx_repeats WHERE height=?)";
 export async function blockTxids(height: number): Promise<string[]> {
-  return (await store().all<{ txid: string }>("SELECT txid FROM txs WHERE height=? ORDER BY pos", height)).map(r => r.txid);
+  return (await store().all<{ txid: string }>(`SELECT txid FROM ${BLOCK_TX_LIST} b ORDER BY pos`, height, height)).map(r => r.txid);
 }
 export async function tx(txid: string): Promise<TxRow | null> {
   return jsonSafe(((await store().get<TxRow>("SELECT * FROM txs WHERE txid=?", txid)) as TxRow) ?? null);
 }
 // The tx rows of one block in block order: one query, where a per-txid lookup would hold one pool
-// connection per tx of the block.
+// connection per tx of the block. Each row is the txid's one row (`tx`), so a position listed in tx_repeats
+// carries the height and pos of the txid's first occurrence.
 export async function blockTxs(height: number): Promise<TxRow[]> {
-  return jsonSafeAll(await store().all<TxRow>("SELECT * FROM txs WHERE height=? ORDER BY pos", height));
+  return jsonSafeAll(await store().all<TxRow>(`SELECT t.* FROM ${BLOCK_TX_LIST} b JOIN txs t ON t.txid = b.txid ORDER BY b.pos`, height, height));
 }
 // Tx rows with their outputs for a list of txids, in the list's order (an unknown txid is left out),
 // in two queries whatever the list length. Callers pass a page (at most addressTxids' limit), so the

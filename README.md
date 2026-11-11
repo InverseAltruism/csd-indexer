@@ -168,5 +168,12 @@ is to run your own indexer and confirm you get the same numbers. A proposal's `d
 node's text with one change, on both backends: each U+0000 is stored and served as U+0001. JSON refuses both
 characters unescaped, so a uri is JSON here exactly when it is JSON on the chain; a consumer that compares a row with
 the node's bytes applies the same replacement first, and a `domain` or `uri` that holds U+0001 here may hold U+0000
-on the chain, so a hash over the text is checked against the node's bytes. SQLite serves tens of readers, not
+on the chain, so a hash over the text is checked against the node's bytes. A transaction id that two blocks hold is
+one transaction here, placed at its first occurrence (the lower height and its position in that block) in every
+route, the proposal and attestation feeds and the event stream included; the later block adds no event. Both blocks
+list it (`/block/:hash/txids`, and `/block/:hash/txs`, where its row is the transaction's one row and so carries the
+first block's height and position), so the merkle proof of any transaction folds to the header root of its block. Its
+outputs keep their first state: an output a later occurrence creates again is counted once in balances, the unspent
+list and the coinbase totals, and keeps its first spender. With `CSD_INDEX_FROM` above 0 the indexer holds nothing
+below that height, so first means first at or above it. SQLite serves tens of readers, not
 hundreds (see SQLite or Postgres above). MIT licensed.

@@ -90,10 +90,9 @@ test("coinbase_totals equals the coinbase-output aggregate after every write, re
   }
 });
 
-// A coinbase replayed with fewer outputs moves its tx row and vout 0 to the new height and leaves vout 1 at the
-// old one; that vout then leaves the aggregate when the tx row is deleted, by an unwind between the two heights
-// or by a re-write of the new height. The random walk rarely lines these up, so each is driven here.
-test("a replayed coinbase split across two heights stays equal through an unwind and a re-write", async () => {
+// A coinbase txid a later block holds again, there with fewer outputs, changes no row (indexer.ts writeBlock):
+// both outputs of its first occurrence stay counted when the later block is written, unwound or re-written.
+test("a coinbase held again at a later height keeps its first outputs in the totals through an unwind and a re-write", async () => {
   const [A, B] = [ADDRS[0]!, ADDRS[1]!];
   const blk = (h: number, txs: unknown[]): any => ({ hash: hex32(700 + h), height: h, chainwork: String(h + 1), header: { prev: null, time: 1700000000 + h, bits: 1, nonce: 0, version: 1 }, txs });
   const twoOut = { txid: hex32(42), inputs: [], outputs: [{ script_pubkey: A, value: 10 }, { script_pubkey: B, value: 20 }] };
@@ -105,10 +104,12 @@ test("a replayed coinbase split across two heights stays equal through an unwind
     await writeBlock(blk(1, [twoOut]));
     await writeBlock(blk(2, [other(2)]));
     await writeBlock(blk(3, [oneOut]));
-    assert.deepEqual(await totals(), await aggregate(), "after the replay");
+    assert.deepEqual(await totals(), await aggregate(), "after the later block");
+    assert.deepEqual(await totals(), [`0x${A}:3:12`, `0x${B}:1:20`], "the later block added nothing and took nothing");
     if (end === "unwind") await unwindAbove(2); else await writeBlock(blk(3, [other(3)]));
     assert.deepEqual(await totals(), await aggregate(), `after the ${end}`);
-    assert.deepEqual(await totals(), [`0x${A}:${end === "unwind" ? 2 : 3}:${end === "unwind" ? 2 : 3}`], `${end}: B's vout 1 lost its tx row`);
+    assert.deepEqual(await totals(), end === "unwind" ? [`0x${A}:3:12`, `0x${B}:1:20`] : [`0x${A}:4:13`, `0x${B}:1:20`],
+      `${end}: both outputs of the first occurrence are still counted`);
   }
 });
 

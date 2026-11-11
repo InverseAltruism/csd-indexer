@@ -49,6 +49,7 @@ if (!/^[A-Za-z0-9_]+$/.test(PG_SCHEMA)) { console.error("bad --pg-schema"); proc
 const TABLES = [
   { name: "blocks", cols: ["height", "hash", "prev", "merkle", "time", "bits", "nonce", "version", "tx_count", "chainwork"], where: "orphaned=0 AND height <= $H", order: "height" },
   { name: "txs", cols: ["txid", "height", "pos", "app_type", "signer", "fee", "time", "n_in", "n_out", "coinbase"], where: "height <= $H", order: "txid" },
+  { name: "tx_repeats", cols: ["height", "pos", "txid"], where: "height <= $H", order: "height, pos" },
   { name: "outputs", cols: ["txid", "vout", "addr", "value", "height", "spent_txid", "spent_height"], where: "height <= $H", order: "txid, vout" },
   { name: "address_history", cols: ["addr", "txid", "height", "pos", "direction", "delta"], where: "height <= $H", order: "addr, txid, direction, delta, pos" },
   { name: "proposals", cols: ["txid", "domain", "payload_hash", "uri", "expires_epoch", "proposer", "fee", "height", "time"], where: "height <= $H", order: "txid" },
