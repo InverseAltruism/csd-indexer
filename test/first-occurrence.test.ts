@@ -108,6 +108,17 @@ test("syncOnce: every block lists all its transactions and each proof folds to t
   }
 });
 
+// A repeated txid's row carries its first position, which can be higher than a later position of the repeating block;
+// the block's list must follow the block's own positions, not the rows'.
+test("/block/:hash/txs lists a block in its own order when a repeat's first position is higher than a later tx's", async () => {
+  const G = coinbase("order-0"), Yo = spend("order-y", G, 49), W = spend("order-w", Yo, 48), T = spend("order-t", W, 47);
+  const cb2 = coinbase("order-2"), U = spend("order-u", cb2, 40);
+  const b0 = block(null, "order-0", [G]), b1 = block(b0, "order-1", [coinbase("order-1"), Yo, W, T]), b2 = block(b1, "order-2", [cb2, T, U]);
+  await resetStoreForTests();
+  await sync([b0, b1, b2]);   // T first at (1, 3), again at (2, 1); U at (2, 2)
+  assert.deepEqual((await get(`/block/${b2.hash}/txs`)).body.map((t: any) => t.txid), txidsOf(b2));
+});
+
 // The rule rests on how syncOnce calls writeBlock: heights ascending without a gap from the start height, and
 // no height below the stored tip. `watchBlockWrites` records each block row written and the highest height stored
 // just before it.

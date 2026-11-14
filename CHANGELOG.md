@@ -34,6 +34,10 @@
   (`test/live-check.test.ts`: 30 blocks back now passes; a history without the coinbase fails, also when the next-page
   route answers the first page again).
 
+- `test/first-occurrence.test.ts` pins `/block/:hash/txs` to the block's own order where a repeated txid's first
+  position is higher than a later transaction's position in the repeating block (ordered by the rows' positions the
+  suite passed on SQLite). No code change.
+
 ## 0.3.9
 
 - A transaction id keeps the place of its first occurrence: the lowest height the indexed chain holds it at and its
