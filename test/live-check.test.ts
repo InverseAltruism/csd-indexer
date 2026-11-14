@@ -4,6 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type { AddressInfo } from "node:net";
@@ -28,8 +29,8 @@ test.after(async () => { srv.close(); node.close(); await closeDb(); });
 
 const repo = fileURLToPath(new URL("..", import.meta.url));
 /** The gate's exit code and output, run as AGENTS.md says (tsx, from the repo dir). */
-async function liveCheck(): Promise<{ code: unknown; out: string }> {
-  const run = promisify(execFile)("./node_modules/.bin/tsx", ["test/_live_check.mjs"], { cwd: repo, env: { ...process.env, CSD_INDEX_API: api, CSD_RPC: node.url } });
+async function liveCheck(indexApi = api): Promise<{ code: unknown; out: string }> {
+  const run = promisify(execFile)("./node_modules/.bin/tsx", ["test/_live_check.mjs"], { cwd: repo, env: { ...process.env, CSD_INDEX_API: indexApi, CSD_RPC: node.url } });
   try { return { code: 0, out: (await run).stdout }; }
   catch (e) { const err = e as { code?: unknown; stdout?: string }; return { code: err.code, out: err.stdout ?? "" }; }
 }
@@ -86,4 +87,51 @@ test("the live gate fails when the index places a txid at a later occurrence tha
   const r = await liveCheck();
   assert.equal(r.code, 1, r.out);
   assert.match(r.out, /❌ block 7: ALL 3 served merkle proofs verify/);
+});
+
+// A coinbase the payee was paid by again at tip-2 has its history row at its first occurrence, behind every newer row
+// of the payee: a miner gains one per block, so the gate pages its history down to that height.
+const { C1 } = repeatChain();
+function farRepeat(gap: number): Blk[] {
+  const chain = main.slice(0, 2);   // C1 first held at height 1
+  for (let i = 0; i < gap; i++) chain.push(block(chain[chain.length - 1]!, `gap${gap}-${i}`, [coinbase(`gap${gap}-${i}`)]));
+  chain.push(block(chain[chain.length - 1]!, `again${gap}`, [C1]));
+  for (const t of ["t1", "t2"]) chain.push(block(chain[chain.length - 1]!, `${t}-${gap}`, [coinbase(`${t}-${gap}`)]));
+  return chain;
+}
+
+test("the live gate passes when tip-2's coinbase was first held a page or more of its payee's history earlier", async () => {
+  for (const gap of [3, 30]) {
+    await resetStoreForTests();
+    CHAIN = farRepeat(gap);
+    await syncOnce();
+    const r = await liveCheck();
+    assert.equal(r.code, 0, `${gap} blocks back: ${r.out}`);
+    assert.match(r.out, /LIVE E2E: \d+ passed, 0 failed/);
+  }
+});
+
+test("the live gate fails, and stops paging, when the payee's history lacks tip-2's coinbase", async () => {
+  await resetStoreForTests();
+  CHAIN = farRepeat(30);
+  await syncOnce();
+  await store().run("DELETE FROM address_history WHERE txid=?", C1.txid);
+  const r = await liveCheck();
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, /❌ coinbase payee address has tx history/);
+  // an index whose next-page route answers the first page again: the page bound ends the walk
+  await resetStoreForTests();
+  await syncOnce();
+  const stuck = createServer(async (req, res) => {
+    const path = (req.url ?? "").replace(/\/txs\/chain\/0x[0-9a-f]{64}$/, "/txs");
+    const upstream = await fetch(api + path);
+    res.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/json" });
+    res.end(Buffer.from(await upstream.arrayBuffer()));
+  });
+  await new Promise<void>((ok) => stuck.listen(0, "127.0.0.1", () => ok()));
+  try {
+    const s = await liveCheck(`http://127.0.0.1:${(stuck.address() as AddressInfo).port}`);
+    assert.equal(s.code, 1, s.out);
+    assert.match(s.out, /❌ coinbase payee address has tx history/);
+  } finally { stuck.close(); }
 });

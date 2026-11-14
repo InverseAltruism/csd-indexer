@@ -27,6 +27,13 @@
   (whose burn figure reads the table) write rows by hand and start the store again before they read, as a
   deployment's start rebuilds the table.
 
+- The live gate `test/_live_check.mjs` pages the coinbase payee's history (`/address/:a/txs`, then
+  `/address/:a/txs/chain/:last_seen_txid`) down to the height of the coinbase's first occurrence, at most 4,000
+  pages. It read only the first page (25 newest), so on a correct index it failed when the checked block's coinbase
+  was first held more than a page of that payee's history earlier, as a miner's repeated coinbase is
+  (`test/live-check.test.ts`: 30 blocks back now passes; a history without the coinbase fails, also when the next-page
+  route answers the first page again).
+
 ## 0.3.9
 
 - A transaction id keeps the place of its first occurrence: the lowest height the indexed chain holds it at and its
