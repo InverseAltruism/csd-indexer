@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.10
 
 - `/address/:a` reads one row of the new table `address_totals` instead of summing every output and counting every
   history row of the address on each call. Anyone can add outputs to any address cheaply, and the old read grew with
