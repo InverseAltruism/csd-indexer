@@ -59,7 +59,8 @@
   block tip-2 must hold the txid at its position. Before, it wanted every proof to name block tip-2 and failed on a
   correct index (`test/live-check.test.ts` runs it against a mock node, on correct and on altered indexes).
 - AGENTS.md and the `writeBlock` comment say that `syncOnce` writes no height below the stored tip only while the
-  `meta` tip pointer row exists. No code change.
+  `meta` tip pointer is at most one below the highest stored block; nothing in `src/` sets it lower, and a pointer
+  deleted or set back by hand over stored blocks makes `syncOnce` rewrite stored heights in place. No code change.
 - Dependencies: `body-parser` 1.20.9 and `qs` 6.16.2 (both through express) in `package-lock.json`; `package.json`
   is unchanged.
 
