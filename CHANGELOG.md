@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+- `/address/:a` reads one row of the new table `address_totals` instead of summing every output and counting every
+  history row of the address on each call. Anyone can add outputs to any address cheaply, and the old read grew with
+  them while holding a connection of the pool the block writer and the resolver's reads share. The answer is
+  unchanged, byte for byte: funded, spent, balance, `tx_count` (distinct txids in the address's history) and
+  `utxo_count`, as 0.3.9's scan computed them. `/analytics/supply` and the plain-text supply routes read the zero
+  address's balance (the burned figure) through the same function, so they read that one row too.
+- The table is kept the way `coinbase_totals` is: rebuilt from the rows at every start of either backend, and kept
+  equal to that aggregate inside every `writeBlock` and `unwindAbove` transaction, under one Postgres lock on both
+  tables. A block write reads its height's share of the aggregate before its clear and after its writes and moves the
+  table by the difference, one upsert per address that changed; an unwind subtracts the share above the ancestor. A
+  repeated txid writes no row (0.3.9), so it changes no total.
+- Each sum is held as two columns, the sums of value >> 32 and of value & 0xFFFFFFFF, so funded and spent stay exact
+  past 2^63 (on SQLite 0.3.9's scan failed for such an address; on Postgres it answered the same figure). The start's
+  rebuild reads every `outputs` and `address_history` row once: on a loaded test host, for 1,000,000 outputs and
+  1,500,000 history rows, 1.8 s on Postgres and 8.3 s on SQLite, where the `coinbase_totals` rebuild took 1.7 s and
+  17.1 s on the same rows.
+- `test/address-totals.test.ts`: seeded walks of writes, re-writes and unwinds with spends and repeated txids compare
+  the table with the aggregate after every step and `/address/:a` with 0.3.9's answer for every address; the same
+  through `syncOnce` and two reorgs on the repeat chain; sums past 2^63; a start's rebuild; a writer waiting for
+  another process's rebuild on Postgres; the maintenance reads' indexes; the route's cost for an address of 50,000
+  outputs against one of one output. `test/_repeat-chain.ts` dumps the table, so the first-occurrence suites compare
+  it with a fresh index too. `test/address-utxo.test.ts`, `test/json-safe-read.test.ts` and `test/analytics.test.ts`
+  (whose burn figure reads the table) write rows by hand and start the store again before they read, as a
+  deployment's start rebuilds the table.
+
 ## 0.3.9
 
 - A transaction id keeps the place of its first occurrence: the lowest height the indexed chain holds it at and its

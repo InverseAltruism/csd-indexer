@@ -77,7 +77,7 @@ export async function mockNode(chain: () => Blk[]): Promise<{ url: string; close
 const TABLES: Record<string, string> = {
   blocks: "height", txs: "txid", tx_repeats: "height, pos", outputs: "txid, vout",
   address_history: "addr, txid, direction, delta, pos", proposals: "txid", attestations: "txid",
-  coinbase_totals: "addr", meta: "key",
+  coinbase_totals: "addr", address_totals: "addr", meta: "key",
 };
 /** Every row of every table (but those in `skip`) in primary-key order, integers past 2^53 as strings. */
 export async function dump(s: Store, skip: string[] = []): Promise<Record<string, unknown[]>> {

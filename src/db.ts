@@ -90,6 +90,10 @@ const DDL = `
   -- Per-address count and sum of the coinbase outputs in outputs JOIN txs (COINBASE_OUTPUTS below), kept equal
   -- to that aggregate by indexer.ts coinbaseTotalsWrites inside every writeBlock and unwindAbove transaction.
   CREATE TABLE IF NOT EXISTS coinbase_totals (addr TEXT PRIMARY KEY, outputs BIGINT NOT NULL, value BIGINT NOT NULL);
+  -- Per address what /address/:a serves, the addressTotalsSql aggregate below, kept equal to it by indexer.ts
+  -- addressTotalsWrites inside every writeBlock and unwindAbove transaction. A sum is held as two columns (joinSum).
+  CREATE TABLE IF NOT EXISTS address_totals (addr TEXT PRIMARY KEY, outputs BIGINT NOT NULL, unspent BIGINT NOT NULL,
+    funded_hi BIGINT NOT NULL, funded_lo BIGINT NOT NULL, spent_hi BIGINT NOT NULL, spent_lo BIGINT NOT NULL, txs BIGINT NOT NULL);
   -- A block's positions that hold a txid whose txs row sits at an earlier place (indexer.ts writeBlock). With the
   -- txs rows of the height they are the block's whole ordered tx list (queries.ts BLOCK_TX_LIST).
   CREATE TABLE IF NOT EXISTS tx_repeats (height BIGINT NOT NULL, pos INTEGER NOT NULL, txid TEXT NOT NULL, PRIMARY KEY (height, pos));
@@ -122,17 +126,50 @@ const DDL = `
 // The coinbase outputs paying an address: the one definition coinbase_totals summarises. Callers append
 // `AND (...)` to narrow it.
 export const COINBASE_OUTPUTS = "FROM outputs o JOIN txs t ON t.txid = o.txid WHERE t.coinbase = 1 AND o.addr IS NOT NULL";
-// Every boot rebuilds coinbase_totals from the rows, so a writer without the maintenance (an older version)
-// cannot leave it stale; a boot took 0.3 to 0.4 s on Postgres and 0.9 to 1.0 s on SQLite seeded at 2026-10 mainnet size.
-// The rebuild and the maintaining writers serialize: on Postgres both take COINBASE_TOTALS_LOCK first in their
-// transaction (it conflicts with itself, not with readers); on SQLite the rebuild and every Store.tx begin
-// IMMEDIATE, so each waits for another process's write transaction through busy_timeout instead of failing.
-export const COINBASE_TOTALS_LOCK = "LOCK TABLE coinbase_totals IN SHARE ROW EXCLUSIVE MODE";
-export function coinbaseTotalsRebuildSql(backend: Store["backend"]): string[] {
+
+// What /address/:a serves per address, over the rows three predicates select: count, unspent count and funded sum of
+// `outputs` rows, minus one unspent and plus the spent sum per spent row, distinct txids of `address_history` rows.
+// "1 = 1" gives the whole aggregate, ADDRESS_AT (indexer.ts) a share. Grouped arms rebuild from the address indexes
+// on Postgres; ungrouped arms keep SQLite on its height indexes. A sum is two sums (joinSum), each inside int64 below
+// 2^31 outputs per address, where one SUM(value) passes 2^63 at 877 times the max supply received.
+const ADDRESS_TOTALS_TERMS = (() => {
+  const hi = "COALESCE(value, 0) >> 32", lo = "COALESCE(value, 0) & 4294967295";
+  //              outputs unspent funded_hi funded_lo spent_hi spent_lo
+  return { output: ["1", "1", hi, lo, "0", "0"], spent: ["0", "-1", "0", "0", hi, lo], history: ["0", "0", "0", "0", "0", "0"] };
+})();
+const ADDRESS_TOTALS_SUMS = ["outputs", "unspent", "funded_hi", "funded_lo", "spent_hi", "spent_lo"] as const;
+export const ADDRESS_TOTALS_COLS = [...ADDRESS_TOTALS_SUMS, "txs"] as const;
+export const addressTotalsSql = (w: { outputs: string; spent: string; history: string }, grouped: boolean): string => {
+  const arm = (terms: string[], txid: string | null, from: string) => {
+    const cols = [...terms.map((t, i) => `${grouped ? `SUM(${t})` : t} AS ${ADDRESS_TOTALS_SUMS[i]}`),
+      `${txid == null ? (grouped ? "0" : "NULL") : grouped ? `COUNT(DISTINCT ${txid})` : txid} AS txs`];
+    return `SELECT addr, ${cols.join(", ")} FROM ${from}${grouped ? " GROUP BY addr" : ""}`;
+  };
+  return `SELECT addr, ${ADDRESS_TOTALS_SUMS.map((c) => `SUM(${c}) AS ${c}`).join(", ")}, ${grouped ? "SUM(txs)" : "COUNT(DISTINCT txs)"} AS txs FROM (` +
+    [arm(ADDRESS_TOTALS_TERMS.output, null, `outputs WHERE addr IS NOT NULL AND (${w.outputs})`),
+      arm(ADDRESS_TOTALS_TERMS.spent, null, `outputs WHERE addr IS NOT NULL AND spent_txid IS NOT NULL AND (${w.spent})`),
+      arm(ADDRESS_TOTALS_TERMS.history, "txid", `address_history WHERE (${w.history})`)].join(" UNION ALL ") +
+    ") x GROUP BY addr";
+};
+export const ADDRESS_TOTALS_ALL = { outputs: "1 = 1", spent: "1 = 1", history: "1 = 1" } as const;
+/** A sum address_totals holds as its two columns, the sums of value >> 32 and of value & 0xFFFFFFFF. */
+export function joinSum(hi: number | bigint | null | undefined, lo: number | bigint | null | undefined): bigint {
+  return (BigInt(hi ?? 0) << 32n) + BigInt(lo ?? 0);
+}
+
+// Every boot rebuilds coinbase_totals and address_totals from the rows, so a writer without the maintenance (an
+// older version) cannot leave them stale; the coinbase rebuild took 0.3 to 0.4 s on Postgres and 0.9 to 1.0 s on
+// SQLite seeded at 2026-10 mainnet size. The rebuild and the maintaining writers serialize: on Postgres both take
+// TOTALS_LOCK first in their transaction (it conflicts with itself, not with readers); on SQLite the rebuild and every
+// Store.tx begin IMMEDIATE, so each waits for another process's write transaction through busy_timeout instead of failing.
+export const TOTALS_LOCK = "LOCK TABLE coinbase_totals, address_totals IN SHARE ROW EXCLUSIVE MODE";
+export function totalsRebuildSql(backend: Store["backend"]): string[] {
   return [
-    ...(backend === "postgres" ? [COINBASE_TOTALS_LOCK] : []),
+    ...(backend === "postgres" ? [TOTALS_LOCK] : []),
     "DELETE FROM coinbase_totals",
     `INSERT INTO coinbase_totals(addr, outputs, value) SELECT o.addr, COUNT(*), COALESCE(SUM(o.value), 0) ${COINBASE_OUTPUTS} GROUP BY o.addr`,
+    "DELETE FROM address_totals",
+    `INSERT INTO address_totals(addr, ${ADDRESS_TOTALS_COLS.join(", ")}) ${addressTotalsSql(ADDRESS_TOTALS_ALL, backend === "postgres")}`,
   ];
 }
 
@@ -150,7 +187,7 @@ class SqliteStore implements Store {
     this.d.exec(DDL);
     this.d.exec("BEGIN IMMEDIATE");
     try {
-      for (const q of coinbaseTotalsRebuildSql(this.backend)) this.d.exec(q);
+      for (const q of totalsRebuildSql(this.backend)) this.d.exec(q);
       this.d.exec("COMMIT");
     } catch (e) { try { this.d.exec("ROLLBACK"); } catch { /* already rolled back */ } throw e; }
   }
@@ -262,7 +299,7 @@ class PgStore implements Store {
         await c.query(DDL);
         await c.query("BEGIN");
         try {
-          for (const q of coinbaseTotalsRebuildSql(this.backend)) await c.query(q);
+          for (const q of totalsRebuildSql(this.backend)) await c.query(q);
           await c.query("COMMIT");
         } catch (e) {
           try { await c.query("ROLLBACK"); } catch { /* connection gone */ }
@@ -340,11 +377,11 @@ export async function checkpoint(): Promise<void> { await store().checkpoint(); 
 /** TEST ONLY: drop every table so a suite starts from nothing (works on both backends). */
 export async function resetStoreForTests(): Promise<void> {
   const s = store();
-  for (const t of ["address_history", "attestations", "proposals", "outputs", "txs", "tx_repeats", "blocks", "meta", "coinbase_totals"]) {
+  for (const t of ["address_history", "attestations", "proposals", "outputs", "txs", "tx_repeats", "blocks", "meta", "coinbase_totals", "address_totals"]) {
     await s.exec(`DROP TABLE IF EXISTS ${t}`);
   }
   await s.exec(DDL);
-  await s.tx(async (d) => { for (const q of coinbaseTotalsRebuildSql(d.backend)) await d.run(q); });
+  await s.tx(async (d) => { for (const q of totalsRebuildSql(d.backend)) await d.run(q); });
 }
 
 export async function getMeta(k: string): Promise<string | null> {

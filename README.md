@@ -72,7 +72,8 @@ Standard explorer endpoints (the widely used Esplora shape, so existing tools wo
 - `GET /blocks/tip/height` (503 while the index is empty), `/blocks/tip/hash`, `/blocks/recent`
 - `GET /block/:hash[/txids|/txs]`, `/block-height/:h`
 - `GET /tx/:id[/status]`
-- `GET /address/:a` (its `chain_stats` also carry `utxo_count`, the number of unspent outputs), `/address/:a/txs`,
+- `GET /address/:a` (its `chain_stats` also carry `utxo_count`, the number of unspent outputs; read from one row the
+  block writer keeps per address, so its cost does not grow with the address's outputs), `/address/:a/txs`,
   `/address/:a/txs/chain/:last_seen_txid` (the next page), `/address/:a/utxo`: at most 1,000 unspent outputs in
   (block height, txid, vout) order; pass `after=<block_height>:<txid>:<vout>` of the last row for the next page, and
   a page shorter than 1,000 is the last (a malformed `after` is 400). A client that reads only the first answer gets

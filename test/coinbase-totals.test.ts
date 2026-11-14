@@ -12,7 +12,7 @@ process.env.CSD_INDEX_PG_SCHEMA = "t_coinbase_totals";
 process.env.CSD_INDEX_FROM = "0";
 
 const { writeBlock, unwindAbove, coinbaseRowsSql, COINBASE_WHERE } = await import("../src/indexer.js");
-const { store, resetStoreForTests, closeDb, COINBASE_OUTPUTS, coinbaseTotalsRebuildSql } = await import("../src/db.js");
+const { store, resetStoreForTests, closeDb, COINBASE_OUTPUTS, totalsRebuildSql } = await import("../src/db.js");
 await resetStoreForTests();
 test.after(async () => { await closeDb(); });
 
@@ -161,14 +161,14 @@ test("Postgres: writers and boot rebuilds serialize on the coinbase_totals lock"
     const corrupt = () => store().run("UPDATE coinbase_totals SET outputs = outputs + 5 WHERE addr = ?", `0x${A}`);
     // another process's boot rebuild in flight: our writer must read A's total after it commits, not before
     await corrupt();
-    await interleave(coinbaseTotalsRebuildSql("postgres"), () => writeBlock(blk(1, 1)));
+    await interleave(totalsRebuildSql("postgres"), () => writeBlock(blk(1, 1)));
     assert.deepEqual(await totals(), await aggregate(), "writeBlock during another process's rebuild");
     await corrupt();
-    await interleave(coinbaseTotalsRebuildSql("postgres"), () => unwindAbove(0));
+    await interleave(totalsRebuildSql("postgres"), () => unwindAbove(0));
     assert.deepEqual(await totals(), await aggregate(), "unwindAbove during another process's rebuild");
     // another boot's rebuild that has deleted and re-inserted but not committed: ours must wait for it, not collide
     await closeDb();
-    await interleave(coinbaseTotalsRebuildSql("postgres").filter((q) => !q.startsWith("LOCK")), () => store().get("SELECT 1"), false);
+    await interleave(totalsRebuildSql("postgres").filter((q) => !q.startsWith("LOCK")), () => store().get("SELECT 1"), false);
     assert.deepEqual(await totals(), await aggregate(), "two boots rebuilding at once");
   } finally {
     await other.query("ROLLBACK").catch(() => undefined);

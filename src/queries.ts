@@ -3,7 +3,7 @@
 //
 // Integer columns arrive from the store as number-when-exact / bigint-past-2^53 (see
 // db.ts); amt() turns the big ones into decimal strings so JSON never sees a BigInt.
-import { store } from "./db.js";
+import { store, joinSum } from "./db.js";
 
 export interface BlockRow { height: number; hash: string; prev: string; merkle: string; time: number; bits: number; nonce: number; version: number; tx_count: number; chainwork: string; }
 export interface TxRow { txid: string; height: number; pos: number; app_type: string; signer: string; fee: number; time: number; n_in: number; n_out: number; coinbase: number; }
@@ -128,15 +128,13 @@ export async function addressUtxos(addr: string, after: UtxoCursor | null): Prom
       "ORDER BY height, txid, vout LIMIT ?", a, after.height, after.height, after.height, after.txid, after.txid, after.vout, UTXO_PAGE);
   return rows.map((r) => ({ ...r, value: amt(r.value as never) }));
 }
+// One primary-key read of address_totals (db.ts), the table the block writer keeps equal to the aggregate over the
+// address's outputs and address_history rows, so the cost does not grow with the address's output count.
 export async function addressStats(addr: string): Promise<{ funded: number | string; spent: number | string; balance: number | string; tx_count: number; utxo_count: number }> {
-  const a = addr.toLowerCase();
-  // one pass over the address's outputs (idx_out_addr) for both sums and the unspent count
-  const o = await store().get<{ funded: number | bigint; spent: number | bigint; unspent: number | bigint }>(
-    "SELECT COALESCE(SUM(value),0) funded, COALESCE(SUM(CASE WHEN spent_txid IS NOT NULL THEN value ELSE 0 END),0) spent, " +
-    "COUNT(*) - COUNT(spent_txid) unspent FROM outputs WHERE addr=?", a);
-  const txc = (await store().get<{ n: number }>("SELECT COUNT(DISTINCT txid) n FROM address_history WHERE addr=?", a))?.n ?? 0;
-  const funded = o?.funded ?? 0, spent = o?.spent ?? 0;
-  return { funded: amt(funded), spent: amt(spent), balance: amt(BigInt(funded) - BigInt(spent)), tx_count: Number(txc), utxo_count: Number(o?.unspent ?? 0) };
+  const r = await store().get<Record<"unspent" | "funded_hi" | "funded_lo" | "spent_hi" | "spent_lo" | "txs", number | bigint>>(
+    "SELECT unspent, funded_hi, funded_lo, spent_hi, spent_lo, txs FROM address_totals WHERE addr=?", addr.toLowerCase());
+  const funded = joinSum(r?.funded_hi, r?.funded_lo), spent = joinSum(r?.spent_hi, r?.spent_lo);
+  return { funded: amt(funded), spent: amt(spent), balance: amt(funded - spent), tx_count: Number(r?.txs ?? 0), utxo_count: Number(r?.unspent ?? 0) };
 }
 
 // Coinbase lifetime totals read from the maintained coinbase_totals table (db.ts), one row per address, with

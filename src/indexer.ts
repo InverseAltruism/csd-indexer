@@ -8,7 +8,7 @@
 // un-spend orphaned spends), and replay the canonical branch; the electrs/Subsquid
 // roll-back-then-replay pattern. Blocks deeper than finalDepth are never touched.
 import * as rpc from "./rpc.js";
-import { store, getMeta, setMeta, tx as dbTx, COINBASE_OUTPUTS, COINBASE_TOTALS_LOCK, type Store } from "./db.js";
+import { store, getMeta, setMeta, tx as dbTx, COINBASE_OUTPUTS, TOTALS_LOCK, ADDRESS_TOTALS_COLS, addressTotalsSql, type Store } from "./db.js";
 import { deriveAddr, addrFromScriptPubkey, appType } from "./decode.js";
 import { CFG } from "./config.js";
 import { bus } from "./events.js";
@@ -166,7 +166,9 @@ export async function writeBlock(b: rpc.RpcBlock): Promise<ReadonlySet<number>> 
     // "byte-identical rows" claim. Rule: every integer bound into a column goes through the SAME clamp
     // helper, so header time/bits/nonce/version use safeValue() exactly like value, fee and expires_epoch.
     const time = safeValue(blk.header.time);
-    if (d.backend === "postgres") await d.run(COINBASE_TOTALS_LOCK); // serializes with the boot rebuild (db.ts)
+    if (d.backend === "postgres") await d.run(TOTALS_LOCK); // serializes with the boot rebuild (db.ts)
+    const atHeight = [blk.height, blk.height, blk.height, blk.height] as const;
+    const addrBefore = await d.all<AddressTotalsRow>(addressTotalsSql(ADDRESS_AT.height, false), ...atHeight);
     // clear any prior contents of THIS height (keeps a same-height re-write internally consistent)
     const cleared = await d.all<CoinbaseRow>(coinbaseRowsSql(COINBASE_WHERE.height, COINBASE_WHERE.txAtHeight), blk.height, blk.height, blk.height);
     for (const [sql, ...p] of coinbaseTotalsWrites(cleared, -1n)) await d.run(sql, ...p);
@@ -275,6 +277,8 @@ export async function writeBlock(b: rpc.RpcBlock): Promise<ReadonlySet<number>> 
           clampInt(t.app.confidence), fee, blk.height, time);
       }
     }
+    const addrAfter = await d.all<AddressTotalsRow>(addressTotalsSql(ADDRESS_AT.height, false), ...atHeight);
+    for (const [sql, ...p] of addressTotalsWrites(addrBefore, addrAfter)) await d.run(sql, ...p);
     return repeats;
   });
 }
@@ -317,6 +321,40 @@ function coinbaseTotalsWrites(rows: CoinbaseRow[], sign: 1n | -1n): [string, ...
       addr, t.n, t.v < 0n ? 0n : clampValue(t.v)]);
 }
 
+// A share of address_totals (db.ts addressTotalsSql): outputs created at the heights, spent markers set there or on
+// an output created there, address_history rows there. writeBlock moves the table by its height's share after its
+// writes minus before its clear, unwindAbove by minus the share above the ancestor; each row they change is in it
+// (an outputs upsert's DO UPDATE arm, which meets only a row without its txs row, aside). The distinct txid count
+// adds up across shares because all rows of one (addr, txid) sit at the txid's txs height and leave with it.
+export const ADDRESS_AT = {
+  height: { outputs: "height = ?", spent: "height = ? OR spent_height = ?", history: "height = ?" },
+  above: { outputs: "height > ?", spent: "height > ? OR spent_height > ?", history: "height > ?" },
+} as const;
+type AddressTotalsRow = { addr: string } & Record<(typeof ADDRESS_TOTALS_COLS)[number], number | bigint | null>;
+
+/**
+ * The address_totals writes that move each address by its share in `after` minus its share in `before` (both read
+ * with addressTotalsSql over ADDRESS_AT in the same transaction): one additive upsert per address that changed, and
+ * the row's delete once it counts no output and no transaction, as the aggregate then has no row for it.
+ */
+function addressTotalsWrites(before: AddressTotalsRow[], after: AddressTotalsRow[]): [string, ...unknown[]][] {
+  const delta = new Map<string, bigint[]>();
+  for (const [rows, sign] of [[before, -1n], [after, 1n]] as const) {
+    for (const r of rows) {
+      const d = delta.get(r.addr) ?? ADDRESS_TOTALS_COLS.map(() => 0n);
+      ADDRESS_TOTALS_COLS.forEach((c, i) => { d[i]! += sign * BigInt(r[c] ?? 0); });
+      delta.set(r.addr, d);
+    }
+  }
+  const cols = ADDRESS_TOTALS_COLS.join(",");
+  const upsert = `INSERT INTO address_totals(addr,${cols}) VALUES(?,${ADDRESS_TOTALS_COLS.map(() => "?").join(",")}) ` +
+    `ON CONFLICT(addr) DO UPDATE SET ${ADDRESS_TOTALS_COLS.map((c) => `${c}=address_totals.${c}+excluded.${c}`).join(", ")}`;
+  return [...delta].filter(([, d]) => d.some((x) => x !== 0n)).flatMap(([addr, d]): [string, ...unknown[]][] => [
+    [upsert, addr, ...d],
+    ...(d.some((x) => x < 0n) ? [["DELETE FROM address_totals WHERE addr=? AND outputs=0 AND txs=0", addr] as [string, ...unknown[]]] : []),
+  ]);
+}
+
 /**
  * Hard-delete every row strictly above `ancestor`, un-spending outputs orphaned by it, AND set the tip pointer
  * to `newTip` (defaults to `ancestor`) INSIDE the same transaction. F11: the tip-pointer write used to run in
@@ -331,9 +369,11 @@ function coinbaseTotalsWrites(rows: CoinbaseRow[], sign: 1n | -1n): [string, ...
 export async function unwindAbove(ancestor: number, newTip: number = ancestor): Promise<void> {
   await dbTx(async (d: Store) => {
     const h = ancestor;
-    if (d.backend === "postgres") await d.run(COINBASE_TOTALS_LOCK); // serializes with the boot rebuild (db.ts)
+    if (d.backend === "postgres") await d.run(TOTALS_LOCK); // serializes with the boot rebuild (db.ts)
     const orphaned = await d.all<CoinbaseRow>(coinbaseRowsSql(COINBASE_WHERE.above, COINBASE_WHERE.txAbove), h, h, h);
     for (const [sql, ...p] of coinbaseTotalsWrites(orphaned, -1n)) await d.run(sql, ...p);
+    const addrOrphaned = await d.all<AddressTotalsRow>(addressTotalsSql(ADDRESS_AT.above, false), h, h, h, h);
+    for (const [sql, ...p] of addressTotalsWrites(addrOrphaned, [])) await d.run(sql, ...p);
     // un-spend outputs whose spender was orphaned (those spends no longer happened)
     await d.run(`UPDATE outputs SET spent_txid=NULL, spent_height=NULL WHERE spent_height>?`, h);
     await d.run(`DELETE FROM address_history WHERE height>?`, h);

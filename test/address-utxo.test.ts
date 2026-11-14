@@ -33,6 +33,7 @@ await store().tx(async (d) => {
   }
   for (let i = 0; i < 5; i++) await d.run(ins, txid(5_000_000 + i), 0, OTHER, 77, 100, null, null);
 });
+await closeDb();   // rows written by hand: the next boot rebuilds address_totals from them (src/db.ts)
 const spentCount = Number((await store().get<{ n: number }>("SELECT COUNT(*) n FROM outputs WHERE addr=? AND spent_txid IS NOT NULL", HEAVY))!.n);
 const UNSPENT = N + SPENT - spentCount;
 
@@ -61,6 +62,7 @@ test("/address/:a chain_stats: funded, spent, balance and utxo_count equal their
     txid(6_000_000), 0, SPENDER, 2n ** 60n, 300, txid(2), 301);
   await store().run("INSERT INTO outputs(txid,vout,addr,value,height,spent_txid,spent_height) VALUES(?,?,?,?,?,?,?)",
     txid(6_000_001), 0, SPENDER, 9, 300, null, null);
+  await closeDb();   // as above
   for (const a of [HEAVY, OTHER, EMPTY, SPENDER]) {
     const one = async (sql: string) => (await store().get<{ v: number | bigint }>(sql, a))!.v;
     const funded = await one("SELECT COALESCE(SUM(value),0) v FROM outputs WHERE addr=?");
