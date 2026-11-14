@@ -237,7 +237,7 @@ test("every address-totals maintenance read is driven by an index on height", { 
   }
 });
 
-// Row 135: /address/:a summed every output of the address on each call. Now its statements read one row: on SQLite
+// /address/:a summed every output of the address on each call. Now its statements read one row: on SQLite
 // the plan is one primary-key search of address_totals; on Postgres the buffers an executed plan touches are the same
 // for an address of 50,000 outputs as for an address of one.
 test("/address/:a does not scan: an address of 50,000 outputs costs what an address of one costs", async () => {

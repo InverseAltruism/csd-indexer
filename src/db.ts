@@ -157,8 +157,8 @@ export function joinSum(hi: number | bigint | null | undefined, lo: number | big
   return (BigInt(hi ?? 0) << 32n) + BigInt(lo ?? 0);
 }
 
-// Every boot rebuilds coinbase_totals and address_totals from the rows, so a writer without the maintenance (an
-// older version) cannot leave them stale; the coinbase rebuild took 0.3 to 0.4 s on Postgres and 0.9 to 1.0 s on
+// Every boot rebuilds coinbase_totals and address_totals from the rows. A writer without the maintenance (an older
+// version writing the same database) leaves them stale; the next start repairs them. The coinbase rebuild took 0.3 to 0.4 s on Postgres and 0.9 to 1.0 s on
 // SQLite seeded at 2026-10 mainnet size. The rebuild and the maintaining writers serialize: on Postgres both take
 // TOTALS_LOCK first in their transaction (it conflicts with itself, not with readers); on SQLite the rebuild and every
 // Store.tx begin IMMEDIATE, so each waits for another process's write transaction through busy_timeout instead of failing.
