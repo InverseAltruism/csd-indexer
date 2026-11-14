@@ -270,7 +270,7 @@ class PgStore implements Store {
       // 3.x has no built-in maxWaitingClients, so the queue length is bounded explicitly below in
       // acquireGuard() (the prior comment claimed "never queue forever" but the queue was unbounded).
       connectionTimeoutMillis: 10_000,
-      // server-side guards: statement_timeout (30s) caps any single query so no runaway read
+      // server-side guards: statement_timeout (30s) caps any single query (the start's totals rebuild aside) so no runaway read
       // starves the block writer; idle_in_transaction_session_timeout (60s) keeps an abandoned
       // BEGIN from holding locks. Both exceed connectionTimeoutMillis by design; the acquire
       // timeout fails fast; these bound work that is already running on a connection.
@@ -299,6 +299,9 @@ class PgStore implements Store {
         await c.query(DDL);
         await c.query("BEGIN");
         try {
+          // The rebuild reads every outputs and address_history row, which grows with rows anyone can add: the 30 s cap
+          // would fail every start. SET LOCAL lifts it for this transaction only (test/boot-rebuild-timeout.test.ts).
+          await c.query("SET LOCAL statement_timeout = 0");
           for (const q of totalsRebuildSql(this.backend)) await c.query(q);
           await c.query("COMMIT");
         } catch (e) {

@@ -41,6 +41,12 @@
 - CI runs on Node 26 (`.github/workflows/ci.yml`, both jobs), the version the maintainers' host runs since
   2026-11-12; AGENTS.md says so. `engines` stays `>=22` (what `node:sqlite` needs); no dependency or lockfile change.
 
+- On Postgres the start's rebuild of `coinbase_totals` and `address_totals` runs without the pool's 30 s statement
+  timeout (`SET LOCAL statement_timeout = 0` in its own transaction). The rebuild reads every `outputs` and
+  `address_history` row, which grows with honest use and with rows anyone can add, and under the cap it failed every
+  start once it took longer. Every other statement keeps the 30 s cap (`test/boot-rebuild-timeout.test.ts`: a store
+  opened with a 100 ms timeout starts over 300,000 rows of each, and a read on that connection is still cut off).
+
 ## 0.3.9
 
 - A transaction id keeps the place of its first occurrence: the lowest height the indexed chain holds it at and its
