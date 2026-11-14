@@ -47,6 +47,8 @@
   start once it took longer. Every other statement keeps the 30 s cap (`test/boot-rebuild-timeout.test.ts`: a store
   opened with a 100 ms timeout starts over 300,000 rows of each, and a read on that connection is still cut off).
 
+- The Dockerfile builds on `node:26-slim` (was `node:22-slim`), the major CI tests.
+
 ## 0.3.9
 
 - A transaction id keeps the place of its first occurrence: the lowest height the indexed chain holds it at and its
