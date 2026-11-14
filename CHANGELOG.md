@@ -38,6 +38,9 @@
   position is higher than a later transaction's position in the repeating block (ordered by the rows' positions the
   suite passed on SQLite). No code change.
 
+- CI runs on Node 26 (`.github/workflows/ci.yml`, both jobs), the version the maintainers' host runs since
+  2026-11-12; AGENTS.md says so. `engines` stays `>=22` (what `node:sqlite` needs); no dependency or lockfile change.
+
 ## 0.3.9
 
 - A transaction id keeps the place of its first occurrence: the lowest height the indexed chain holds it at and its

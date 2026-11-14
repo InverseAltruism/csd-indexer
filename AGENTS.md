@@ -8,8 +8,8 @@ Trust model (README "Honest limits", enforced by design): the indexer is a conve
 
 ## Start here
 
-- Check: `npm ci && npm run typecheck && npm run lint && npm run check:dashes-paths && npm test` (offline; Node 22
-  or later for `node:sqlite`).
+- Check: `npm ci && npm run typecheck && npm run lint && npm run check:dashes-paths && npm test` (offline; Node 26,
+  as CI runs it; `node:sqlite` needs 22 or later).
 - Red lines: never unwind on absence of evidence or below the checkpoint floor; never reconcile against a node with
   less chainwork; exact integers end to end; consensus values come from the pinned csd-sdk packages; replay may
   reject more, never accept different. Each is under Invariants.
@@ -50,7 +50,7 @@ The indexer binds 127.0.0.1 by default and is meant to sit behind a reverse prox
 
 ## Architecture
 
-TypeScript, run directly via `tsx` (no build step, no native deps; `node:sqlite` needs Node >= 22):
+TypeScript, run directly via `tsx` (no build step, no native deps; CI runs Node 26, `node:sqlite` needs Node >= 22):
 
 - `src/cli.ts`: entry. `index` = one sync pass + exit (cron/CI); `run` = continuous poll loop and API server in one process.
 - `src/config.ts`: `CFG` from env. Key vars: `CSD_RPC` (default http://127.0.0.1:8789), `CSD_RPC_BACKENDS`, `CSD_INDEX_DB`, `CSD_INDEX_PG` (set => Postgres instead of sqlite), `CSD_INDEX_LISTEN` (127.0.0.1:8793), `CSD_CONFIRMATIONS_FINAL` (6), `CSD_INDEX_POLL` (15s), `CSD_STALE_SECS` (600), `CSD_INDEX_CHECKPOINT_FLOOR` (default read from the shared spv-checkpoint file whose path is baked into config.ts, hard fallback 38142), `CSD_INDEX_WORK_GUARD` (chainwork-guard kill switch, default on), and the knobs of rpc.ts and stream.ts listed below. It is the only `process.env` reader in `src/`; a numeric knob that is empty, zero, negative or not a number falls back to its default (`test/config-knob-positive.test.ts`).
@@ -102,7 +102,7 @@ API: the endpoint list for integrators is `README.md` "The API"; keep it in step
 
 ```bash
 cd csd-indexer            # your checkout
-npm install                                    # Node >= 22 required (node:sqlite)
+npm install                                    # Node 26 as CI (node:sqlite needs >= 22)
 CSD_RPC=http://127.0.0.1:8789 npm run run-all  # index + serve on :8793
 npm run index                                  # one sync pass, exits
 npm run serve                                  # API only
