@@ -30,8 +30,15 @@ ok(`block ${h}: txids ordered, count matches`, txids.length === nb.txs.length &&
 let proofChecks = 0;
 for (let pos = 0; pos < txids.length; pos++) {
   const proof = await a(`/tx/${txids[pos]}/merkle-proof`);
-  const good = verifyMerkleProof(txids[pos], proof.pos, proof.merkle, nb.header.merkle);
-  if (good && proof.pos === pos && proof.block_height === h) proofChecks++;
+  // A txid held by an earlier block or position is proven at its first occurrence (README "Honest limits"):
+  // verify against that block's node header, and the node's block h must hold the txid at pos.
+  let root = nb.header.merkle;
+  if (proof.block_height !== h || proof.pos !== pos) {
+    const earlier = proof.block_height < h || (proof.block_height === h && proof.pos < pos);
+    let fb = await r(`/block/height/${proof.block_height}`); fb = fb.block ?? fb;
+    root = earlier && nb.txs[pos]?.txid === txids[pos] ? fb.header.merkle : null;
+  }
+  if (root && verifyMerkleProof(txids[pos], proof.pos, proof.merkle, root)) proofChecks++;
 }
 ok(`block ${h}: ALL ${txids.length} served merkle proofs verify vs node header.merkle (L0 convention)`, proofChecks === txids.length);
 // negative: a tampered txid must not verify against a real proof

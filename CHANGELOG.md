@@ -27,6 +27,14 @@
   blocks and folding proofs, and the tables after each reorg against a fresh sync; seeded walks of writes and unwinds
   against a fresh index; a database created before the table), `test/first-occurrence-floor.test.ts`, and
   `test/coinbase-totals.test.ts`, whose case for a coinbase held again now checks that its first outputs stay counted.
+- The live gate `test/_live_check.mjs` checks a txid that block tip-2 holds again at its first occurrence: the
+  served proof must name an earlier block or position and verify against that block's node header, and the node's
+  block tip-2 must hold the txid at its position. Before, it wanted every proof to name block tip-2 and failed on a
+  correct index (`test/live-check.test.ts` runs it against a mock node, on correct and on altered indexes).
+- AGENTS.md and the `writeBlock` comment say that `syncOnce` writes no height below the stored tip only while the
+  `meta` tip pointer row exists. No code change.
+- Dependencies: `body-parser` 1.20.9 and `qs` 6.16.2 (both through express) in `package-lock.json`; `package.json`
+  is unchanged.
 
 ## 0.3.8
 

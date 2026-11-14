@@ -150,7 +150,9 @@ export async function indexedChainwork(): Promise<bigint | null> {
  * height and position the indexed chain holds it. A txid txs already holds is listed in tx_repeats and changes
  * no other row, and an output keeps its first spender, so an unwind and replay ends in the tables of a fresh
  * index. That rests on the caller: syncOnce writes heights in ascending order without a gap, writes no height
- * below the stored tip, and starts at CFG.scanFrom, below which no occurrence is known
+ * below the stored tip while the meta tip pointer row exists (with the row gone over stored blocks, indexedHeight
+ * returns CFG.scanFrom - 1 and syncOnce rewrites stored heights in place), and starts at CFG.scanFrom, below which
+ * no occurrence is known
  * (test/first-occurrence.test.ts). Returns the block positions listed in tx_repeats.
  */
 export async function writeBlock(b: rpc.RpcBlock): Promise<ReadonlySet<number>> {
