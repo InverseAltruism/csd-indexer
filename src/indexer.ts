@@ -170,7 +170,7 @@ export async function writeBlock(b: rpc.RpcBlock): Promise<ReadonlySet<number>> 
     const atHeight = [blk.height, blk.height, blk.height, blk.height] as const;
     const addrBefore = await d.all<AddressTotalsRow>(addressTotalsSql(ADDRESS_AT.height, false), ...atHeight);
     // clear any prior contents of THIS height (keeps a same-height re-write internally consistent)
-    const cleared = await d.all<CoinbaseRow>(coinbaseRowsSql(COINBASE_WHERE.height, COINBASE_WHERE.txAtHeight), blk.height, blk.height, blk.height);
+    const cleared = await d.all<CoinbaseRow>(coinbaseRowsSql(COINBASE_WHERE.height), blk.height);
     for (const [sql, ...p] of coinbaseTotalsWrites(cleared, -1n)) await d.run(sql, ...p);
     await d.run(`UPDATE outputs SET spent_txid=NULL, spent_height=NULL WHERE spent_height=?`, blk.height);
     await d.run(`DELETE FROM address_history WHERE height=?`, blk.height);
@@ -283,20 +283,18 @@ export async function writeBlock(b: rpc.RpcBlock): Promise<ReadonlySet<number>> 
   });
 }
 
-// The coinbase output rows a write is about to remove or change, or has just added (each `where` over
-// COINBASE_OUTPUTS, the arms joined by UNION ALL), each with its address's current coinbase_totals row.
+// The coinbase output rows a write is about to remove or has just added (`where` over COINBASE_OUTPUTS), each with
+// its address's current coinbase_totals row. An output and its txs row share a height (writeBlock writes them in one
+// turn and both deleters go by height), so the height and txid arms cover every row a write changes.
 // Exported for test/coinbase-totals.test.ts, which checks each arm's plan.
 export const COINBASE_WHERE = {
   height: "o.height = ?",
-  txAtHeight: "o.height <> ? AND t.height = ?",
   txid: "o.txid = ?",
   above: "o.height > ?",
-  // the unary plus keeps sqlite from driving this by outputs(height), a range over nearly every row
-  txAbove: "+o.height <= ? AND t.height > ?",
 } as const;
-export const coinbaseRowsSql = (...wheres: string[]) =>
+export const coinbaseRowsSql = (where: string) =>
   "SELECT x.addr, x.value, c.outputs AS cur_outputs, c.value AS cur_value FROM (" +
-  wheres.map((w) => `SELECT o.addr AS addr, o.value AS value ${COINBASE_OUTPUTS} AND (${w})`).join(" UNION ALL ") +
+  `SELECT o.addr AS addr, o.value AS value ${COINBASE_OUTPUTS} AND (${where})` +
   ") x LEFT JOIN coinbase_totals c ON c.addr = x.addr";
 type CoinbaseRow = { addr: string; value: number | bigint | null; cur_outputs: number | bigint | null; cur_value: number | bigint | null };
 
@@ -372,7 +370,7 @@ export async function unwindAbove(ancestor: number, newTip: number = ancestor): 
   await dbTx(async (d: Store) => {
     const h = ancestor;
     if (d.backend === "postgres") await d.run(TOTALS_LOCK); // serializes with the boot rebuild (db.ts)
-    const orphaned = await d.all<CoinbaseRow>(coinbaseRowsSql(COINBASE_WHERE.above, COINBASE_WHERE.txAbove), h, h, h);
+    const orphaned = await d.all<CoinbaseRow>(coinbaseRowsSql(COINBASE_WHERE.above), h);
     for (const [sql, ...p] of coinbaseTotalsWrites(orphaned, -1n)) await d.run(sql, ...p);
     const addrOrphaned = await d.all<AddressTotalsRow>(addressTotalsSql(ADDRESS_AT.above, false), h, h, h, h);
     for (const [sql, ...p] of addressTotalsWrites(addrOrphaned, [])) await d.run(sql, ...p);

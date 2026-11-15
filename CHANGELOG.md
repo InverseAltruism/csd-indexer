@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- The coinbase-totals maintenance no longer reads coinbase outputs whose row sits at another height than their `txs`
+  row (`COINBASE_WHERE.txAtHeight` and `txAbove`, one probe per block write and per unwind). Since 0.3.9 an output and
+  its `txs` row are written in one turn and deleted by the same height (a repeated txid writes nothing,
+  `src/indexer.ts` `SQL_FIRST`), so the probes returned no row: with each one made to throw on a row, 62 tests of the
+  write, reorg and totals suites passed on both backends while a hand-made row of that shape made both throw. A
+  database written before first occurrence that still holds such a row is re-indexed from empty, and the start's
+  rebuild repairs `coinbase_totals` in any case. `test/coinbase-totals.test.ts` no longer checks the two plans.
+
 ## 0.3.10
 
 - `/address/:a` reads one row of the new table `address_totals` instead of summing every output and counting every

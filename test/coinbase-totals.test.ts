@@ -238,10 +238,8 @@ test("HAPPY PATH: an honest chain's totals are the per-address coinbase sums", a
 test("every coinbase-totals maintenance read is driven by the index that bounds it", { skip: !SQLITE && "EXPLAIN QUERY PLAN is sqlite-only" }, async () => {
   const driver: Record<keyof typeof COINBASE_WHERE, RegExp> = {
     height: /^SEARCH o USING INDEX idx_out_height \(height=\?\)/,
-    txAtHeight: /^SEARCH t USING INDEX idx_txs_height \(height=\?\)/,
     txid: /^SEARCH (t|o) USING INDEX sqlite_autoindex_(txs|outputs)_1 \(txid=\?\)/,
     above: /^SEARCH o USING INDEX idx_out_height \(height>\?\)/,
-    txAbove: /^SEARCH t USING INDEX idx_txs_height \(height>\?\)/,
   };
   for (const [name, where] of Object.entries(COINBASE_WHERE) as [keyof typeof COINBASE_WHERE, string][]) {
     const n = (where.match(/\?/g) ?? []).length;
