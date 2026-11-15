@@ -102,7 +102,7 @@ API: the endpoint list for integrators is `README.md` "The API"; keep it in step
 
 ```bash
 cd csd-indexer            # your checkout
-npm install                                    # Node 26 as CI (node:sqlite needs >= 22)
+npm ci                                         # the committed lockfile; Node 26 as CI (node:sqlite needs >= 22)
 CSD_RPC=http://127.0.0.1:8789 npm run run-all  # index + serve on :8793
 npm run index                                  # one sync pass, exits
 npm run serve                                  # API only

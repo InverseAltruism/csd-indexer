@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.3.11
+
+- The coinbase-totals maintenance no longer reads coinbase outputs whose row sits at another height than their `txs`
+  row (`COINBASE_WHERE.txAtHeight` and `txAbove`, one probe per block write and per unwind). Since 0.3.9 an output and
+  its `txs` row are written in one turn and deleted by the same height (a repeated txid writes nothing,
+  `src/indexer.ts` `SQL_FIRST`), so the probes returned no row: with each one made to throw on a row, 62 tests of the
+  write, reorg and totals suites ran with 0 failed (SQLite: 60 passed, 2 skipped; Postgres: 59 passed, 3 skipped),
+  while a hand-made row of that shape made both throw. A database written before first occurrence that still holds
+  such a row is re-indexed from empty, and the start's rebuild repairs `coinbase_totals` in any case.
+  `test/coinbase-totals.test.ts` no longer checks the two plans.
+
+- The Dockerfile installs with `npm ci --omit=dev --no-audit --no-fund` only. It fell back to `npm install`, which
+  resolves the caret ranges in `package.json` afresh when the lockfile install fails; a failed install now fails the
+  build. `--no-audit` keeps the build from posting the dependency tree to the registry.
+
+- Comments in `src/db.ts` and `src/indexer.ts` state constraints only. The timing dropped from `src/db.ts` covered the
+  coinbase rebuild alone; 0.3.10's entry gives both rebuilds, measured at 1,000,000 outputs. The note that a database
+  with history rows of one repeated txid at two heights (written before first occurrence) serves a transaction count
+  one short after an unwind until the next start, and is re-indexed from empty, stays in the `src/db.ts` bullet of
+  AGENTS.md's Architecture section.
+
+- README's "Run your own" and AGENTS.md's dev workflow install with `npm ci` (the committed lockfile) instead of
+  `npm install`, for the same reason as the Dockerfile.
+
 ## 0.3.10
 
 - `/address/:a` reads one row of the new table `address_totals` instead of summing every output and counting every

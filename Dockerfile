@@ -3,9 +3,9 @@
 FROM node:26-slim
 WORKDIR /app
 
-# install deps first (better layer caching)
+# install deps first (better layer caching); only the committed lockfile, so a failed install fails the build
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev || npm install --omit=dev
+RUN npm ci --omit=dev --no-audit --no-fund
 
 # app
 COPY tsconfig.json ./
