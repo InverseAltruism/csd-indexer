@@ -34,6 +34,7 @@ await store().tx(async (d) => {
   await d.run("INSERT INTO outputs(txid,vout,addr,value,height,spent_txid,spent_height) VALUES(?,?,?,?,?,?,?)",
     txid(7), 0, HOLDER, BIG_FEE, 13, txid(8), 14);
 });
+await closeDb();   // rows written by hand: the next boot rebuilds address_totals from them (src/db.ts)
 
 const srv = buildApp().listen(0, "127.0.0.1");
 await new Promise((r) => srv.once("listening", r));

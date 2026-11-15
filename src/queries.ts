@@ -3,7 +3,7 @@
 //
 // Integer columns arrive from the store as number-when-exact / bigint-past-2^53 (see
 // db.ts); amt() turns the big ones into decimal strings so JSON never sees a BigInt.
-import { store } from "./db.js";
+import { store, joinSum } from "./db.js";
 
 export interface BlockRow { height: number; hash: string; prev: string; merkle: string; time: number; bits: number; nonce: number; version: number; tx_count: number; chainwork: string; }
 export interface TxRow { txid: string; height: number; pos: number; app_type: string; signer: string; fee: number; time: number; n_in: number; n_out: number; coinbase: number; }
@@ -53,16 +53,20 @@ export async function blockByHash(hash: string): Promise<BlockRow | null> {
 export async function recentBlocks(limit = 25): Promise<BlockRow[]> {
   return jsonSafeAll(await store().all<BlockRow>("SELECT * FROM blocks ORDER BY height DESC LIMIT ?", limit));
 }
+// A block's (txid, pos) list: its txs rows plus its tx_repeats rows, the positions whose txid has its row at an
+// earlier place (indexer.ts writeBlock). Binds the height twice.
+const BLOCK_TX_LIST = "(SELECT txid, pos FROM txs WHERE height=? UNION ALL SELECT txid, pos FROM tx_repeats WHERE height=?)";
 export async function blockTxids(height: number): Promise<string[]> {
-  return (await store().all<{ txid: string }>("SELECT txid FROM txs WHERE height=? ORDER BY pos", height)).map(r => r.txid);
+  return (await store().all<{ txid: string }>(`SELECT txid FROM ${BLOCK_TX_LIST} b ORDER BY pos`, height, height)).map(r => r.txid);
 }
 export async function tx(txid: string): Promise<TxRow | null> {
   return jsonSafe(((await store().get<TxRow>("SELECT * FROM txs WHERE txid=?", txid)) as TxRow) ?? null);
 }
 // The tx rows of one block in block order: one query, where a per-txid lookup would hold one pool
-// connection per tx of the block.
+// connection per tx of the block. Each row is the txid's one row (`tx`), so a position listed in tx_repeats
+// carries the height and pos of the txid's first occurrence.
 export async function blockTxs(height: number): Promise<TxRow[]> {
-  return jsonSafeAll(await store().all<TxRow>("SELECT * FROM txs WHERE height=? ORDER BY pos", height));
+  return jsonSafeAll(await store().all<TxRow>(`SELECT t.* FROM ${BLOCK_TX_LIST} b JOIN txs t ON t.txid = b.txid ORDER BY b.pos`, height, height));
 }
 // Tx rows with their outputs for a list of txids, in the list's order (an unknown txid is left out),
 // in two queries whatever the list length. Callers pass a page (at most addressTxids' limit), so the
@@ -124,15 +128,13 @@ export async function addressUtxos(addr: string, after: UtxoCursor | null): Prom
       "ORDER BY height, txid, vout LIMIT ?", a, after.height, after.height, after.height, after.txid, after.txid, after.vout, UTXO_PAGE);
   return rows.map((r) => ({ ...r, value: amt(r.value as never) }));
 }
+// One primary-key read of address_totals (db.ts), the table the block writer keeps equal to the aggregate over the
+// address's outputs and address_history rows, so the cost does not grow with the address's output count.
 export async function addressStats(addr: string): Promise<{ funded: number | string; spent: number | string; balance: number | string; tx_count: number; utxo_count: number }> {
-  const a = addr.toLowerCase();
-  // one pass over the address's outputs (idx_out_addr) for both sums and the unspent count
-  const o = await store().get<{ funded: number | bigint; spent: number | bigint; unspent: number | bigint }>(
-    "SELECT COALESCE(SUM(value),0) funded, COALESCE(SUM(CASE WHEN spent_txid IS NOT NULL THEN value ELSE 0 END),0) spent, " +
-    "COUNT(*) - COUNT(spent_txid) unspent FROM outputs WHERE addr=?", a);
-  const txc = (await store().get<{ n: number }>("SELECT COUNT(DISTINCT txid) n FROM address_history WHERE addr=?", a))?.n ?? 0;
-  const funded = o?.funded ?? 0, spent = o?.spent ?? 0;
-  return { funded: amt(funded), spent: amt(spent), balance: amt(BigInt(funded) - BigInt(spent)), tx_count: Number(txc), utxo_count: Number(o?.unspent ?? 0) };
+  const r = await store().get<Record<"unspent" | "funded_hi" | "funded_lo" | "spent_hi" | "spent_lo" | "txs", number | bigint>>(
+    "SELECT unspent, funded_hi, funded_lo, spent_hi, spent_lo, txs FROM address_totals WHERE addr=?", addr.toLowerCase());
+  const funded = joinSum(r?.funded_hi, r?.funded_lo), spent = joinSum(r?.spent_hi, r?.spent_lo);
+  return { funded: amt(funded), spent: amt(spent), balance: amt(funded - spent), tx_count: Number(r?.txs ?? 0), utxo_count: Number(r?.unspent ?? 0) };
 }
 
 // Coinbase lifetime totals read from the maintained coinbase_totals table (db.ts), one row per address, with

@@ -30,8 +30,15 @@ ok(`block ${h}: txids ordered, count matches`, txids.length === nb.txs.length &&
 let proofChecks = 0;
 for (let pos = 0; pos < txids.length; pos++) {
   const proof = await a(`/tx/${txids[pos]}/merkle-proof`);
-  const good = verifyMerkleProof(txids[pos], proof.pos, proof.merkle, nb.header.merkle);
-  if (good && proof.pos === pos && proof.block_height === h) proofChecks++;
+  // A txid held by an earlier block or position is proven at its first occurrence (README "Honest limits"):
+  // verify against that block's node header, and the node's block h must hold the txid at pos.
+  let root = nb.header.merkle;
+  if (proof.block_height !== h || proof.pos !== pos) {
+    const earlier = proof.block_height < h || (proof.block_height === h && proof.pos < pos);
+    let fb = await r(`/block/height/${proof.block_height}`); fb = fb.block ?? fb;
+    root = earlier && nb.txs[pos]?.txid === txids[pos] ? fb.header.merkle : null;
+  }
+  if (root && verifyMerkleProof(txids[pos], proof.pos, proof.merkle, root)) proofChecks++;
 }
 ok(`block ${h}: ALL ${txids.length} served merkle proofs verify vs node header.merkle (L0 convention)`, proofChecks === txids.length);
 // negative: a tampered txid must not verify against a real proof
@@ -42,11 +49,21 @@ ok(`tampered txid fails the served proof`, !verifyMerkleProof("0x" + "11".repeat
 const st = await a(`/tx/${txids[0]}/status`);
 ok(`tx status confirmed w/ sane confirmations`, st.confirmed === true && st.confirmations >= 1);
 
-// 5) address round-trip: coinbase payee has the coinbase output as a UTXO or spend
+// 5) address round-trip: coinbase payee has the coinbase output as a UTXO or spend. The history is newest first and
+// a repeated coinbase sits at its first occurrence (realProof's height), so page down to that height; MAX_PAGES ends
+// the walk on an index whose next page does not move down.
 const cbOut = nb.txs[0].outputs[0];
 const cbAddr = "0x" + (cbOut.script_pubkey.startsWith("0x") ? cbOut.script_pubkey.slice(2) : cbOut.script_pubkey);
-const addrTxs = await a(`/address/${cbAddr}/txs`);
-ok(`coinbase payee address has tx history`, Array.isArray(addrTxs) && addrTxs.some(t => t.txid === nb.txs[0].txid));
+const MAX_PAGES = 4000;
+let cbFound = false;
+let page = await a(`/address/${cbAddr}/txs`);
+for (let n = 1; Array.isArray(page) && page.length > 0; n++) {
+  if (page.some(t => t.txid === nb.txs[0].txid)) { cbFound = true; break; }
+  const last = page[page.length - 1];
+  if (n >= MAX_PAGES || last.height < realProof.block_height) break;
+  page = await a(`/address/${cbAddr}/txs/chain/${last.txid}`);
+}
+ok(`coinbase payee address has tx history`, cbFound);
 
 console.log(`\nLIVE E2E: ${P} passed, ${F} failed`);
 process.exit(F ? 1 : 0);

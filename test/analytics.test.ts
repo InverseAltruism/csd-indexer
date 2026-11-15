@@ -73,6 +73,7 @@ await s.run(SQL_TX, burnId, 10, 2, "Transfer", C, 0, 1_700_000_000 + 1200, 1, 2,
 await s.run("UPDATE outputs SET spent_txid=?, spent_height=10 WHERE txid=? AND vout=0", burnId, spendId);
 await s.run(SQL_OUT, burnId, 0, ZERO, BURN, 10, null, null);
 await s.run(SQL_OUT, burnId, 1, C, REWARD - BURN, 10, null, null);
+await closeDb();   // rows written by hand: the next start rebuilds address_totals, which the burn figure reads (src/db.ts)
 
 test("miners: shares, concentration, chainwork hashrate, Poisson error", async () => {
   const r = await miners("all") as any;
@@ -193,9 +194,9 @@ test("blockReward halves per era and hits zero after 64", () => {
 // Listing sites publish these figures as CSD's supply: a store error must answer 500 without a number, and the failed
 // read must not be kept for the tip (the next read answers the figure). Last in the file: it adds a block.
 test("supply routes: a store error on the supply query answers 500 without a number; the next read answers", async () => {
-  await s.run(SQL_BLOCK, 11, id(1011), id(1010), id(2011), 1_700_000_000 + 11 * 120, 0x1e00ffff, 11, 1, 1, "11000");
-  const st = s as unknown as { get: (...a: unknown[]) => Promise<unknown> };
-  const get = st.get.bind(s);
+  await store().run(SQL_BLOCK, 11, id(1011), id(1010), id(2011), 1_700_000_000 + 11 * 120, 0x1e00ffff, 11, 1, 1, "11000");
+  const st = store() as unknown as { get: (...a: unknown[]) => Promise<unknown> };
+  const get = st.get.bind(store());
   st.get = (...a: unknown[]) => (/SUM\(o\.value\)/.test(String(a[0])) ? Promise.reject(new Error("db down")) : get(...a));
   try {
     for (const path of ["/analytics/supply/total", "/analytics/supply/circulating"]) {

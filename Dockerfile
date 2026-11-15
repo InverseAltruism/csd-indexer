@@ -1,6 +1,6 @@
 # csd-indexer: run your own CSD indexer + explorer.
 # Multi-arch friendly; node:sqlite means no native build step.
-FROM node:22-slim
+FROM node:26-slim
 WORKDIR /app
 
 # install deps first (better layer caching)

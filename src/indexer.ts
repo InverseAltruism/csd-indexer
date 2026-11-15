@@ -8,7 +8,7 @@
 // un-spend orphaned spends), and replay the canonical branch; the electrs/Subsquid
 // roll-back-then-replay pattern. Blocks deeper than finalDepth are never touched.
 import * as rpc from "./rpc.js";
-import { store, getMeta, setMeta, tx as dbTx, COINBASE_OUTPUTS, COINBASE_TOTALS_LOCK, type Store } from "./db.js";
+import { store, getMeta, setMeta, tx as dbTx, COINBASE_OUTPUTS, TOTALS_LOCK, ADDRESS_TOTALS_COLS, addressTotalsSql, type Store } from "./db.js";
 import { deriveAddr, addrFromScriptPubkey, appType } from "./decode.js";
 import { CFG } from "./config.js";
 import { bus } from "./events.js";
@@ -145,9 +145,18 @@ export async function indexedChainwork(): Promise<bigint | null> {
  * even if the caller didn't unwindAbove first. Precondition for a BURIED height (later blocks still
  * present): call unwindAbove(height-1) first; in the production reorg path that always happens, and
  * forward writes are always at the tip, so this clear is correct there (no later spends to lose).
+ *
+ * First occurrence (csd-sdk `packages/cairnx/CONVENTION.md` section 32, M4): a txid has one row, at the lowest
+ * height and position the indexed chain holds it. A txid txs already holds is listed in tx_repeats and changes
+ * no other row, and an output keeps its first spender, so an unwind and replay ends in the tables of a fresh
+ * index. That rests on the caller: syncOnce writes heights in ascending order without a gap, writes no height
+ * below the stored tip while the meta tip pointer is at most one below the highest stored block (nothing in src/
+ * sets it lower; a pointer deleted or set back by hand over stored blocks makes syncOnce rewrite stored heights in
+ * place), and starts at CFG.scanFrom, below which no occurrence is known (test/first-occurrence.test.ts). Returns
+ * the block positions listed in tx_repeats.
  */
-export async function writeBlock(b: rpc.RpcBlock): Promise<void> {
-  await dbTx(async (d: Store) => {
+export async function writeBlock(b: rpc.RpcBlock): Promise<ReadonlySet<number>> {
+  return await dbTx(async (d: Store) => {
     const blk = b;
     // I3 (O-6 / P74-44): header integers are attacker-shaped JSON from the backend, and they bind straight
     // into 64-bit columns. An unclamped value >= 2^63 THROWS on the pg bind inside this dbTx: the tx rolls
@@ -157,7 +166,9 @@ export async function writeBlock(b: rpc.RpcBlock): Promise<void> {
     // "byte-identical rows" claim. Rule: every integer bound into a column goes through the SAME clamp
     // helper, so header time/bits/nonce/version use safeValue() exactly like value, fee and expires_epoch.
     const time = safeValue(blk.header.time);
-    if (d.backend === "postgres") await d.run(COINBASE_TOTALS_LOCK); // serializes with the boot rebuild (db.ts)
+    if (d.backend === "postgres") await d.run(TOTALS_LOCK); // serializes with the boot rebuild (db.ts)
+    const atHeight = [blk.height, blk.height, blk.height, blk.height] as const;
+    const addrBefore = await d.all<AddressTotalsRow>(addressTotalsSql(ADDRESS_AT.height, false), ...atHeight);
     // clear any prior contents of THIS height (keeps a same-height re-write internally consistent)
     const cleared = await d.all<CoinbaseRow>(coinbaseRowsSql(COINBASE_WHERE.height, COINBASE_WHERE.txAtHeight), blk.height, blk.height, blk.height);
     for (const [sql, ...p] of coinbaseTotalsWrites(cleared, -1n)) await d.run(sql, ...p);
@@ -167,6 +178,7 @@ export async function writeBlock(b: rpc.RpcBlock): Promise<void> {
     await d.run(`DELETE FROM attestations WHERE height=?`, blk.height);
     await d.run(`DELETE FROM outputs WHERE height=?`, blk.height);
     await d.run(`DELETE FROM txs WHERE height=?`, blk.height);
+    await d.run(`DELETE FROM tx_repeats WHERE height=?`, blk.height);
     await d.run(`INSERT INTO blocks(height,hash,prev,merkle,time,bits,nonce,version,tx_count,chainwork,orphaned)
       VALUES(?,?,?,?,?,?,?,?,?,?,0)
       ON CONFLICT(height) DO UPDATE SET hash=excluded.hash, prev=excluded.prev, merkle=excluded.merkle,
@@ -176,13 +188,17 @@ export async function writeBlock(b: rpc.RpcBlock): Promise<void> {
       safeValue(blk.header.bits), safeValue(blk.header.nonce), safeValue(blk.header.version),
       blk.txs.length, blk.chainwork == null ? null : String(blk.chainwork));
 
+    const SQL_FIRST = `SELECT height FROM txs WHERE txid=?`;
+    const SQL_REPEAT = `INSERT INTO tx_repeats(height,pos,txid) VALUES(?,?,?)`;
+    // The four upserts run only for a txid SQL_FIRST does not find, so a DO UPDATE arm can meet no more than a
+    // row left without its txs row.
     const SQL_TX = `INSERT INTO txs(txid,height,pos,app_type,signer,fee,time,n_in,n_out,coinbase)
       VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(txid) DO UPDATE SET
       height=excluded.height, pos=excluded.pos, app_type=excluded.app_type, signer=excluded.signer,
       fee=excluded.fee, time=excluded.time, n_in=excluded.n_in, n_out=excluded.n_out, coinbase=excluded.coinbase`;
     const SQL_OUT = `INSERT INTO outputs(txid,vout,addr,value,height,spent_txid,spent_height)
       VALUES(?,?,?,?,?,NULL,NULL) ON CONFLICT(txid,vout) DO UPDATE SET addr=excluded.addr, value=excluded.value, height=excluded.height`;
-    const SQL_SPEND = `UPDATE outputs SET spent_txid=?, spent_height=? WHERE txid=? AND vout=?`;
+    const SQL_SPEND = `UPDATE outputs SET spent_txid=?, spent_height=? WHERE txid=? AND vout=? AND spent_txid IS NULL`;
     const SQL_LOOKUP = `SELECT addr,value FROM outputs WHERE txid=? AND vout=?`;
     const SQL_HIST = `INSERT INTO address_history(addr,txid,height,pos,direction,delta) VALUES(?,?,?,?,?,?) ON CONFLICT DO NOTHING`;
     const SQL_PROP = `INSERT INTO proposals(txid,domain,payload_hash,uri,expires_epoch,proposer,fee,height,time)
@@ -192,12 +208,16 @@ export async function writeBlock(b: rpc.RpcBlock): Promise<void> {
       VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(txid) DO UPDATE SET proposal_id=excluded.proposal_id, attester=excluded.attester,
       score=excluded.score, confidence=excluded.confidence, fee=excluded.fee, height=excluded.height, time=excluded.time`;
 
+    const repeats = new Set<number>();
     for (let pos = 0; pos < blk.txs.length; pos++) {
       const t = blk.txs[pos]!;
       const isCoinbase = pos === 0;
-      // a txid already stored (a coinbase replayed at another height, or repeated in this block) is overwritten below
-      const replaced = await d.all<CoinbaseRow>(coinbaseRowsSql(COINBASE_WHERE.txid), t.txid);
-      for (const [sql, ...p] of coinbaseTotalsWrites(replaced, -1n)) await d.run(sql, ...p);
+      // A txid txs already holds, from a lower height or from earlier in this block, is listed and writes no more.
+      if (await d.get(SQL_FIRST, t.txid)) {
+        await d.run(SQL_REPEAT, blk.height, pos, t.txid);
+        repeats.add(pos);
+        continue;
+      }
       const signer = deriveAddr(t.inputs?.[0]?.script_sig) ?? addrFromScriptPubkey(t.outputs?.[0]?.script_pubkey) ?? null;
       // resolve inputs against our own outputs → spends + input sum (skip coinbase)
       let sumIn = 0n;
@@ -257,6 +277,9 @@ export async function writeBlock(b: rpc.RpcBlock): Promise<void> {
           clampInt(t.app.confidence), fee, blk.height, time);
       }
     }
+    const addrAfter = await d.all<AddressTotalsRow>(addressTotalsSql(ADDRESS_AT.height, false), ...atHeight);
+    for (const [sql, ...p] of addressTotalsWrites(addrBefore, addrAfter)) await d.run(sql, ...p);
+    return repeats;
   });
 }
 
@@ -298,6 +321,42 @@ function coinbaseTotalsWrites(rows: CoinbaseRow[], sign: 1n | -1n): [string, ...
       addr, t.n, t.v < 0n ? 0n : clampValue(t.v)]);
 }
 
+// A share of address_totals (db.ts addressTotalsSql): outputs created at the heights, spent markers set there or on
+// an output created there, address_history rows there. writeBlock moves the table by its height's share after its
+// writes minus before its clear, unwindAbove by minus the share above the ancestor; each row they change is in it
+// (an outputs upsert's DO UPDATE arm, which meets only a row without its txs row, aside). The distinct txid count
+// adds up across shares because all rows of one (addr, txid) sit at the txid's txs height and leave with it, for rows
+// written by 0.3.9 or later. History rows 0.3.7 wrote for a repeated txid can sit at two heights: an unwind then serves
+// a count one short until the next start; such a database is re-indexed from empty.
+export const ADDRESS_AT = {
+  height: { outputs: "height = ?", spent: "height = ? OR spent_height = ?", history: "height = ?" },
+  above: { outputs: "height > ?", spent: "height > ? OR spent_height > ?", history: "height > ?" },
+} as const;
+type AddressTotalsRow = { addr: string } & Record<(typeof ADDRESS_TOTALS_COLS)[number], number | bigint | null>;
+
+/**
+ * The address_totals writes that move each address by its share in `after` minus its share in `before` (both read
+ * with addressTotalsSql over ADDRESS_AT in the same transaction): one additive upsert per address that changed, and
+ * the row's delete once it counts no output and no transaction, as the aggregate then has no row for it.
+ */
+function addressTotalsWrites(before: AddressTotalsRow[], after: AddressTotalsRow[]): [string, ...unknown[]][] {
+  const delta = new Map<string, bigint[]>();
+  for (const [rows, sign] of [[before, -1n], [after, 1n]] as const) {
+    for (const r of rows) {
+      const d = delta.get(r.addr) ?? ADDRESS_TOTALS_COLS.map(() => 0n);
+      ADDRESS_TOTALS_COLS.forEach((c, i) => { d[i]! += sign * BigInt(r[c] ?? 0); });
+      delta.set(r.addr, d);
+    }
+  }
+  const cols = ADDRESS_TOTALS_COLS.join(",");
+  const upsert = `INSERT INTO address_totals(addr,${cols}) VALUES(?,${ADDRESS_TOTALS_COLS.map(() => "?").join(",")}) ` +
+    `ON CONFLICT(addr) DO UPDATE SET ${ADDRESS_TOTALS_COLS.map((c) => `${c}=address_totals.${c}+excluded.${c}`).join(", ")}`;
+  return [...delta].filter(([, d]) => d.some((x) => x !== 0n)).flatMap(([addr, d]): [string, ...unknown[]][] => [
+    [upsert, addr, ...d],
+    ...(d.some((x) => x < 0n) ? [["DELETE FROM address_totals WHERE addr=? AND outputs=0 AND txs=0", addr] as [string, ...unknown[]]] : []),
+  ]);
+}
+
 /**
  * Hard-delete every row strictly above `ancestor`, un-spending outputs orphaned by it, AND set the tip pointer
  * to `newTip` (defaults to `ancestor`) INSIDE the same transaction. F11: the tip-pointer write used to run in
@@ -312,9 +371,11 @@ function coinbaseTotalsWrites(rows: CoinbaseRow[], sign: 1n | -1n): [string, ...
 export async function unwindAbove(ancestor: number, newTip: number = ancestor): Promise<void> {
   await dbTx(async (d: Store) => {
     const h = ancestor;
-    if (d.backend === "postgres") await d.run(COINBASE_TOTALS_LOCK); // serializes with the boot rebuild (db.ts)
+    if (d.backend === "postgres") await d.run(TOTALS_LOCK); // serializes with the boot rebuild (db.ts)
     const orphaned = await d.all<CoinbaseRow>(coinbaseRowsSql(COINBASE_WHERE.above, COINBASE_WHERE.txAbove), h, h, h);
     for (const [sql, ...p] of coinbaseTotalsWrites(orphaned, -1n)) await d.run(sql, ...p);
+    const addrOrphaned = await d.all<AddressTotalsRow>(addressTotalsSql(ADDRESS_AT.above, false), h, h, h, h);
+    for (const [sql, ...p] of addressTotalsWrites(addrOrphaned, [])) await d.run(sql, ...p);
     // un-spend outputs whose spender was orphaned (those spends no longer happened)
     await d.run(`UPDATE outputs SET spent_txid=NULL, spent_height=NULL WHERE spent_height>?`, h);
     await d.run(`DELETE FROM address_history WHERE height>?`, h);
@@ -322,6 +383,7 @@ export async function unwindAbove(ancestor: number, newTip: number = ancestor): 
     await d.run(`DELETE FROM attestations WHERE height>?`, h);
     await d.run(`DELETE FROM outputs WHERE height>?`, h);
     await d.run(`DELETE FROM txs WHERE height>?`, h);
+    await d.run(`DELETE FROM tx_repeats WHERE height>?`, h);
     await d.run(`DELETE FROM blocks WHERE height>?`, h);
     await d.run("INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", TIP_KEY, String(newTip));
   });
@@ -549,21 +611,23 @@ export async function syncOnce(): Promise<IndexResult> {
       h = ancestor; // resume scanning from ancestor+1
       continue;
     }
-    await writeBlock(blk);
+    const repeats = await writeBlock(blk);
     await setMeta(TIP_KEY, String(h));
     blocks++;
-    emitBlockEvents(blk, tip);
+    emitBlockEvents(blk, tip, repeats);
   }
   return { from, to: await indexedHeight(), tip, blocks, reorgs, reorgDepth };
 }
 
 // Emit streaming events only for blocks near the tip (don't flood the firehose during
-// a from-genesis backfill). status deepens to "confirmed" past finalDepth.
-function emitBlockEvents(blk: rpc.RpcBlock, tip: number): void {
+// a from-genesis backfill). status deepens to "confirmed" past finalDepth. A position in `repeats`
+// (writeBlock) is a txid whose record event belongs to an earlier place, so it emits none here.
+function emitBlockEvents(blk: rpc.RpcBlock, tip: number, repeats: ReadonlySet<number>): void {
   if (tip - blk.height > CFG.finalDepth + 5) return;
   const status: "tentative" | "confirmed" = tip - blk.height >= CFG.finalDepth ? "confirmed" : "tentative";
   bus.emitEvent({ kind: "block", height: blk.height, hash: blk.hash, tx_count: blk.txs.length, status });
   blk.txs.forEach((t, pos) => {
+    if (repeats.has(pos)) return;
     const ty = appType(t, pos === 0);
     if (ty === "Propose" && t.app) bus.emitEvent({ kind: "proposal", txid: t.txid, domain: String(t.app.domain ?? ""), height: blk.height, status });
     else if (ty === "Attest" && t.app) bus.emitEvent({ kind: "attestation", txid: t.txid, proposal_id: String(t.app.proposal_id ?? ""), attester: deriveAddr(t.inputs?.[0]?.script_sig) ?? "0x?", height: blk.height, status });

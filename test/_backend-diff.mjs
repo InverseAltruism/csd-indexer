@@ -44,11 +44,13 @@ if (!/^[A-Za-z0-9_]+$/.test(PG_SCHEMA)) { console.error("bad --pg-schema"); proc
 
 // ── the canonical projection per table: same columns, same order, both sides ──
 // blocks are compared canonical-only (orphaned=0): an orphaned marker row is bookkeeping, not
-// derived chain state, and unwind deletes above-ancestor rows anyway. coinbase_totals is left out: it has no
-// height to cut at H, and it is an aggregate of outputs JOIN txs, which are compared (test/coinbase-totals.test.ts).
+// derived chain state, and unwind deletes above-ancestor rows anyway. coinbase_totals and address_totals are left out:
+// they have no height to cut at H, and they are aggregates of the tables compared here (test/coinbase-totals.test.ts,
+// test/address-totals.test.ts).
 const TABLES = [
   { name: "blocks", cols: ["height", "hash", "prev", "merkle", "time", "bits", "nonce", "version", "tx_count", "chainwork"], where: "orphaned=0 AND height <= $H", order: "height" },
   { name: "txs", cols: ["txid", "height", "pos", "app_type", "signer", "fee", "time", "n_in", "n_out", "coinbase"], where: "height <= $H", order: "txid" },
+  { name: "tx_repeats", cols: ["height", "pos", "txid"], where: "height <= $H", order: "height, pos" },
   { name: "outputs", cols: ["txid", "vout", "addr", "value", "height", "spent_txid", "spent_height"], where: "height <= $H", order: "txid, vout" },
   { name: "address_history", cols: ["addr", "txid", "height", "pos", "direction", "delta"], where: "height <= $H", order: "addr, txid, direction, delta, pos" },
   { name: "proposals", cols: ["txid", "domain", "payload_hash", "uri", "expires_epoch", "proposer", "fee", "height", "time"], where: "height <= $H", order: "txid" },

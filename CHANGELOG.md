@@ -1,5 +1,91 @@
 # Changelog
 
+## 0.3.10
+
+- `/address/:a` reads one row of the new table `address_totals` instead of summing every output and counting every
+  history row of the address on each call. Anyone can add outputs to any address cheaply, and the old read grew with
+  them while holding a connection of the pool the block writer and the resolver's reads share. The answer is
+  unchanged, byte for byte: funded, spent, balance, `tx_count` (distinct txids in the address's history) and
+  `utxo_count`, as 0.3.9's scan computed them. `/analytics/supply` and the plain-text supply routes read the zero
+  address's balance (the burned figure) through the same function, so they read that one row too.
+- The table is kept the way `coinbase_totals` is: rebuilt from the rows at every start of either backend, and kept
+  equal to that aggregate inside every `writeBlock` and `unwindAbove` transaction, under one Postgres lock on both
+  tables. A block write reads its height's share of the aggregate before its clear and after its writes and moves the
+  table by the difference, one upsert per address that changed; an unwind subtracts the share above the ancestor. A
+  repeated txid writes no row (0.3.9), so it changes no total.
+- Each sum is held as two columns, the sums of value >> 32 and of value & 0xFFFFFFFF, so funded and spent stay exact
+  past 2^63 (on SQLite 0.3.9's scan failed for such an address; on Postgres it answered the same figure). The start's
+  rebuild reads every `outputs` and `address_history` row once: on a loaded test host, for 1,000,000 outputs and
+  1,500,000 history rows, 1.8 s on Postgres and 8.3 s on SQLite, where the `coinbase_totals` rebuild took 1.7 s and
+  17.1 s on the same rows.
+- `test/address-totals.test.ts`: seeded walks of writes, re-writes and unwinds with spends and repeated txids compare
+  the table with the aggregate after every step and `/address/:a` with 0.3.9's answer for every address; the same
+  through `syncOnce` and two reorgs on the repeat chain; sums past 2^63; a start's rebuild; a writer waiting for
+  another process's rebuild on Postgres; the maintenance reads' indexes; the route's cost for an address of 50,000
+  outputs against one of one output. `test/_repeat-chain.ts` dumps the table, so the first-occurrence suites compare
+  it with a fresh index too. `test/address-utxo.test.ts`, `test/json-safe-read.test.ts` and `test/analytics.test.ts`
+  (whose burn figure reads the table) write rows by hand and start the store again before they read, as a
+  deployment's start rebuilds the table.
+
+- The live gate `test/_live_check.mjs` pages the coinbase payee's history (`/address/:a/txs`, then
+  `/address/:a/txs/chain/:last_seen_txid`) down to the height of the coinbase's first occurrence, at most 4,000
+  pages. It read only the first page (25 newest), so on a correct index it failed when the checked block's coinbase
+  was first held more than a page of that payee's history earlier, as a miner's repeated coinbase is
+  (`test/live-check.test.ts`: 30 blocks back now passes; a history without the coinbase fails, also when the next-page
+  route answers the first page again).
+
+- `test/first-occurrence.test.ts` pins `/block/:hash/txs` to the block's own order where a repeated txid's first
+  position is higher than a later transaction's position in the repeating block (ordered by the rows' positions the
+  suite passed on SQLite). No code change.
+
+- CI runs on Node 26 (`.github/workflows/ci.yml`, both jobs), the version the maintainers' host runs since
+  2026-11-12; AGENTS.md says so. `engines` stays `>=22` (what `node:sqlite` needs); no dependency or lockfile change.
+
+- On Postgres the start's rebuild of `coinbase_totals` and `address_totals` runs without the pool's 30 s statement
+  timeout (`SET LOCAL statement_timeout = 0` in its own transaction). The rebuild reads every `outputs` and
+  `address_history` row, which grows with honest use and with rows anyone can add, and under the cap it failed every
+  start once it took longer. Every other statement keeps the 30 s cap (`test/boot-rebuild-timeout.test.ts`: a store
+  opened with a 100 ms timeout starts over 300,000 rows of each, and a read on that connection is still cut off).
+
+- The Dockerfile builds on `node:26-slim` (was `node:22-slim`), the major CI tests.
+
+## 0.3.9
+
+- A transaction id keeps the place of its first occurrence: the lowest height the indexed chain holds it at and its
+  position in that block (the rule of csd-sdk `packages/cairnx/CONVENTION.md` section 32, M4). When a block holds a
+  txid that `txs` already holds, from a lower height or from earlier in the same block, `writeBlock` lists that
+  position in the new table `tx_repeats` and writes nothing else: the rows in `txs`, `outputs`, `proposals` and
+  `attestations` stay where they are, no spend marker and no `address_history` row is written, and the event stream
+  carries no second proposal or attestation event. Before, the later block's write moved the one row to its own
+  height. An output keeps its first spender. `/tx/:id`, its status and proof, the address lists, `/proposals`,
+  `/attestations` and the per-domain and per-proposal lists therefore name one place per txid, the same at every
+  snapshot, and after an unwind and replay every table equals a fresh index of the chain that is left.
+- A block's transaction list is complete. `/block/:hash/txids`, `/block/:hash/txs` and the list a merkle proof is
+  built from read `txs` and `tx_repeats` together, so each block that holds a txid lists it at its position and the
+  proof of any transaction folds to the header root of its block. In `/block/:hash/txs` the row of a txid first held
+  by an earlier block is that transaction's one row, with the earlier height and position.
+- `tx_repeats(height, pos, txid)` is created at start on an existing database of either backend, with no manual step
+  and no change to a stored row. On a chain where no txid is held twice it stays empty, and the rows, the API answers
+  and the events are what 0.3.8 gives. A block write issues one more statement than before, the `tx_repeats` clear of
+  its height; per transaction the count is unchanged (one primary-key read on `txs` takes the place of one
+  coinbase-totals read).
+- Not changed: an output a later occurrence creates again stays one row in its first state, so balances, the unspent
+  list, `coinbase_totals` and the supply figures count it once. With `CSD_INDEX_FROM` above 0 the indexer holds
+  nothing below that height, and first means first at or above it (README "Honest limits").
+- `test/first-occurrence.test.ts` (through `syncOnce` against a mock node: the place in every table, one event, whole
+  blocks and folding proofs, and the tables after each reorg against a fresh sync; seeded walks of writes and unwinds
+  against a fresh index; a database created before the table), `test/first-occurrence-floor.test.ts`, and
+  `test/coinbase-totals.test.ts`, whose case for a coinbase held again now checks that its first outputs stay counted.
+- The live gate `test/_live_check.mjs` checks a txid that block tip-2 holds again at its first occurrence: the
+  served proof must name an earlier block or position and verify against that block's node header, and the node's
+  block tip-2 must hold the txid at its position. Before, it wanted every proof to name block tip-2 and failed on a
+  correct index (`test/live-check.test.ts` runs it against a mock node, on correct and on altered indexes).
+- AGENTS.md and the `writeBlock` comment say that `syncOnce` writes no height below the stored tip only while the
+  `meta` tip pointer is at most one below the highest stored block; nothing in `src/` sets it lower, and a pointer
+  deleted or set back by hand over stored blocks makes `syncOnce` rewrite stored heights in place. No code change.
+- Dependencies: `body-parser` 1.20.9 and `qs` 6.16.2 (both through express) in `package-lock.json`; `package.json`
+  is unchanged.
+
 ## 0.3.8
 
 - The domain and uri of a Propose are text its author chooses. The indexer now stores and serves each U+0000 in them as
