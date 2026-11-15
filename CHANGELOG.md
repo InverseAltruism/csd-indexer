@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.11
 
 - The coinbase-totals maintenance no longer reads coinbase outputs whose row sits at another height than their `txs`
   row (`COINBASE_WHERE.txAtHeight` and `txAbove`, one probe per block write and per unwind). Since 0.3.9 an output and
