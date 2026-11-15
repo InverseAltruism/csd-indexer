@@ -14,6 +14,11 @@
   resolves the caret ranges in `package.json` afresh when the lockfile install fails; a failed install now fails the
   build. `--no-audit` keeps the build from posting the dependency tree to the registry.
 
+- Comments in `src/db.ts` and `src/indexer.ts` state constraints only. The rebuild timing is in 0.3.10's entry; the
+  note that a database with history rows of one repeated txid at two heights (written before first occurrence) serves
+  a transaction count one short after an unwind until the next start, and is re-indexed from empty, stays in
+  AGENTS.md (First occurrence and `src/db.ts`).
+
 ## 0.3.10
 
 - `/address/:a` reads one row of the new table `address_totals` instead of summing every output and counting every

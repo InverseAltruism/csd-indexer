@@ -323,9 +323,8 @@ function coinbaseTotalsWrites(rows: CoinbaseRow[], sign: 1n | -1n): [string, ...
 // an output created there, address_history rows there. writeBlock moves the table by its height's share after its
 // writes minus before its clear, unwindAbove by minus the share above the ancestor; each row they change is in it
 // (an outputs upsert's DO UPDATE arm, which meets only a row without its txs row, aside). The distinct txid count
-// adds up across shares because all rows of one (addr, txid) sit at the txid's txs height and leave with it, for rows
-// written by 0.3.9 or later. History rows 0.3.7 wrote for a repeated txid can sit at two heights: an unwind then serves
-// a count one short until the next start; such a database is re-indexed from empty.
+// adds up across shares because all rows of one (addr, txid) sit at the txid's txs height and leave with it
+// (writeBlock writes them in that txid's turn; a repeat writes none).
 export const ADDRESS_AT = {
   height: { outputs: "height = ?", spent: "height = ? OR spent_height = ?", history: "height = ?" },
   above: { outputs: "height > ?", spent: "height > ? OR spent_height > ?", history: "height > ?" },
