@@ -19,7 +19,7 @@ byte-for-byte identical data.
 ## Run your own
 
 ```
-npm install
+npm ci                                            # the committed lockfile, exact versions
 CSD_RPC=http://127.0.0.1:8789 npm run run-all     # index the chain + serve the explorer/API
 # explorer + API on http://localhost:8793
 ```

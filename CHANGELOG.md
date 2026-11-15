@@ -19,6 +19,9 @@
   a transaction count one short after an unwind until the next start, and is re-indexed from empty, stays in
   AGENTS.md (First occurrence and `src/db.ts`).
 
+- README's "Run your own" and AGENTS.md's dev workflow install with `npm ci` (the committed lockfile) instead of
+  `npm install`, for the same reason as the Dockerfile.
+
 ## 0.3.10
 
 - `/address/:a` reads one row of the new table `address_totals` instead of summing every output and counting every
