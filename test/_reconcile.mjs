@@ -4,9 +4,18 @@
 // (Run after `CSD_INDEX_FROM=0 tsx src/cli.ts index` finishes.)
 process.env.CSD_INDEX_DB = process.env.CSD_INDEX_DB || "./csd-index.db";
 const { store } = await import("../src/db.js");
+const { storableText } = await import("../src/decode.js");
 const RPC = process.env.CSD_RPC || "http://127.0.0.1:8789";
 
-const nodeDomains = (await (await fetch(RPC + "/domains")).json()).domains;
+// The node's per-domain counts keyed by the domain as the indexer stores it; two node domains can share a stored form.
+const byStored = new Map();
+for (const d of (await (await fetch(RPC + "/domains")).json()).domains) {
+  const domain = storableText(String(d.domain));
+  const t = byStored.get(domain) ?? { domain, proposals: 0, attestations: 0 };
+  t.proposals += Number(d.proposals); t.attestations += Number(d.attestations);
+  byStored.set(domain, t);
+}
+const nodeDomains = [...byStored.values()];
 let P = 0, F = 0; const ok = (n, c) => { c ? P++ : F++; console.log((c ? "  ✅ " : "  ❌ ") + n); };
 
 const myProp = new Map(), myAtt = new Map();

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.8
+
+- The domain and uri of a Propose are text its author chooses. The indexer now stores and serves each U+0000 in them as
+  U+0001, the same on SQLite and Postgres, and the rows, the API and the event stream carry that one string
+  (`storableText` in `src/decode.ts`, applied where `src/rpc.ts` reads a block). JSON refuses U+0001 unescaped as it
+  does U+0000, so the stored text parses as JSON exactly when the node's does, and a domain keeps its other characters.
+  Text without U+0000 is stored and served as before. `test/storable-text.test.ts`.
+- The reconcile gate `test/_reconcile.mjs` compares the node's per-domain counts with the indexer's after the same
+  replacement, adding up node domains that share one stored form.
+
 ## 0.3.7
 
 - CI: every job runs on `ubuntu-24.04` instead of `ubuntu-latest`. GitHub moved `ubuntu-latest` to 26.04, where
