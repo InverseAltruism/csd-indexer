@@ -10,6 +10,10 @@
   database written before first occurrence that still holds such a row is re-indexed from empty, and the start's
   rebuild repairs `coinbase_totals` in any case. `test/coinbase-totals.test.ts` no longer checks the two plans.
 
+- The Dockerfile installs with `npm ci --omit=dev --no-audit --no-fund` only. It fell back to `npm install`, which
+  resolves the caret ranges in `package.json` afresh when the lockfile install fails; a failed install now fails the
+  build. `--no-audit` keeps the build from posting the dependency tree to the registry.
+
 ## 0.3.10
 
 - `/address/:a` reads one row of the new table `address_totals` instead of summing every output and counting every
