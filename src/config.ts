@@ -7,8 +7,7 @@ import { readFileSync } from "node:fs";
 export const SPV_CHECKPOINT_FILE = "/opt/cairn_substrate/cairn/deploy/spv-checkpoint";
 
 export const CFG = {
-  // Node RPC (the source of truth). 8789 = the node itself. (8790 was the MINER's RPC:
-  // the miner is disabled since 2026-06-12; never default to it.)
+  // Node RPC (the source of truth). 8789 = the node itself. 8790 is the miner's RPC: never default to it.
   rpc: env("CSD_RPC", "http://127.0.0.1:8789"),
   // RPC failover backends: read the healthiest (reachable, highest cumulative chainwork) of these each
   // sync cycle, so a node that falls behind (db-loss resync / lag) does not stall the projection; it
