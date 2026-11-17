@@ -1,7 +1,7 @@
 // Replicate the EXPLORER's in-browser verifier (SubtleCrypto) and confirm it agrees
 // with csd-codec's verifyMerkleProof on real node blocks → the browser path is sound.
 import { merkleBranch, verifyMerkleProof } from "@inversealtruism/csd-codec";
-const RPC=process.env.CSD_RPC||"http://127.0.0.1:8790";
+const RPC=process.env.CSD_RPC||"http://127.0.0.1:8789";
 const hexToBytes=(h)=>{h=h.replace(/^0x/,'');const a=new Uint8Array(h.length/2);for(let i=0;i<a.length;i++)a[i]=parseInt(h.substr(i*2,2),16);return a;};
 const bytesToHex=(b)=>'0x'+[...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,'0')).join('');
 const sha256=async(b)=>new Uint8Array(await crypto.subtle.digest('SHA-256',b));
