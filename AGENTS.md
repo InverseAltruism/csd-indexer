@@ -1,10 +1,17 @@
 # csd-indexer
 
-> Onboarding briefing for coding agents and human contributors. AGENTS.md is the canonical briefing; CLAUDE.md is a symlink to it. Production and operations specifics (hosts, service management, deployment cadence) are intentionally out of scope here and are maintained privately by the maintainers.
+L2 of the CSD (Compute Substrate) stack: a standalone, reorg-safe chain indexer, block explorer and Esplora-style REST
+and streaming API. The CSD node's RPC is deliberately minimal; this service reads raw blocks into a relational
+database and serves what the node omits: address history, balances and UTXOs, per-attester attestation data, merkle
+inclusion proofs for the L0 light client, miner, holder and supply analytics, and a live SSE and WebSocket stream.
 
-L2 of the CSD (Compute Substrate) stack: a standalone, reorg-safe chain indexer + block explorer + Esplora-style REST/streaming API. The CSD node's RPC is deliberately minimal; this service reads raw blocks into a relational DB and re-serves what the node omits: address history/balances/UTXOs, per-attester attestation data, merkle inclusion proofs for the L0 light client, miner/holder/supply analytics, and a live SSE/WS event stream.
+Trust model (README "Honest limits", enforced by design): the indexer is a convenient derived view, not an authority.
+Inclusion proofs are trustless (clients re-fold them against PoW headers); everything else is reproducible, not
+signed. The audit is "run your own indexer, get byte-identical rows".
 
-Trust model (README "Honest limits", enforced by design): the indexer is a convenient derived view, not an authority. Inclusion proofs are trustless (clients re-fold them against PoW headers); everything else is reproducible rather than signed. The audit story is "run your own indexer, get byte-identical rows".
+This file briefs maintainers and agents (`CLAUDE.md` is a symlink to it); `README.md` is for integrators. The repo is
+public: production and operations specifics (hosts, service management, deploy cadence) are out of scope here and
+are kept privately by the maintainers.
 
 ## Start here
 
@@ -12,153 +19,229 @@ Trust model (README "Honest limits", enforced by design): the indexer is a conve
   as CI runs it; `node:sqlite` needs 22 or later).
 - Red lines: never unwind on absence of evidence or below the checkpoint floor; never reconcile against a node with
   less chainwork; exact integers end to end; consensus values come from the pinned csd-sdk packages; replay may
-  reject more, never accept different. Each is under Invariants.
-- Explorer changes: browser-test them through the front-door proxy as well as on :8793 (Gotchas).
-- Integrators: `README.md` holds the API, the settings and the honest limits.
-
-The version and the dependency pins live in `package.json` only; git tags mark releases. Not npm-published (`private: true`); it runs straight from source. Default listen address is 127.0.0.1:8793 (`CSD_INDEX_LISTEN`, documented in the README and Dockerfile). The maintainers run a production instance behind the public front door at https://cairn-substrate.com/explorer; deployment specifics are maintained privately.
+  reject more, never accept different. Each is under Invariants or Working rules.
+- Explorer changes: browser-test them through the front-door proxy as well as on :8793 (Explorer rules).
+- It runs from source with `tsx`: no build step, not published to npm (`private: true`). The version and the
+  dependency pins live in `package.json` only; git tags mark releases. It listens on 127.0.0.1:8793 by default
+  (`CSD_INDEX_LISTEN`) and is meant to sit behind a reverse proxy when public; the maintainers' instance is served
+  through the front door at https://cairn-substrate.com/explorer.
+- Read next: the Docs list at the end of this file.
 
 ## Cross-repo standard
 
-This repo follows the maintainers' cross-repo engineering standard (a private document). The rules that matter for a contributor here:
+This repo follows the maintainers' cross-repo engineering standard (a private document). The part that binds a
+contributor here:
 
-- One home per concept: consensus values and codec shapes come from the published csd-sdk packages and are never re-declared here. Replay stays byte-identical: reject more, never accept different.
-- TypeScript `strict` with `noUncheckedIndexedAccess`, no `@ts-ignore`, `any` only at a parse boundary. Money is integer base units (`bigint`), never floats. No empty `catch {}`; on money paths no catch-and-continue that hides a failure.
-- Tests check behaviour at boundaries. A fix ships with a test that fails without it, plus an assertion that the honest path still passes with the call shape production sends. A skipped test names its reason and when it un-skips. `npm test` is offline and deterministic.
-- Comments state constraints and non-obvious invariants, not history or audit IDs. Removing code needs the same evidence as adding it.
-- Docs: this file holds what stays true (no version tables, no status snapshots; versions live in `package.json` and tags, live state comes from a live query). Dates are absolute, no em dashes.
+- One home per concept: consensus values and codec shapes come from the published csd-sdk packages and are never
+  re-declared here. Replay stays byte-identical (working rule 5).
+- TypeScript `strict` with `noUncheckedIndexedAccess`, no `@ts-ignore`, `any` only at a parse boundary. Money is integer
+  base units (`bigint`), never floats. No empty `catch {}`; on money paths no catch-and-continue that hides a failure.
+- Tests check behaviour at boundaries. A fix ships with a test that fails without it, plus an assertion that the honest
+  path still passes with the call shape production sends. A skipped test names its reason and when it un-skips.
+  `npm test` is offline and deterministic.
+- Comments state constraints and non-obvious invariants, not history or audit IDs. Removing code needs the same
+  evidence as adding it.
+- Docs: this file holds what stays true (no version tables, no status snapshots; versions live in `package.json` and
+  tags, live state comes from a live query). Dates are absolute, no em dashes.
 
-Known deviations (re-checked 2026-10-22, not exhaustive): `src/config.ts` reads the shared SPV checkpoint file from a sibling checkout when present and falls back to the built-in floor (`checkpointDefault`, which the tests call with a path of their own). The path (`SPV_CHECKPOINT_FILE`) is an absolute path on the maintainers' host, published in this public repo; on any other machine the file is absent and the fallback applies. The dependency lockfile is `package-lock.json` (npm).
+Known deviation (not exhaustive): `src/config.ts` reads the shared SPV checkpoint file from a sibling checkout when
+present and falls back to the built-in floor (`checkpointDefault`, which the tests call with a path of their own). The
+path (`SPV_CHECKPOINT_FILE`) is an absolute path on the maintainers' host, published in this public repo; on any other
+machine the file is absent and the fallback applies. `scripts/dashes-exceptions.json` lists the file for that reason.
 
 ## The stack around it
 
-The chain is the only source of truth; every layer above is a deterministic replay of chain events, hardened "reject more, never accept different" so historical replays stay byte-identical. Trust is never laundered: every read carries an honest trust level and UI gates fail closed.
+The chain is the only source of truth; every layer above is a deterministic replay of chain events. Trust is never
+laundered: every read carries an honest trust level and UI gates fail closed.
 
-| Layer | Repo / component | Where |
-|---|---|---|
-| Chain node + miner | compute-substrate (Rust) | run your own; the node RPC is this indexer's sole source of truth |
-| L0 SDK | csd-sdk (pnpm monorepo: csd-codec/crypto/tx/client/light/siwc/indexwire/vectors + cairnx-core) | npm @inversealtruism/* |
-| L2 indexer | csd-indexer (this repo) | REST/SSE/WS API + explorer |
-| Settlement resolver | cairnx (CairnX market: tokens, DvP, .csd names) | consumes this indexer's API |
-| Web front door | cairn (CNS, CairnX market, Uplink, explorer proxy, docs) | https://cairn-substrate.com |
-| Signer | cairn-wallet (Chrome MV3 extension) | Chrome Web Store + GitHub releases |
-| SDK | cairn-sdk (dApp aggregator) | npm |
+- Reads from: the CSD node RPC (compute-substrate, Rust; this indexer's sole source of truth), with multi-backend
+  failover, and the shared spv-checkpoint file when present.
+- Depends on (npm, exact-pinned): `@inversealtruism/csd-codec`, `csd-crypto` and `csd-light` from csd-sdk, the L0
+  SDK. A version bump of codec here moves in lockstep with csd-sdk, cairnx and the wallet.
+- Consumed by: cairnx, the settlement resolver (its scanner reads through `CSD_INDEXER`; complete proposal and
+  attestation lists come from here); cairn, the web front door (network figures, `/api/headers` and `/api/blocks`,
+  the market data, the faucet when it is on, and the public GET-only allowlisted proxy `/explorer/api/*`); the
+  explorer page; cairn-sdk's indexer namespace; monitoring and failover clients, which key off `/health`.
+- Retired: cairn-cli (deprecated on npm) and csd-bridge (its bridge contracts are testnet, but its swap scripts spend
+  real mainnet CSD, so it is not "testnet-only").
+- Both backends must produce identical API responses. SQLite is the default for dev, CI and third-party deployments;
+  Postgres (`CSD_INDEX_PG`) is the scale path and what the maintainers' instance runs. Running more independent
+  indexers is encouraged: byte-identical replay is the audit.
 
-Retired: cairn-cli (deprecated on npm) and csd-bridge (CSD<->Base; its bridge contracts are testnet, but its swap scripts spend real mainnet CSD, so it is not "testnet-only").
+## Where code lives
 
-The indexer binds 127.0.0.1 by default and is meant to sit behind a reverse proxy when exposed publicly; the maintainers' instance is served through the front door at https://cairn-substrate.com/explorer. Running additional independent indexer instances is encouraged: byte-identical replay is the audit story.
+TypeScript run by `tsx`, no native dependencies. `docs/specs/indexer.md` has each module in detail (section 1), every
+setting with its default (2), the ingest and reorg flows (3) and the API's maintainer notes (4).
 
-## Architecture
-
-TypeScript, run directly via `tsx` (no build step, no native deps; CI runs Node 26, `node:sqlite` needs Node >= 22):
-
-- `src/cli.ts`: entry. `index` = one sync pass + exit (cron/CI); `run` = continuous poll loop and API server in one process.
-- `src/config.ts`: `CFG` from env. Key vars: `CSD_RPC` (default http://127.0.0.1:8789), `CSD_RPC_BACKENDS`, `CSD_INDEX_DB`, `CSD_INDEX_PG` (set => Postgres instead of sqlite), `CSD_INDEX_LISTEN` (127.0.0.1:8793), `CSD_CONFIRMATIONS_FINAL` (6), `CSD_INDEX_POLL` (15s), `CSD_STALE_SECS` (600), `CSD_INDEX_CHECKPOINT_FLOOR` (default read from the shared spv-checkpoint file whose path is baked into config.ts, hard fallback 38142), `CSD_INDEX_WORK_GUARD` (chainwork-guard kill switch, default on), and the knobs of rpc.ts and stream.ts listed below. It is the only `process.env` reader in `src/`; a numeric knob that is empty, zero, negative or not a number falls back to its default (`test/config-knob-positive.test.ts`).
-- `src/rpc.ts`: node RPC client (`/tip`, `/block/height/:h`) + multi-backend failover: `selectBackend()` picks the reachable backend with max cumulative chainwork; 3-block height hysteresis, sticky, plus work-escape (`CSD_RPC_WORK_ESCAPE`, 20 cycles) so hysteresis can't pin a same-height lower-chainwork fork. Default backend list [:8789, :8790, :8795] is auto-appended only when `CSD_RPC` is the default. ROUTE-1: a non-primary backend may only win on work/height if its tip header is PoW-valid + hash-bound (`tipHeaderPowOk`) and F6-plausible (`contenderPlausible`), both csd-light's; rpc.ts's `contenderPlausible` is the adapter that reads the local anchor and passes CFG: a delta cap (`CSD_RPC_MAX_AHEAD`, 128) plus an LWMA ease factor (`CSD_RPC_MAX_EASE`, 16) anchored on the indexer's own local finality-gated headers (never the live primary), so a real min-difficulty header claiming huge chainwork cannot capture the feed while a genuinely-ahead honest secondary still wins. Kill switch `CSD_RPC_ROUTE_PLAUSIBILITY=0`, read once at start. The route delta cap grows with the local tip's age at `CSD_RPC_BLOCK_SECS` (120) per block; the tip-header fetch for a contender times out after `CSD_RPC_POW_TIMEOUT` (5000 ms). Every serial-poll read is bounded by an AbortSignal timeout (`CSD_RPC_TIMEOUT`, 10s) so a backend that stalls /block cannot wedge the loop.
-- `src/db.ts`: one async `Store` interface, two backends: `SqliteStore` (node:sqlite DatabaseSync, WAL) and `PgStore` (pg Pool, ?->$n translation, exact int8/NUMERIC parsers; a store call fails fast with "indexer db pool saturated" once max(64, pool size x 8) calls already wait for a connection, `test/pg-acquire-guard.test.ts`). Selected purely by `CFG.pg` (`store()` in db.ts). Tables: blocks, txs, outputs, address_history, proposals, attestations, tx_repeats, meta; every row carries `height` (the reorg invariant). `tx_repeats(height, pos, txid)` lists the block positions whose txid has its rows at an earlier place (First occurrence, under Invariants). The two exceptions are derived per-address tables, rebuilt from the rows at every boot (on Postgres in one transaction without the 30 s statement timeout, `test/boot-rebuild-timeout.test.ts`) and kept equal to their aggregate inside every `writeBlock` and `unwindAbove` transaction, under one Postgres lock on both (`TOTALS_LOCK`): `coinbase_totals`, the count and sum of coinbase outputs (`test/coinbase-totals.test.ts`), and `address_totals`, what `/address/:a` serves (output and unspent counts, funded and spent sums, distinct txids in `address_history`; `test/address-totals.test.ts`). `address_totals` holds each sum as two columns, the sums of value >> 32 and of value & 0xFFFFFFFF (`joinSum`), so no sum overflows int64 below 2^31 outputs per address; writes move it by the share of the written heights (`ADDRESS_AT`), which is exact for the transaction count because all `address_history` rows of one (addr, txid) sit at the txid's height, for rows written by 0.3.9 or later (0.3.7 kept the history rows of a repeated txid at both heights; an unwind over them serves a count one short until the next start, and such a database is re-indexed from empty). Exact-integer policy: number within 2^53, bigint past it, never lossy. BP5 (REBIND, closes N17+N20): four additive idempotent transport indexes in the shared DDL constant, applied at boot on both backends like every other index (blocks(hash) for the header-batch lookups, plus outputs(height)/outputs(spent_height)/address_history(height) for the write/unwind paths).
-- `src/indexer.ts`: the sync engine: `syncOnce()` (chainwork regression guard -> `reconcileTipWindow` -> forward scan), `writeBlock()` (one db tx per block, self-clearing per height), `unwindAbove()` (reorg undo), `findReorgAncestor()`. Anti-wedge parsers `safeValue`/`safeEpoch`/`clampInt`.
-- `src/decode.ts`: signer addr from scriptSig and addr from script_pubkey (both csd-crypto's, re-exported), tx classification (Coinbase/Propose/Attest/Transfer), and `storableText`, the stored form of a Propose's domain and uri.
-- `src/merkle.ts`: Electrum-format merkle proofs built with csd-codec's `merkleBranch` (the same function the L0 light client folds); returns the PoW-committed header root, never a self-recomputed one.
-- `src/queries.ts`: read-side SQL; `amt()`/`jsonSafe()` bigint->JSON-safe serialization; `heightOk` guard.
-- `src/analytics.ts`: /analytics/{miners,richlist,supply,series}; emission schedule single-sourced from csd-codec; `memoByTip` per-tip memoization (the promise is cached before it settles, so concurrent reads share one computation, and a rejected one is dropped); the rich list is read once per tip at 500 and each `?limit` slices it (`test/analytics-memo.test.ts`).
-- `src/server.ts`: Express app, all routes; error wrapper `h()` never leaks pg DSN/SQL/paths. `/address/:a` reads one `address_totals` row, whatever the address holds, since anyone can add outputs to any address. The list endpoints (`/address/:a/txs`, `/address/:a/txs/chain/:last`, `/block/:hash/txs`) read a page in a constant number of queries (`q.txsWithOutputs`, `q.blockTxs`), one at a time, so a request holds at most one pool connection (`test/address-fanout.test.ts`); a per-row lookup filled the Postgres wait queue at four concurrent reads of a busy address.
-- `src/stream.ts` + `src/events.ts`: event bus -> SSE firehoses + WS /ws; caps: 500 SSE (`CSD_INDEX_MAX_SSE`), 500 WS (`CSD_INDEX_MAX_WS`), 1000 sub keys (`CSD_INDEX_MAX_SUB`), 4MB per-conn outbound buffer (`CSD_INDEX_MAX_SSE_BUFFER`), 64 KiB per WS frame (ws's `maxPayload`, refused with 1009 before it is buffered). The process has no uncaughtException handler, so nothing a client sends may throw out of the WS listeners: the message handler checks the frame's shape and closes only its own socket (1011) on a throw, and every socket, one refused over the client cap (1013) included, gets an `error` listener first thing, since ws emits a protocol error (an oversize frame, invalid UTF-8) on the socket before closing it and still reads the frames a refused socket sent before its close (`test/stream.test.ts` runs the server in a child process for these).
-- `public/explorer.html`: single-file SPA served at `/`; re-verifies merkle proofs in-browser (SubtleCrypto) and, through the front door, hashes a proposal's content bytes from cairn's same-origin `/content/0x<hash>` and calls them verified only when the hash equals payload_hash (a 404 reads "not held by this front door"; standalone there is no content check). Served per-request from disk: edits go live without a restart. Carries cairn's shell from cairn's origin, as the redesign's other pages do: `/ui/theme-init.js` first in `<head>`, `/ui/tokens.css`, `/ui/fonts.css`, `/ui/theme.css`, `/ui/components.css`, and `/ui/theme.js` before `/header.js` (which fills the `#site-header` placeholder) and `/footer.js`; the page follows the theme they set and mounts its charts again on a theme switch (the chart module reads its colours at mount). Its own CSS stays inline, on the `--ui-*` tokens. Its content sits in the site's one column by name: `.ex-wrap` is `var(--page-max, 1280px)` wide and every edge is padded by `--ex-pad`, cairn's `--page-pad` (24 px without it), so its edges are the header's; its tab icons are the site's `/favicon-32.png`, `/favicon.svg` and `/apple-touch-icon.png` (`test/explorer-shell-parts.test.ts`). It sits in the `page` cascade layer, which outranks cairn's `components` layer whatever the specificity, so every rule outside the tokens layer starts from the explorer's content, `:where(.ex-wrap)` (no specificity change), or from its own classes and ids, and the shell's header, footer, Terms dialog and toasts keep their own look (`test/explorer-page-layer.test.ts`, which reads every style block and wants rules flat; a bare `button` rule once hid the Terms dialog's button label). On a direct :8793 hit those files 404: a fallback token block placed before `tokens.css` (light only; the page's only colour literals) applies, `#site-header` keeps its own brand line and `#site-footer` stays empty and hidden. The trust statement (a derived, untrusted view; inclusion checked against the indexer's own header) is a muted line on the page under the view in both modes (`#trust-note`), not a footer note, since cairn's footer folds page notes into its closed site map. Numbers go through one grouping (`group`, `fmtInt`, `fmtCSD`, `fmtAmt`; commas whatever the browser locale, a negative figure with the minus sign U+2212), a block's difficulty as a grouped integer (`fmtDifficulty`; in millions with M from a billion), a block page links the next block (or says it is the indexer's tip), dates through `fmtDate` (UTC), a hash's 0x and leading zeros are dimmed by colour only, in the faint step `--ui-faint` (`hashHtml`), and a record line starts with its family label (`kind`: Token, Name, Market, Bridge, Record, CSD). The layout follows the approved design preview's explorer: the search (with `/` to focus it; a number, hash or address as pasted, a .csd name in one word, else `#/search/` opens a domain only when `/domains` lists it and otherwise reads "Nothing found" naming the query), a four-figure strip, latest blocks beside the CairnX activity (a ledger as the preview's latest transactions: the family label in its own column, the record in words, the transaction; `HOME_ROWS` rows each of one height, the record cut to one line with its refusal tag whole, so the columns end level; the activity is read again by the blocks' own poll on each new block and a record not shown before enters with the block's `ex-row-in`; View all opens the domain's ledger), then the CSD section and the rest; a route change crossfades the views (a view transition on the shared curve, 320 ms, kept under reduced motion; without the API a 200 ms fade); detail views open with a title and its status badge, then the record in words and the keys, show addresses in groups of four by spacing only (`addrGroups`; a copy carries no spaces) with copy buttons that copy the raw value, and the block page's confirmations badge counts from the indexer's own tip (`/health`). The indexer's state is read from `/health` every 15 s: live, the latest-blocks heading says "Live"; behind the node, at an old tip, or not answering, one badge beside the search says which and the "Live" goes (a 429 from cairn's `explorerLimiter`, which /explorer/api and /trade/api share, reads "Too many requests" and an answer that is not JSON "Could not check", never "Indexer offline"). Only a read the indexer answers with a 400 or a 404 is a miss (`isMiss`: "Nothing found", naming the value; a malformed escape in a route's value too); a 429 ("Too many requests, try again in a minute") and any other failure is the failed state, with Try again. A home panel whose own read fails (domains, miners, top holders, activity, the hashrate series) says it could not check, never an empty answer; `/blocks/recent` comes from the indexer serving the page, so any failure of it (a 404 or a 200 without a list included) is the failed state, with no block-by-block reads. A domain with no proposals is a miss too; a domain's ledger shows the indexer's newest 100 with the total from `/domains` ("Latest 100" without it) and Load more (100 more a read, the indexer's `limit`, up to 10,000). Every read of a front-door sibling (the resolver, the node, the market) goes through `sib()` in one of four states: standalone (no sibling), ok, a miss (a 404 answered in JSON: "Not registered" for a name inside the resolver's name rule `NAME_RE`, "No token with that ticker"), and failed ("Could not check ...", with Try again, never a verdict); a failed read is not kept for the session (decimals, gates, primary names), so the next view asks again. A name record is shape-checked (its owner a 0x address); a 200 without one is the failed state. Colour follows the design direction (`test/fixtures/off-palette.js` measures it on every view): the neutral ramp, and the up, down and caution tokens for state; a registered name's page draws cairn's identity avatar (`/ui/avatar.js`, seeded `identitySeed(name, owner)` as /names seeds a name, awaited before the head is drawn), and the neutral disc with the initial without the module or for a name nobody holds; its owner and resolves-to rows stay grouped addresses, with the primary name beside them only when it is another name. Through the front door it also reads cairn's `/api/market/csd` and `/api/market/series` (CSD/USD, display only, each USD figure with its source line; hidden while they answer 503) and draws its charts (emission schedule, CSD/USD, network hashrate, block times) with cairn's `/charts/chart.js`, imported on demand from the same origin (reference levels, the 120 s target and the emission so far, are the module's unlabelled dashed `extra` lines, since a price line's axis label covers a tick; the block-times domain top `btTop` lands the module's padded scale half a 50 s step above a tick); a CSD/USD figure that moved on a re-read slides in and flashes as the preview's price update (`rollFlash`; reduced motion keeps the tint); a token page carries the design direction's trust badge (Verified, Look-alike, Unverified) from cairn's `/trade/verified-tokens.json` judged by /trade's `trustLevel` (`/trade/discover.js`): Verified only for an entry bound to this token's deploy, Unverified only for a ticker the list does not name, and no badge for anything else or while either is unread; standalone it shows neither (the coupling is at runtime only; no build or test reads cairn). The hashrate tile and chart are `/analytics/miners?window=1d` and `/analytics/series?window=1d`, labelled with the window's real span by the chart module's `hashrateWindowText` (standalone, without the module, the label names no window and the tile's title names the block range). A view's CairnX record verdicts (applied or refused) are read for the records it shows from the resolver's `/cairnx/records?ids=` (100 txids a read); each read that answers gives its verdicts and the txids of one that does not (a 404 included) stay unread, and the page never reads `/cairnx/log` for them (an edge-cached log can be older than the records). A record line names its effect ("Minted", "Finalized name", "Bought") only for an applied verdict; with none (standalone, or the reads failing) it reads as a request ("Mint request for"), and the ledger says why in one quiet line (`verdictLine`; under one record's line `recordLine`). Each view keeps its own verdicts (`verdictBook`), so another view's read never changes its line; a txid whose read failed stays unread and is asked again by the view's next read (a Load more included), its row is worded again once answered, and the line follows every row shown. A name's history rows name their effect only with an applied verdict too (`kindLabel`). An Attest on a CairnX offer or bid reads by its own verdict (`/cairnx/record/:txid` on the transaction page, the batch on the address page; `describeOfferAttest`): the words for an effect (bought, cancelled, reserved, took the offer) only when the resolver applied it, a refused one struck with its reason, one without a verdict as the request it made, since the node mines a paid fill whose delivery CairnX refuses. The name page's primary badge is the resolver's `/cairnx/primary/:owner` pick, and its history rows carry their verdicts. Token-priced amounts go through `amt` (scaled by `/cairnx/tokens` decimals, labelled base units when the token is unknown). A token's supply wording follows the rule of /trade's token cards (cairn `public/trade/manage.js`) through `supplyKind`: fixed only once an issuer-mint token is minted to its max, otherwise issuer mint (the token page says how much more the issuer can mint), or open mint. A salted `name` record (a reveal) reads "Reserved" at or above the resolver's V25 height and "Claimed" below it, the height taken from `/cairnx/health` `gates`; without it (standalone, or that read failing) it reads "Revealed". The chart library lays its pane out in a `<table>`, so the page's own `td` rules are undone under `.cc-plot`.
-
-Repo-root `csd-index.db{,-shm,-wal}` are gitignored stale dev artifacts (a real deployment keeps its data in its own db file or in Postgres). Keep binary and screenshot artifacts out of the repo.
-
-## Core flows
-
-Block ingest (`syncOnce`): select backend -> chainwork regression guard -> `reconcileTipWindow()` -> forward scan from `indexedHeight()+1`, one `writeBlock` per height. `writeBlock` runs in a single db tx: clear any prior contents of that height, insert the block row (node-reported chainwork as TEXT), resolve inputs against the indexer's own outputs table (electrs model, zero extra RPC), write outputs/spends/address_history and Propose/Attest app rows; a txid `txs` already holds gets one `tx_repeats` row and nothing else. Events emit only near the tip; status tentative -> confirmed past finalDepth (6).
-
-Reorg undo: two detectors. (a) `reconcileTipWindow` catches equal-/lower-height reorgs (chainwork-heavier but not taller, possible under LWMA) by walking down to the last converged hash; (b) `findReorgAncestor` catches taller-block-with-mismatched-prev. Both `unwindAbove(ancestor)`: DELETE above ancestor on every table, un-spend outputs whose spender was orphaned, reset tip meta, emit reorg event, replay forward. Never unwind on absence of evidence (null block from node aborts the pass); deep reorgs follow to the scan floor rather than throwing.
-
-API: the endpoint list for integrators is `README.md` "The API"; keep it in step with `src/server.ts`. Maintainer notes: Esplora core (`/blocks/tip/height` 503s on empty index, `/block/:hash[/txids|/txs]`, `/tx/:id[/status]`, `/address/:a[/txs|/txs/chain/:last]` with a (height,txid) keyset cursor, `/address/:a/utxo` in pages of 1,000 with an `after=<height>:<txid>:<vout>` keyset (`test/address-utxo.test.ts`), and `chain_stats.utxo_count` on `/address/:a`, which the explorer shows instead of reading `/utxo`), `/tx/:id/merkle-proof`, CSD extras (`/domains`, `/domain/:d/proposals`, `/proposal/:id[/attestations]` keyset-paginated - this is how the CairnX resolver fetches complete attestation lists, `/blocks/at-or-after/:time` (lowest height whose time is at or after; over `idx_blocks_time`), `/proposals` and `/attestations` (chain order, a snapshot block `at` and an `after=<height>:<pos>` keyset that needs the hashed snapshot `at=<height>:<hash>` (400 without), 409 when a reorg reaches the snapshot; `test/chain-feeds.test.ts`), `/address/:a/reputation` (aggregates over the newest 200 attestations; past that `truncated: true` and a `note` naming the window), `/analytics/*`), `/health` (version, backend, indexed_height, chainwork, stale; counts memoized per tip; `build.commit`, the HEAD read once at start through `git -c safe.directory=<tree>` since the service user does not own the tree, "unknown" on any failure; `checkpoint_floor`; `test/health.test.ts`). SSE `/stream/*`, WS `/ws`.
+- Ingest: `src/cli.ts` (the entry: `index` is one sync pass and exit, `run` is the poll loop and the API server in
+  one process), `src/rpc.ts` (the node RPC client and backend selection), `src/indexer.ts` (the sync engine, the reorg
+  detectors, the anti-wedge parsers), `src/decode.ts` (address derivation and tx classification, csd-crypto's).
+- Config: `src/config.ts`, `CFG`, the only `process.env` reader in `src/`. A numeric knob that is empty, zero,
+  negative or not a number falls back to its default (`test/config-knob-positive.test.ts`).
+- Store: `src/db.ts`, one async `Store` interface over `SqliteStore` (node:sqlite, WAL) and `PgStore` (pg Pool),
+  selected only by `CFG.pg`, and the schema: every row carries `height`, except in the two derived totals tables.
+- Read side: `src/queries.ts` (the SQL and the bigint-safe JSON), `src/merkle.ts` (proofs from csd-codec's
+  `merkleBranch` with the PoW-committed header root, never a self-recomputed one), `src/analytics.ts` (memoized per
+  tip), `src/server.ts` (the Express app and every route), `src/stream.ts` and `src/events.ts` (the event bus, SSE
+  and WS `/ws`, with their caps).
+- `public/explorer.html`: the single-file explorer served at `/`.
+- `test/*.test.ts`: the offline suite; `test/_*.mjs`: live gates, run by hand; `scripts/`: the dash and path check.
 
 ## Invariants and red lines
 
-- Chainwork regression guard (2026-07-05 incident fix): never reconcile/unwind when the node presents less accumulated chainwork than the indexed tip; hold and keep serving last-good; fail closed when node chainwork is missing/unparseable. Strict `<` comparison. Kill switch `CSD_INDEX_WORK_GUARD=0`.
-- Checkpoint floor: never hard-unwind below the highest shipped SPV checkpoint. The floor is `CSD_INDEX_CHECKPOINT_FLOOR` when set, else the number in the shared spv-checkpoint file (path in config.ts), else the built-in fallback 38142 (`checkpointDefault`); an empty env string does not disable it (`test/config-knob-positive.test.ts`; the unwind refusal: `test/checkpoint-floor.test.ts`).
-- Never unwind on absence of evidence: only confirmed contiguous hash mismatch justifies an unwind.
-- sqlite dbTx isolation invariant (db.ts, guarded by test/dbtx-isolation.test.ts): BEGIN..COMMIT atomicity vs HTTP readers holds only because every await inside a dbTx callback is a store call (microtask). Never add fetch/fs/timer awaits inside a dbTx callback.
-- Exact-integer policy end to end: CSD max supply exceeds 2^53, so values parse as BigInt (`safeValue`), store as BIGINT, serialize via `amt()`/`jsonSafe()`. A stray bigint in a response object crashes JSON.stringify and 500s the endpoint.
-- Anti-wedge clamps: `safeValue` clamps to int64 max (an over-range bind throws inside writeBlock -> rollback -> same block re-poisons every poll = permanent wedge). `safeEpoch` clamps >2^53 expires_epoch to a NON-safe-int sentinel; using `clampInt` there forked the live resolver vs SPV replay (GRX-WIRE-CLAMP-1). `clampInt` is only legal for app ints compared against small exact enums.
-- First occurrence: a txid has one row in `txs`, `proposals` and `attestations`, and its outputs one row each, at the lowest height and position the indexed chain holds it (the rule is csd-sdk `packages/cairnx/CONVENTION.md` section 32, M4). `writeBlock` reads `txs` first: a txid it already holds, from a lower height or from earlier in the block, is listed in `tx_repeats` and writes nothing else (no row moves, no spend marker, no `address_history` row, no proposal or attestation event), and an output keeps its first spender. `blockTxids` and `blockTxs` read `txs` and `tx_repeats` together, so each block lists every transaction it holds and the merkle proofs built from that list fold to its header root. After an unwind and replay the tables equal a fresh index of the chain that is left; that rests on `syncOnce` writing heights in ascending order without a gap, writing no height below the stored tip while the `meta` tip pointer (`indexed_height`) is at most one below the highest stored block, and starting at `CSD_INDEX_FROM` (default 0; above 0 a txid's place is its first occurrence at or above it). Nothing in `src/` sets the pointer lower (`unwindAbove` and `syncOnce` write it, the second one height at a time after each block; `resetStoreForTests` drops it with every table); a pointer deleted or set back by hand over stored blocks makes `syncOnce` rewrite stored heights in place, which does not end in a fresh index's tables (re-index from empty instead). An output a later occurrence creates again stays one row in its first state, so balances, the UTXO list and `coinbase_totals` count it once (`test/first-occurrence.test.ts`, `test/first-occurrence-floor.test.ts`).
-- Stored text: a Propose's domain and uri pass `storableText` where rpc.ts `blockByHeight` reads a block, so both backends store, serve and emit one string; U+0001 stands in for U+0000 because JSON refuses both unescaped (`test/storable-text.test.ts`). `test/_reconcile.mjs` compares the node's domains after the same replacement.
-- Determinism deps (csd-codec, csd-crypto, csd-light) are exact-pinned in `package.json`, no carets (CI enforces). csd-light is the ecosystem-pinned source of the rpc.ts ROUTE-1 checks (`tipHeaderPowOk`, `contenderPlausible`) and of the LWMA window they anchor on (`expectedBitsFromWindow`). A floated version is a determinism fork seam across the ecosystem. A dep bump must also move `version`, so one version string never denotes two determinism-dep sets.
-- Error responses never leak internals.
-- There is deliberately no sqlite->pg copy tool: a fresh replay is the integrity check.
-- Never point anything at :8790 as the default RPC (that is the miner's RPC; :8789 is primary, :8790 is fallback only).
+One bullet per rule with the test that pins it. How each works is in `docs/specs/indexer.md` section 5; "incident N"
+is a narrative in `docs/incidents/README.md`.
 
-## How we work (contributor ground rules)
+- Chainwork regression guard (incident 1): never reconcile or unwind when the node presents less accumulated chainwork
+  than the indexed tip; hold and keep serving last-good, and fail closed when node chainwork is missing or
+  unparseable. The comparison is strict `<`. Kill switch `CSD_INDEX_WORK_GUARD=0`. `test/reorg-e2e.test.ts`,
+  `test/guard-hygiene.test.ts`, `test/chainwork-*.test.ts`.
+- Checkpoint floor (incident 1): never hard-unwind below the highest shipped SPV checkpoint. The floor is
+  `CSD_INDEX_CHECKPOINT_FLOOR` when set, else the number in the shared spv-checkpoint file (path in `src/config.ts`),
+  else the built-in fallback 38142 (`checkpointDefault`); an empty env string does not disable it.
+  `test/checkpoint-floor.test.ts`, `test/config-knob-positive.test.ts`.
+- Never unwind on absence of evidence (incident 3): only a confirmed contiguous hash mismatch justifies an unwind,
+  and a null block from the node aborts the pass. `test/reorg-absence-clamp.test.ts`, `test/reorg-e2e.test.ts`.
+- sqlite dbTx isolation: BEGIN..COMMIT atomicity against HTTP readers holds only because every await inside a dbTx
+  callback is a store call (a microtask). Never add a fetch, fs or timer await inside a dbTx callback.
+  `test/dbtx-isolation.test.ts`.
+- Exact integers end to end: CSD max supply exceeds 2^53, so values parse as BigInt (`safeValue`), store as BIGINT and
+  serialize through `amt()` or `jsonSafe()`: a number within 2^53, a bigint past it, never lossy. A stray bigint in a
+  response object throws in JSON.stringify and the endpoint answers 500. `test/json-safe-read.test.ts`.
+- Anti-wedge clamps (incident 2): `safeValue` clamps to int64 max, because an over-range bind throws inside
+  `writeBlock`, rolls back, and the same block poisons every poll. `safeEpoch` clamps an `expires_epoch` above 2^53
+  to a non-safe-integer sentinel. Consensus-bound app integers that feed arithmetic or a range comparison go through
+  `safeValue` or `safeEpoch`, never `clampInt`, which is legal only for app integers compared against small exact
+  enums. `test/indexer.test.ts`, `test/header-bind-clamp.test.ts`.
+- First occurrence: a txid has one row in `txs`, `proposals` and `attestations`, and its outputs one row each, at the
+  lowest height and position the indexed chain holds it (csd-sdk `packages/cairnx/CONVENTION.md` section 32). A later
+  occurrence writes one `tx_repeats` row and nothing else, and an output keeps its first spender. Block tx lists read
+  `txs` and `tx_repeats` together, so a block's merkle proofs fold to its header root. After an unwind and replay the
+  tables equal a fresh index of the chain that is left. A `meta` tip pointer (`indexed_height`) deleted or set back
+  by hand over stored blocks does not end in a fresh index's tables: re-index from empty instead.
+  `test/first-occurrence*.test.ts`.
+- Derived totals: `coinbase_totals` and `address_totals` (what `/address/:a` serves) are rebuilt at every boot and
+  kept equal to their aggregate inside every `writeBlock` and `unwindAbove` transaction.
+  `test/coinbase-totals.test.ts`, `test/address-totals.test.ts`, `test/boot-rebuild-timeout.test.ts`.
+- Stored text: a Propose's domain and uri pass `storableText` where `src/rpc.ts` `blockByHeight` reads a block, so
+  both backends store, serve and emit one string; U+0001 stands in for U+0000 because JSON refuses both unescaped.
+  `test/storable-text.test.ts`; `test/_reconcile.mjs` compares the node's domains after the same replacement.
+- Determinism deps (csd-codec, csd-crypto, csd-light) are exact-pinned in `package.json`, no carets (CI enforces): a
+  floated version is a determinism fork seam across the ecosystem. csd-light is the ecosystem-pinned source of the
+  ROUTE-1 checks and of the LWMA window they anchor on; the emission schedule is csd-codec's. A dep bump must also
+  move `version`, so one version string never denotes two determinism-dep sets. `test/ci-workflow.test.ts`,
+  `test/analytics-lockstep.test.ts`.
+- ROUTE-1: a non-primary backend may win on work or height only if its tip header is PoW-valid and hash-bound
+  (`tipHeaderPowOk`) and plausible (`contenderPlausible`) against the indexer's own finality-gated headers, never the
+  live primary. `test/rpc-pow-*.test.ts`, `test/rpc-route-plausibility.test.ts`, `test/rpc-failover.test.ts`.
+- Never point anything at :8790 as the default RPC: that is the miner's RPC; :8789 is primary, :8790 fallback only.
+- Every serial-poll read of the node is bounded by a timeout, so a backend that stalls `/block` cannot wedge the
+  loop. `test/rpc-timeout.test.ts`.
+- Error responses never leak internals: the wrapper `h()` in `src/server.ts` answers without a pg DSN, SQL or a path.
+- A list read never holds one pool connection per row (incident 10): the list endpoints read a page in a constant
+  number of queries, one at a time, so a request holds at most one connection. `test/address-fanout.test.ts`.
+- Address txs page on the full (height, txid) keyset; a height-only cursor drops same-height txids (incident 4).
+  `test/pagination.test.ts`.
+- When touching SQL, watch the Postgres port bug class (incident 5): coinbase vout 0xFFFFFFFF overflows int4; DISTINCT
+  with ORDER BY random() is rejected; bind counts are strict; ORDER BY tie order depends on the engine (tie-break with
+  txid or vout). node:sqlite has no `.transaction()` helper: `Store.tx` runs BEGIN and COMMIT by hand.
+- The process has no uncaughtException handler, so nothing a client sends may throw out of the WS listeners: the
+  message handler closes only its own socket on a throw, and every socket gets an `error` listener first thing.
+  `test/stream.test.ts`.
+- There is deliberately no sqlite-to-Postgres copy tool: a fresh replay is the integrity check.
+- Keep `README.md` "The API" in step with `src/server.ts`. Keep binary and screenshot artifacts out of the repo
+  (the repo-root `csd-index.db*` files are gitignored dev artifacts).
 
-1. Maintainers deploy. Contributions and agent sessions must never assume deploy or restart access; this indexes a live financial system with real users and real CSD. Default to design-first: agree on the approach before editing shared behavior, keep diffs small and reviewed, and treat approval as scoped to the single change discussed.
-2. Security fixes must not regress UX. Never add latency or a decline path to a legitimate hot path. Prefer warn over hard-block, fail-soft with an availability valve over hard fail-closed, removing a false UI claim over adding machinery. Decline disproportionate hardening explicitly, with reasoning.
-3. No em dashes in READMEs or any user-facing doc; avoid AI-slop phrasing (excessive bolding, "not just X but Y", filler intensifiers). Search the doc for the em dash character before committing; the count must be zero (`npm run check:dashes-paths` checks every tracked doc in CI).
-4. Commit/push/tag only when asked. Investigations default to read-only.
-5. Never weaken the replay discipline: hardening may reject more, it must never accept different, or historical replays fork.
+## Explorer rules
+
+`public/explorer.html` is one file, read from disk per request. What it shows and how is in `docs/specs/explorer.md`.
+
+- Browser-test a change through the front-door proxy, not only on a direct :8793 hit, and bind events with
+  `addEventListener`, never inline handlers: the proxy serves the page under a per-response nonce CSP, and a nonce
+  never authorizes inline event-handler attributes (incident 6). `test/explorer-browser.test.ts`.
+- The two origins differ in both directions: `/header.js`, `/footer.js` and `/ui/*` exist only on the front-door
+  origin and 404 on :8793, where the page keeps its own brand line and fallback tokens; the proxy does not forward
+  SSE, so the page polls; an edge cache sits in front, so a freshly deployed explorer may need a purge.
+- The coupling to cairn is at runtime only: no build or test reads cairn's tree, and `test/fixtures/` stands in for
+  its chart module and shell. `test/explorer-market.test.ts`.
+- The page's CSS stays inline, on the `--ui-*` tokens, in the `page` cascade layer: every rule outside the tokens layer
+  starts from `:where(.ex-wrap)` or from the page's own classes and ids, and rules stay flat, so the shell keeps its
+  look (incident 9). The fallback token block holds the page's only colour literals, and the column and the tab
+  icons are the site's, by name. `test/explorer-page-layer.test.ts`, `test/explorer-shell-parts.test.ts`;
+  `test/fixtures/off-palette.js` measures the colours on every view.
+- A read that fails is never shown as an answer: only a 400 or a 404 from the indexer is a miss; a failed read says it
+  could not check, never "Indexer offline", an empty panel or a verdict such as "Not registered"; a record names its
+  effect only for a verdict the resolver applied.
+
+## Working rules
+
+1. Maintainers deploy. Contributions and agent sessions must never assume deploy or restart access; this indexes a
+   live financial system with real users and real CSD. Default to design-first: agree on the approach before editing
+   shared behavior, keep diffs small and reviewed, and treat approval as scoped to the single change discussed.
+2. Security fixes must not regress UX. Never add latency or a decline path to a legitimate hot path. Prefer warn over
+   hard-block, fail-soft with an availability valve over hard fail-closed, removing a false UI claim over adding
+   machinery. Decline disproportionate hardening explicitly, with reasoning.
+3. No em dashes in READMEs or any user-facing doc; avoid AI-slop phrasing (excessive bolding, "not just X but Y",
+   filler intensifiers). Search the doc for the em dash character before committing; the count must be zero
+   (`npm run check:dashes-paths` checks every tracked doc in CI).
+4. Commit, push and tag only when asked. Investigations default to read-only.
+5. Never weaken the replay discipline: hardening may reject more, it must never accept different, or historical
+   replays fork.
 
 ## Dev workflow
 
 ```bash
-cd csd-indexer            # your checkout
-npm ci                                         # the committed lockfile; Node 26 as CI (node:sqlite needs >= 22)
-CSD_RPC=http://127.0.0.1:8789 npm run run-all  # index + serve on :8793
-npm run index                                  # one sync pass, exits
-npm run serve                                  # API only
-npm run typecheck                              # tsc --noEmit
-npm run lint                                   # Biome, each an error: unused imports, empty blocks (a comment inside states the reason), focused tests, @ts-ignore
-npm run check:dashes-paths                     # em dashes in tracked docs, sibling-checkout paths in code (exceptions in scripts/dashes-exceptions.json)
-npm test                                       # tsx --test test/*.test.ts (offline, deterministic)
-# Postgres mode:
-CSD_INDEX_PG=postgres://... npx tsx src/cli.ts index
+npm ci                       # the committed package-lock.json
+CSD_RPC=http://127.0.0.1:8789 npm run run-all   # index and serve on :8793
+npm run index                # one sync pass, exits
+npm run serve                # API only
+npm run typecheck            # tsc --noEmit
+npm run lint                 # Biome, each an error: unused imports, empty blocks (a comment inside states the
+                             # reason), focused tests, @ts-ignore
+npm run check:dashes-paths   # em dashes in tracked docs, sibling-checkout paths in code (exceptions in
+                             # scripts/dashes-exceptions.json)
+npm test                     # tsx --test test/*.test.ts (offline, deterministic)
+CSD_INDEX_PG=postgres://... npx tsx src/cli.ts index   # Postgres mode
 ```
 
-Gotcha: stale dev servers squat :8793; find the squatter and kill it by PID (check what you are killing first) before restarting. `.mjs` gate scripts must run via tsx from the repo dir.
+- A stale dev server squats :8793: find the squatter and kill it by PID (check what you are killing first) before
+  restarting.
+- `.mjs` gate scripts must run via tsx from the repo dir.
+- In a low-hashrate regime `CSD_STALE_SECS` 600 can false-flag until LWMA retargets; raise it if noisy.
 
 ## Testing
 
-- `npm test` globs `test/*.test.ts`; never hand-list files (a hand-listed set once silently dropped analytics.test.ts, the money math). Suites include indexer (reorg unwind/replay, incident regression), checkpoint-floor, rpc-failover, dbtx-isolation, analytics + analytics-lockstep (pins codec emission values, so a bad codec bump fails loudly here) + analytics-memo, decode, health, pagination, reorg-e2e, stream.
-- Test files run concurrently. On Postgres every file that touches the store sets its own `CSD_INDEX_PG_SCHEMA` before importing `src/`; files left on the default `public` schema read each other's `blocks` rows (that shared schema was the Postgres CI failure from July to October 2026).
-- CI runs the whole suite twice: sqlite job + postgres job against a postgres:16 service, plus the exact-pin check and a `secrets` job (gitleaks 8.18.4, sha256-checked, over the full history of every branch with `.gitleaks.toml`). Every `uses:` is pinned to a full commit SHA with its tag in a comment; the workflow token is read-only and no checkout keeps credentials (`test/ci-workflow.test.ts` pins this shape).
-- `test/explorer-browser.test.ts` runs the explorer in Chromium as the front door serves it (nonce CSP, every read stubbed, `/api/market` fresh, stale and 503). playwright-core is an exact-pinned devDependency; CI's sqlite job installs the headless shell it names (`npx playwright-core install --with-deps chromium-headless-shell`) and sets `EXPLORER_BROWSER_REQUIRED=1`, so a missing browser fails the run instead of skipping it. Cairn's chart module is replaced by `test/fixtures/chart-stub.js`, which implements only the exports the page calls, and cairn's shell set by `test/fixtures/ui/` (served, or all absent as on a direct hit), so the tests check the page's wiring and no test reads cairn's tree; the module's rendering is tested in cairn. Run: `npx tsx --test test/explorer-browser.test.ts` (the pinned playwright-core uses `~/.cache/ms-playwright/chromium_headless_shell-1243`; `PLAYWRIGHT_CHROMIUM` names another build). On a shared host, `playwright-core install` without `--no-remove` deletes the other cached browser builds.
-- Live gate scripts (not CI, run via tsx against a live deployment): test/_live_check.mjs, _reconcile.mjs (per-attester rows sum to node aggregates), _browser_verify.mjs, _backend-diff.mjs (sqlite-vs-pg row diff at a finalized height; used to validate the production Postgres cutover), _backend-bench.mjs.
+- `npm test` globs `test/*.test.ts`; never hand-list files (incident 7).
+- Test files run concurrently. On Postgres every file that touches the store sets its own `CSD_INDEX_PG_SCHEMA` before
+  importing `src/`; files left on the default `public` schema read each other's `blocks` rows (incident 8).
+- CI runs the whole suite twice, a sqlite job and a postgres job against a postgres:16 service, plus the exact-pin
+  check and a `secrets` job (gitleaks, sha256-checked, over the full history of every branch with `.gitleaks.toml`).
+  Every `uses:` is pinned to a full commit SHA with its tag in a comment; the workflow token is read-only and no
+  checkout keeps credentials (`test/ci-workflow.test.ts` pins this shape).
+- `test/explorer-browser.test.ts` runs the explorer in Chromium as the front door serves it, every read stubbed. CI
+  installs the headless shell the pinned playwright-core names and sets `EXPLORER_BROWSER_REQUIRED=1`, so a missing
+  browser fails the run instead of skipping it; locally `PLAYWRIGHT_CHROMIUM` names a build other than the cached
+  one. On a shared host, `playwright-core install` without `--no-remove` deletes the other cached browser builds.
+- Live gates (not CI; run via tsx against a live deployment): `test/_live_check.mjs`, `_reconcile.mjs`,
+  `_browser_verify.mjs`, `_backend-diff.mjs`, `_backend-bench.mjs`. What each checks, and more on the browser test:
+  `docs/specs/indexer.md` section 6.
 
 ## Release and deploy
 
-- Release = version bump + commit + tag `vX.Y.Z` + push. No npm publish and no build step (tsx runs source directly), so a deployment picks up code edits at process restart. Maintainers handle production deployment and restarts; PRs must not assume deploy access.
-- `public/explorer.html` is read from disk per request (server.ts `sendFile`), so explorer changes take effect on any deployment without a restart.
-- For self-hosting, the README and Dockerfile are the supported paths (SQLite by default, `CSD_INDEX_PG` for Postgres).
-
-## Production notes
-
-- The maintainers' production instance runs the Postgres backend (`CSD_INDEX_PG`), cut over 2026-07-03 after a from-genesis backfill + cross-backend row diff + full suite. SQLite remains the default for dev, CI, and third-party deployments. Both backends must produce identical API responses; there is deliberately no copy tool between them (a fresh replay is the integrity check).
-- Consumers: the cairnx scanner (reads via `CSD_INDEXER`; complete proposal + attestation lists come from here), the cairn site (network figures, `/api/headers` and `/api/blocks`, the market data, the faucet when it is on, the treasury CLI, and the public GET-only allowlisted proxy `/explorer/api/*`), the explorer SPA, the cairn-sdk indexer namespace, and the @inversealtruism/csd-indexwire wire types. Monitoring and failover clients key off `/health`.
-- Upstreams: the CSD node RPC (with the multi-backend failover list in config.ts).
-
-## Gotchas and incident history
-
-- 2026-07-05 node-loss incident: an upstream node was killed mid-reorg, lost its datadir, and resynced from genesis; the indexer saw the low tip "converge" at a buried height and hard-deleted ~41k rows. Produced the chainwork guard, the checkpoint floor and the multi-backend failover.
-- GRX-WIRE-CLAMP-1: clampInt saturating expires_epoch >2^53 to a safe int made the indexer-fed resolver accept what SPV replay rejects, a canonicalState fork seam masked until V22. Rule: consensus-bound app ints feeding arithmetic/range comparison go through safeValue/safeEpoch, never clampInt.
-- CAIRN-IDXREORG-1/2: a latched tip mismatch + node withholding deeper blocks could wipe the index to genesis. Fixed: unwind only on confirmed contiguous divergence.
-- Pagination data loss: the old height-only address-txs cursor dropped same-height txids and 500'd on pg; now a (height,txid) keyset.
-- pg port bug class to watch when touching SQL: coinbase vout 0xFFFFFFFF overflows int4; DISTINCT + ORDER BY random() rejected; strict bind counts; engine-dependent ORDER BY tie order (tie-break with txid/vout). node:sqlite has no .transaction() helper; manual BEGIN/COMMIT in Store.tx.
-- Rule: browser-test explorer changes through the front-door proxy, not only on a direct :8793 hit, and bind events with `addEventListener`, never inline handlers. The proxy serves the explorer under a strict per-response nonce CSP (`script-src 'self' 'nonce-...'`), and a nonce never authorizes inline event-handler attributes: the search form's inline `onsubmit=` was silently blocked there while it worked on :8793 (fixed in db7b198).
-- The proxy and the direct port differ in both directions: `/header.js`, `/footer.js` and `/ui/*` exist only on the front-door origin and 404 on :8793 (the page keeps its own brand line, disclaimer and fallback tokens there); the proxy does not forward SSE, so the explorer's auto-refresh polls `/blocks/recent` every 12 s; the front door sits behind an edge cache, so a freshly deployed explorer may need a cache purge.
-- Low-hashrate regime (after a dominant pool left the network): staleSecs=600 can false-flag until LWMA retargets; raise CSD_STALE_SECS if noisy.
-- Open items (ideas, not scheduled): `docs/plans/open-items.md`.
+- A release is a version bump, a commit, a tag `vX.Y.Z` and a push (working rule 4: only when asked). There is no npm
+  publish and no build step (tsx runs the source), so a deployment picks up code edits at process restart.
+  Maintainers handle production deployment and restarts; PRs must not assume deploy access.
+- `public/explorer.html` is read from disk per request (`sendFile` in `src/server.ts`), so an explorer change takes
+  effect on any deployment without a restart.
+- For self-hosting, the README and the Dockerfile are the supported paths (SQLite by default, `CSD_INDEX_PG` for
+  Postgres).
 
 ## Docs
 
-| Doc | Holds |
-|---|---|
-| `README.md` | what the indexer is, how to run it, the API, the explorer, honest limits |
-| `CHANGELOG.md` | one entry per release |
-| `.githooks/README.md` | the secret-scan pre-commit hook |
-| `docs/plans/open-items.md` | ideas not scheduled |
-
-The cross-repo standard is a private document; the summary above is the part that binds a contributor here.
-
-## Cross-repo map
-
-Depends on (npm, exact-pinned): @inversealtruism/csd-codec, csd-crypto, csd-light (the ROUTE-1 route checks and their LWMA source). Reads from: the CSD node RPC (multi-backend failover) and the shared spv-checkpoint file when present (see config.ts). Consumed by: cairnx (scanner feed), cairn (proxies + libs), the explorer SPA, cairn-sdk, csd-indexwire, and health-checking monitors. Version bumps of codec here must move in lockstep with csd-sdk, cairnx, and the wallet.
+- `README.md`: what the indexer is, how to run it, the settings, the API, the explorer, honest limits.
+- `CHANGELOG.md`: one entry per release.
+- `docs/specs/indexer.md`: modules, every setting, flows, API maintainer notes, how the invariants work, the tests.
+- `docs/specs/explorer.md`: the explorer page (origins, shell, layout, states, verdicts, charts).
+- `docs/incidents/README.md`: the incident narratives behind the numbered rules.
+- `docs/plans/open-items.md`: ideas, not scheduled.
+- `.githooks/README.md`: the secret-scan pre-commit hook.
