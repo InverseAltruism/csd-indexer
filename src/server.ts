@@ -262,8 +262,10 @@ export function buildApp() {
     return b ? res.json(b) : nf(res, "no block at or after that time");
   }));
   const feed = (kind: q.FeedKind) => h(async (req, res) => {
-    const { domain, at, after, limit } = req.query as Record<string, unknown>;
+    const { domain, at, after, limit, format } = req.query as Record<string, unknown>;
     if (domain !== undefined && typeof domain !== "string") return bad(res, "want one domain");
+    const fmt = format === undefined ? 1 : q.FEED_FORMATS.find((f) => String(f) === format);
+    if (fmt === undefined) return bad(res, `want format=${q.FEED_FORMATS.join(" or format=")}`);
     const atM = at === undefined ? null : /^(\d+)(?::(0x[0-9a-fA-F]{64}))?$/.exec(String(at));
     if (at !== undefined && (!atM || !Number.isSafeInteger(Number(atM[1])))) return bad(res, "want at=<height> or at=<height>:<block hash>");
     const afterM = after === undefined ? null : /^(\d+):(\d+)$/.exec(String(after));
@@ -278,6 +280,7 @@ export function buildApp() {
       at: atM ? { height: Number(atM[1]), hash: atM[2] ?? null } : null,
       after: afterM ? { height: Number(afterM[1]), pos: Number(afterM[2]) } : null,
       limit: lim,
+      format: fmt,
     });
     if (!page.ok) {
       return page.reason === "empty-index"
@@ -285,7 +288,9 @@ export function buildApp() {
         : res.status(409).json({ error: "the snapshot block is no longer on the indexed chain; start again without after" });
     }
     const last = page.rows[page.rows.length - 1];
-    res.json({ at: page.at, rows: page.rows, next: page.rows.length === lim && last ? `${last.height}:${last.pos}` : null });
+    const next = page.rows.length === lim && last ? `${last.height}:${last.pos}` : null;
+    // Format 1 is the body a request without `format` gets, with no format field (test/chain-feeds.test.ts pins its bytes).
+    res.json(fmt === 1 ? { at: page.at, rows: page.rows, next } : { format: fmt, at: page.at, rows: page.rows, next });
   });
   app.get("/proposals", feed("proposals"));
   app.get("/attestations", feed("attestations"));

@@ -242,6 +242,9 @@ export async function blockAtOrAfter(time: number): Promise<{ height: number; ha
 }
 
 export const FEED_LIMIT_MAX = 1000;
+/** Feed row formats: 1 is the record row, 2 adds `outputs`, the row's transaction's outputs. */
+export const FEED_FORMATS = [1, 2] as const;
+export type FeedFormat = (typeof FEED_FORMATS)[number];
 export type FeedKind = "proposals" | "attestations";
 export interface FeedAt { height: number; hash: string }
 export interface FeedCursor { height: number; pos: number }
@@ -266,15 +269,23 @@ const FEED_SOURCE: Record<FeedKind, (domain: boolean) => string> = {
  * repeats, and a reorg at or below the snapshot answers snapshot-gone instead of a mixed list. The snapshot
  * check and the rows are one statement (one view on both backends); the LEFT JOIN keeps the snapshot row
  * when no record matches, so an empty page and a missing snapshot block stay distinguishable.
+ * Format 2 joins each page row to its transaction's outputs in that same statement, after the LIMIT, so the
+ * limit counts records and a row's outputs are never split across pages.
  */
 export async function feedPage(
-  kind: FeedKind, o: { domain: string | null; at: { height: number; hash: string | null } | null; after: FeedCursor | null; limit: number },
+  kind: FeedKind,
+  o: { domain: string | null; at: { height: number; hash: string | null } | null; after: FeedCursor | null; limit: number; format?: FeedFormat },
 ): Promise<FeedPage> {
   const after = o.after ?? { height: -1, pos: -1 };
   const snap = o.at ? "?" : "(SELECT MAX(height) FROM blocks)";
-  const sql =
+  const page =
     `SELECT s.height AS at_height, s.hash AS at_hash, r.* FROM blocks s LEFT JOIN (${FEED_SOURCE[kind](o.domain !== null)}) r ` +
     `ON r.height <= s.height AND (r.height > ? OR (r.height = ? AND r.pos > ?)) WHERE s.height = ${snap} ORDER BY r.height, r.pos LIMIT ?`;
+  const withOutputs = o.format === 2;
+  const sql = withOutputs
+    ? `SELECT f.*, x.vout AS out_vout, x.addr AS out_addr, x.value AS out_value FROM (${page}) f ` +
+      "LEFT JOIN outputs x ON x.txid = f.txid ORDER BY f.height, f.pos, x.vout"
+    : page;
   const params: unknown[] = [];
   if (o.domain !== null) params.push(o.domain);
   params.push(after.height, after.height, after.pos);
@@ -285,6 +296,18 @@ export async function feedPage(
   if (!first) return { ok: false, reason: o.at ? "snapshot-gone" : "empty-index" };
   const at = { height: Number(first.at_height), hash: String(first.at_hash) };
   if (o.at?.hash != null && at.hash !== o.at.hash.toLowerCase()) return { ok: false, reason: "snapshot-gone" };
-  const rows = raw.filter((r) => r.txid != null).map(({ at_height: _h, at_hash: _x, ...r }) => jsonSafe(r));
+  if (!withOutputs) {
+    const rows = raw.filter((r) => r.txid != null).map(({ at_height: _h, at_hash: _x, ...r }) => jsonSafe(r));
+    return { ok: true, at, rows };
+  }
+  // One statement row per output (or one with null output columns for a transaction without outputs), ordered so
+  // a record's rows are adjacent and in vout order.
+  const rows: Record<string, unknown>[] = [];
+  let last: unknown = null, outputs: { addr: string | null; value: number | string }[] = [];
+  for (const { at_height: _h, at_hash: _x, out_vout, out_addr, out_value, ...r } of raw) {
+    if (r.txid == null) continue;
+    if (r.txid !== last) { last = r.txid; outputs = []; rows.push({ ...jsonSafe(r), outputs }); }
+    if (out_vout != null) outputs.push({ addr: (out_addr as string | null) ?? null, value: amt(out_value as number | bigint | null) });
+  }
   return { ok: true, at, rows };
 }

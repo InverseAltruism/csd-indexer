@@ -18,6 +18,9 @@
 //
 // USAGE: node test/_backend-bench.mjs --sqlite /var/lib/csd-indexer/csd-index.db \
 //          --pg "postgresql://<db-user>@/csd_index?host=/var/run/postgresql"
+//        npx tsx test/_backend-bench.mjs --feeds [--db <scratch file>] [--scale 100] \
+//          [--limits 1000] [--cx-proposals N --cx-attestations N --other-proposals N --other-attestations N]
+//        --feeds runs only section F (feedBench below) on a scratch SQLite file: no live data, no --pg.
 import { DatabaseSync } from "node:sqlite";
 import { createRequire } from "node:module";
 import { rmSync } from "node:fs";
@@ -27,9 +30,6 @@ const opt = (n, d) => { const i = args.indexOf(`--${n}`); return i >= 0 && args[
 const SQLITE = opt("sqlite", process.env.CSD_INDEX_DB ?? "/var/lib/csd-indexer/csd-index.db");
 const PG_DSN = opt("pg", process.env.CSD_INDEX_PG ?? "");
 const PG_SCHEMA = opt("pg-schema", "public");
-if (!PG_DSN) { console.error("need --pg <dsn>"); process.exit(2); }
-if (!/^[A-Za-z0-9_]+$/.test(PG_SCHEMA)) { console.error("bad --pg-schema"); process.exit(2); }
-
 const now = () => performance.now();
 const stats = (xs) => {
   const s = [...xs].sort((a, b) => a - b);
@@ -37,6 +37,9 @@ const stats = (xs) => {
   return { p50: q(0.5), p95: q(0.95), max: s[s.length - 1], mean: s.reduce((a, b) => a + b, 0) / s.length };
 };
 const fmt = (r) => `p50=${r.p50.toFixed(2)}ms p95=${r.p95.toFixed(2)}ms max=${r.max.toFixed(2)}ms`;
+if (args.includes("--feeds")) { await feedBench(); process.exit(0); }
+if (!PG_DSN) { console.error("need --pg <dsn>"); process.exit(2); }
+if (!/^[A-Za-z0-9_]+$/.test(PG_SCHEMA)) { console.error("bad --pg-schema"); process.exit(2); }
 
 // ── connections (mirroring the real stores' key behaviors: WAL+busy_timeout+prepared reuse on
 //    sqlite, pool max 10 + exact int8/numeric parsers on pg — see src/db.ts) ──
@@ -190,3 +193,124 @@ for (const s of ["", "-wal", "-shm"]) { try { rmSync(WSQL + s); } catch { /* gon
 console.log("\nbench done (scratch schema + file dropped). Decision guide: pg should show near-zero");
 console.log("loop stall (section 3) and flat reads-under-write (section 4); sqlite should win raw");
 console.log("point-reads (section 1). Both should clear the 120s block target by orders of magnitude.");
+
+// ── F. chain-order feeds: full walks of /proposals and /attestations of one domain, format 1 and format 2 ──
+// Loads `scale` times the given row counts (defaults: the live cairnx:v1 counts on 2026-11-18, and the rest of the
+// live feeds as a second domain) into a scratch SQLite file whose schema src/db.ts creates, then walks each feed
+// through the real app on a loopback port and prints EXPLAIN QUERY PLAN for the last page statement of each walk.
+async function feedBench() {
+  const scale = Number(opt("scale", "100"));
+  const n = (k, d) => Number(opt(k, d)) * scale;
+  const DOMAIN = "cairnx:v1", NOISE = "bench:other";
+  const kinds = [["P", DOMAIN, n("cx-proposals", "1222")], ["A", DOMAIN, n("cx-attestations", "270")],
+    ["P", NOISE, n("other-proposals", "1924")], ["A", NOISE, n("other-attestations", "261")]];
+  const file = opt("db", `/tmp/csd-feed-bench-${process.pid}.db`);
+  const drop = () => { for (const s of ["", "-wal", "-shm"]) rmSync(file + s, { force: true }); };
+  drop();
+  delete process.env.CSD_INDEX_PG;
+  process.env.CSD_INDEX_DB = file;
+  process.env.CSD_INDEX_FROM = "0";
+  const { store, closeDb } = await import("../src/db.js");
+  const { buildApp } = await import("../src/server.js");
+  const s = store();
+
+  // Records in chain order: each kind spread evenly over the chain, 30 per block after the coinbase.
+  const recs = kinds.flatMap(([k, d, cnt], t) => Array.from({ length: cnt }, (_, j) => [(j + 0.5) / cnt, t, k, d]))
+    .sort((x, y) => x[0] - y[0] || x[1] - y[1]);
+  const PER_BLOCK = 30;
+  const hx = (v, w) => "0x" + BigInt(v).toString(16).padStart(w, "0");
+  const addr = (v) => hx(v % 5000 + 1, 40);
+  const val = (i) => (i % 1000 === 0 ? 2n ** 54n + BigInt(i) : BigInt(1000 + i)); // one value in 1000 past 2^53
+  const t0 = now();
+  const props = { [DOMAIN]: [], [NOISE]: [] };
+  let outputs = 0;
+  await s.tx(async (d) => {
+    const blocks = Math.ceil(recs.length / PER_BLOCK);
+    for (let h = 0; h < blocks; h++) {
+      const time = 1_700_000_000 + h * 120;
+      await d.run("INSERT INTO blocks(height,hash,prev,merkle,time,bits,nonce,version,tx_count,chainwork,orphaned) VALUES(?,?,?,?,?,?,?,?,?,?,0)",
+        h, hx(0xb0000000n + BigInt(h), 64), null, null, time, 0x1e00ffff, 0, 1, 1 + PER_BLOCK, String(h + 1));
+      const cb = hx(0xc0000000n + BigInt(h), 64);
+      await d.run("INSERT INTO txs(txid,height,pos,app_type,signer,fee,time,n_in,n_out,coinbase) VALUES(?,?,?,?,?,?,?,?,?,1)", cb, h, 0, "Coinbase", addr(h), 0, time, 0, 1);
+      await d.run("INSERT INTO outputs(txid,vout,addr,value,height) VALUES(?,?,?,?,?)", cb, 0, addr(h), 5_000_000_000, h);
+      for (let pos = 1; pos <= PER_BLOCK; pos++) {
+        const i = h * PER_BLOCK + pos - 1, r = recs[i];
+        if (!r) break;
+        const [, , k, dom] = r, txid = hx(i + 1, 64), who = addr(i);
+        const outs = k === "P" ? [who, addr(i + 7)] : [addr(i + 3), addr(i + 11), who];
+        await d.run("INSERT INTO txs(txid,height,pos,app_type,signer,fee,time,n_in,n_out,coinbase) VALUES(?,?,?,?,?,?,?,?,?,0)",
+          txid, h, pos, k === "P" ? "Propose" : "Attest", who, 1000, time, 1, outs.length);
+        for (let v = 0; v < outs.length; v++) await d.run("INSERT INTO outputs(txid,vout,addr,value,height) VALUES(?,?,?,?,?)", txid, v, outs[v], val(i + v), h);
+        outputs += outs.length;
+        if (k === "P") {
+          props[dom].push(txid);
+          await d.run("INSERT INTO proposals(txid,domain,payload_hash,uri,expires_epoch,proposer,fee,height,time) VALUES(?,?,?,?,?,?,?,?,?)",
+            txid, dom, hx(i, 64), `u${i}`, i % 997 === 0 ? 2n ** 53n : 9999, who, 1000, h, time);
+        } else {
+          const ps = props[dom];
+          await d.run("INSERT INTO attestations(txid,proposal_id,attester,score,confidence,fee,height,time) VALUES(?,?,?,?,?,?,?,?)",
+            txid, ps[(i * 7919) % ps.length], who, 100, 100, 1000, h, time);
+        }
+      }
+    }
+  });
+  const count = async (t) => Number((await s.get(`SELECT COUNT(*) AS c FROM ${t}`)).c);
+  console.log(`F. feeds bench: scale ${scale}, loaded in ${((now() - t0) / 1000).toFixed(1)}s: ${await count("blocks")} blocks, ${await count("txs")} txs, ` +
+    `${await count("outputs")} outputs, ${await count("proposals")} proposals, ${await count("attestations")} attestations`);
+  for (const [k, d, cnt] of kinds) console.log(`   ${k === "P" ? "proposals   " : "attestations"} ${d.padEnd(12)} ${cnt}`);
+
+  // Every page statement the app runs, so its plan can be read with the same binds.
+  let lastStmt = null;
+  const all = s.all.bind(s);
+  s.all = async (sql, ...p) => { if (/^SELECT s\.height AS at_height|^SELECT f\.\*/.test(sql)) lastStmt = { sql, p }; return await all(sql, ...p); };
+  const srv = buildApp().listen(0, "127.0.0.1");
+  await new Promise((r) => srv.once("listening", r));
+  const url = `http://127.0.0.1:${srv.address().port}`;
+  const tip = await s.get("SELECT height, hash FROM blocks ORDER BY height DESC LIMIT 1");
+  const at = `${tip.height}:${tip.hash}`;
+  async function walk(kind, limit, format) {
+    let after = null, rows = 0, outs = 0, bytes = 0;
+    const pages = [], start = now();
+    for (;;) {
+      const p0 = now();
+      const r = await fetch(`${url}/${kind}?domain=${encodeURIComponent(DOMAIN)}&at=${at}&limit=${limit}${format ? `&format=${format}` : ""}${after ? `&after=${after}` : ""}`);
+      const body = await r.text();
+      if (r.status !== 200) throw new Error(`${kind} answered ${r.status}: ${body.slice(0, 200)}`);
+      pages.push(now() - p0);
+      const j = JSON.parse(body);
+      bytes += Buffer.byteLength(body);
+      rows += j.rows.length;
+      if (format === 2) for (const x of j.rows) outs += x.outputs.length;
+      if (!j.next) break;
+      after = j.next;
+    }
+    return { ms: now() - start, pages, rows, outs, bytes, deep: lastStmt };
+  }
+  console.log("\n   feed          limit format  walk ms (3 runs, median)  pages  rows    outputs  MB     page p50 / max ms");
+  const plans = new Map();
+  for (const kind of ["proposals", "attestations"]) {
+    for (const limit of opt("limits", "1000").split(",").map(Number)) {
+      for (const format of [null, 2]) {
+        const runs = [];
+        for (let i = 0; i < 3; i++) runs.push(await walk(kind, limit, format));
+        runs.sort((a, b) => a.ms - b.ms);
+        const m = runs[1], st = stats(m.pages);
+        console.log(`   ${kind.padEnd(13)} ${String(limit).padStart(5)} ${String(format ?? "1 (absent)").padEnd(11)} ${m.ms.toFixed(0).padStart(8)}` +
+          `${"".padEnd(17)} ${String(m.pages.length).padStart(5)}  ${String(m.rows).padStart(6)}  ${String(m.outs).padStart(7)}  ${(m.bytes / 1e6).toFixed(1).padStart(5)}  ` +
+          `${st.p50.toFixed(1)} / ${st.max.toFixed(1)}`);
+        if (!plans.has(`${kind} format ${format ?? 1}`)) plans.set(`${kind} format ${format ?? 1}`, m.deep);
+      }
+    }
+  }
+  console.log("\n   EXPLAIN QUERY PLAN of the last page statement of each walk at the first of --limits (the deepest cursor):");
+  for (const [name, st] of plans) {
+    console.log(`   ${name}:`);
+    const rows = await all(`EXPLAIN QUERY PLAN ${st.sql}`, ...st.p);
+    const depth = new Map([[0, 0]]);
+    for (const r of rows) { depth.set(r.id, (depth.get(r.parent) ?? 0) + 1); console.log(`     ${"  ".repeat(depth.get(r.id) - 1)}${r.detail}`); }
+  }
+  srv.close();
+  await closeDb();
+  drop();
+  console.log(`\n   ${outputs} outputs written; scratch file removed.`);
+}

@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.3.12
+
+- `GET /proposals` and `GET /attestations` take `format`. `format=2` answers `{ format: 2, at, rows, next }`, each row
+  with `outputs`, its transaction's outputs in output order as `[{ addr, value }]` (`addr` as `/tx/:id` gives it or
+  null, `value` a JSON number up to 2^53 - 1 and a decimal string above it), so a replayer that needs who a record
+  paid reads it from the feed instead of one `/tx/:id` per row. The outputs are joined to the page in its one
+  statement, after the LIMIT: the same snapshot as the rows, one statement per page, and `limit` still counts rows.
+  Without `format`, or with `format=1`, the answer is 0.3.11's, byte for byte; any other value is 400
+  (`want format=1 or format=2`). README "The API" gives both row shapes and how an `expires_epoch` past 2^53 travels.
+- `test/chain-feeds.test.ts`: the answer to the released resolver's request shape is pinned by the sha256 of 0.3.11's
+  bytes, and the format-absent and `format=1` answers are equal for both feeds, three domain filters and three page
+  sizes; format 2 for a proposal paying only change, one without outputs, several outputs to one address, a value
+  past 2^53 and an output with no address, a fill paying a seller and a fee, the same rows and outputs paged by
+  `after=` as in one page with one statement per page, and the refusal of an unknown format.
+- `test/_backend-bench.mjs --feeds` loads n times the given feed rows into a scratch SQLite file and walks both feeds
+  in both formats. At 100 times the live counts read on 2026-11-18 (cairnx:v1 122,200 proposals and 27,000
+  attestations among 314,600 and 53,100), a full walk at `limit=1000` took 25.7 s (format 1) and 28.1 s (format 2)
+  for the proposals, 6.3 s and 6.6 s for the attestations, the median of 3 runs on a loaded host. Both formats read
+  every row of the domain on each page (the plan materializes the record source before the cursor applies), about
+  200 ms per page at that size; format 2 adds a primary-key read of `outputs` per page row. No index is added: the
+  growth is in the format 1 statement, and with `proposals(domain, height)` and `attestations(height)` added the plan
+  still materializes every row of the domain.
+
 ## 0.3.11
 
 - The coinbase-totals maintenance no longer reads coinbase outputs whose row sits at another height than their `txs`
