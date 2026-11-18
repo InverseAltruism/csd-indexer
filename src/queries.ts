@@ -252,14 +252,83 @@ export type FeedPage =
   | { ok: true; at: FeedAt; rows: Record<string, unknown>[] }
   | { ok: false; reason: "empty-index" | "snapshot-gone" };
 
-const FEED_SOURCE: Record<FeedKind, (domain: boolean) => string> = {
-  proposals: (domain) =>
-    "SELECT p.txid, p.domain, p.payload_hash, p.uri, p.expires_epoch, p.proposer, p.fee, p.height, p.time, t.pos " +
-    `FROM proposals p JOIN txs t ON t.txid = p.txid${domain ? " WHERE p.domain = ?" : ""}`,
-  attestations: (domain) =>
-    "SELECT a.txid, a.proposal_id, a.attester, a.score, a.confidence, a.fee, a.height, a.time, t.pos " +
-    `FROM attestations a JOIN txs t ON t.txid = a.txid${domain ? " JOIN proposals p ON p.txid = a.proposal_id WHERE p.domain = ?" : ""}`,
-};
+export interface FeedQuery { domain: string | null; at: { height: number; hash: string | null } | null; after: FeedCursor | null; limit: number; format?: FeedFormat }
+
+/** A domain with fewer proposals and fewer attestations than one full page has its attestation pages read from its
+ *  proposals (feedRows). */
+export const FEED_DOMAIN_SMALL = FEED_LIMIT_MAX;
+
+type Fragment = { sql: string; params: unknown[] };
+const PROPOSAL_COLS = "p.txid, p.domain, p.payload_hash, p.uri, p.expires_epoch, p.proposer, p.fee, p.height, p.time, t.pos";
+const ATTESTATION_COLS = "a.txid, a.proposal_id, a.attester, a.score, a.confidence, a.fee, a.height, a.time, t.pos";
+
+// One feed's rows after the cursor and at or below the snapshot height, in (height, pos) order, at most `limit`. The
+// position is the txs row's: no two rows of one feed share (height, pos), since a record and its txs row are written
+// in one turn at one block position, so (height, pos) is a total order. Proposals, and attestations without a domain,
+// walk a db.ts FEED_INDEX_DDL index over the record table's height from the cursor (`height >= ?` repeats what the
+// cursor implies, so the walk starts there), sort only by pos within a height and stop at the limit.
+// An attestation's domain is its proposal's, which no attestations index holds, so with a domain there are two arms,
+// and `g` gives one of them the page's limit and the other 0, a limit both engines read once before the arm runs
+// and stop at (a WHERE term with a subquery SQLite would test on every row). A domain with fewer than `small`
+// proposals and fewer than `small` attestations (each count stops at `small`) is read from its proposals: at most
+// `small` index seeks and rows whatever the chain's size, and as many again to count them. A larger one walks attestations by height and probes each
+// one's proposal, so a page reads every domain's attestations in its height range: about the page for a domain that
+// holds a fair share of them, up to all of them for one with many proposals and few attestations. The CROSS JOINs fix
+// SQLite's join order, which without per-domain statistics reads every domain from its proposals; Postgres orders each
+// arm's joins by its own statistics.
+function feedRows(kind: FeedKind, o: FeedQuery, snap: Fragment, small: number): { with: Fragment | null; rows: Fragment } {
+  const after = o.after ?? { height: -1, pos: -1 };
+  // `height` is the record's height column, `limit` the LIMIT clause with one bind for the page's limit.
+  const page = (height: string, limit = "LIMIT ?"): Fragment => ({
+    sql: `${height} >= ? AND ${height} <= ${snap.sql} AND (${height} > ? OR (${height} = ? AND t.pos > ?)) ORDER BY ${height}, t.pos ${limit}`,
+    params: [after.height, ...snap.params, after.height, after.height, after.pos, o.limit],
+  });
+  const arm = (n: 0 | 1) => `LIMIT CASE WHEN (SELECT small FROM g) = ${n} THEN ? ELSE 0 END`;
+  const d = o.domain;
+  if (kind === "proposals") {
+    const w = page("p.height");
+    return { with: null, rows: {
+      sql: `SELECT ${PROPOSAL_COLS} FROM proposals p JOIN txs t ON t.txid = p.txid WHERE ${d === null ? "" : "p.domain = ? AND "}${w.sql}`,
+      params: [...(d === null ? [] : [d]), ...w.params],
+    } };
+  }
+  if (d === null) {
+    const w = page("a.height");
+    return { with: null, rows: { sql: `SELECT ${ATTESTATION_COLS} FROM attestations a JOIN txs t ON t.txid = a.txid WHERE ${w.sql}`, params: w.params } };
+  }
+  // The unary plus keeps both engines off idx_att_height in the by-proposal arm: each proposal's attestations come
+  // from its idx_att_proposal_hk seek, fewer than `small` rows in all, where a height walk reads every domain's.
+  const wh = page("a.height", arm(0)), wb = page("+a.height", arm(1));
+  const count = (from: string) => `(SELECT COUNT(*) FROM (SELECT 1 FROM ${from} LIMIT ${small}) c)`;
+  return {
+    with: {
+      sql: `WITH g(small) AS (SELECT CASE WHEN ${count("proposals WHERE domain = ?")} < ${small} THEN CASE WHEN ` +
+        `${count("proposals p JOIN attestations a ON a.proposal_id = p.txid WHERE p.domain = ?")} < ${small} THEN 1 ELSE 0 END ELSE 0 END) `,
+      params: [d, d],
+    },
+    rows: {
+      sql: `SELECT * FROM (SELECT ${ATTESTATION_COLS} FROM attestations a CROSS JOIN proposals p JOIN txs t ON t.txid = a.txid ` +
+        `WHERE p.txid = a.proposal_id AND p.domain = ? AND ${wh.sql}) h UNION ALL ` +
+        `SELECT * FROM (SELECT ${ATTESTATION_COLS} FROM proposals p CROSS JOIN attestations a JOIN txs t ON t.txid = a.txid ` +
+        `WHERE a.proposal_id = p.txid AND p.domain = ? AND ${wb.sql}) b`,
+      params: [d, ...wh.params, d, ...wb.params],
+    },
+  };
+}
+
+/** The one statement feedPage runs for a page, with its binds. `small` is FEED_DOMAIN_SMALL but for tests of each arm. */
+export function feedPageStatement(kind: FeedKind, o: FeedQuery, small = FEED_DOMAIN_SMALL): { sql: string; params: unknown[] } {
+  const snap: Fragment = o.at ? { sql: "?", params: [o.at.height] } : { sql: "(SELECT MAX(height) FROM blocks)", params: [] };
+  const { with: w, rows } = feedRows(kind, o, snap, small);
+  const page =
+    `${w?.sql ?? ""}SELECT s.height AS at_height, s.hash AS at_hash, r.* FROM blocks s LEFT JOIN (${rows.sql}) r ` +
+    `ON 1 = 1 WHERE s.height = ${snap.sql} ORDER BY r.height, r.pos`;
+  const sql = o.format === 2
+    ? `SELECT f.*, x.vout AS out_vout, x.addr AS out_addr, x.value AS out_value FROM (${page}) f ` +
+      "LEFT JOIN outputs x ON x.txid = f.txid ORDER BY f.height, f.pos, x.vout"
+    : page;
+  return { sql, params: [...(w?.params ?? []), ...rows.params, ...snap.params] };
+}
 
 /**
  * One page of proposals or attestations (optionally only those of one domain's proposals) in chain order,
@@ -269,28 +338,16 @@ const FEED_SOURCE: Record<FeedKind, (domain: boolean) => string> = {
  * repeats, and a reorg at or below the snapshot answers snapshot-gone instead of a mixed list. The snapshot
  * check and the rows are one statement (one view on both backends); the LEFT JOIN keeps the snapshot row
  * when no record matches, so an empty page and a missing snapshot block stay distinguishable.
+ * The cursor, the snapshot bound and the LIMIT apply inside the row source (feedRows). The snapshot height, the
+ * bound `at.height` or the tip subquery, is both the row source's bound and the snapshot row's key; one statement
+ * reads one view, so the two are one height. A page reads its own rows and the rest of the heights at its two ends,
+ * except a domain's attestation page, which reads per feedRows.
  * Format 2 joins each page row to its transaction's outputs in that same statement, after the LIMIT, so the
  * limit counts records and a row's outputs are never split across pages.
  */
-export async function feedPage(
-  kind: FeedKind,
-  o: { domain: string | null; at: { height: number; hash: string | null } | null; after: FeedCursor | null; limit: number; format?: FeedFormat },
-): Promise<FeedPage> {
-  const after = o.after ?? { height: -1, pos: -1 };
-  const snap = o.at ? "?" : "(SELECT MAX(height) FROM blocks)";
-  const page =
-    `SELECT s.height AS at_height, s.hash AS at_hash, r.* FROM blocks s LEFT JOIN (${FEED_SOURCE[kind](o.domain !== null)}) r ` +
-    `ON r.height <= s.height AND (r.height > ? OR (r.height = ? AND r.pos > ?)) WHERE s.height = ${snap} ORDER BY r.height, r.pos LIMIT ?`;
+export async function feedPage(kind: FeedKind, o: FeedQuery): Promise<FeedPage> {
   const withOutputs = o.format === 2;
-  const sql = withOutputs
-    ? `SELECT f.*, x.vout AS out_vout, x.addr AS out_addr, x.value AS out_value FROM (${page}) f ` +
-      "LEFT JOIN outputs x ON x.txid = f.txid ORDER BY f.height, f.pos, x.vout"
-    : page;
-  const params: unknown[] = [];
-  if (o.domain !== null) params.push(o.domain);
-  params.push(after.height, after.height, after.pos);
-  if (o.at) params.push(o.at.height);
-  params.push(o.limit);
+  const { sql, params } = feedPageStatement(kind, o);
   const raw = await store().all<Record<string, unknown>>(sql, ...params);
   const first = raw[0];
   if (!first) return { ok: false, reason: o.at ? "snapshot-gone" : "empty-index" };

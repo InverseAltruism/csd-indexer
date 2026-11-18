@@ -99,8 +99,9 @@ The extras:
   nothing, for the tip) on the first page, then `at=<height>:<hash>` from the answer and `after=` set
   to `next` until `next` is null. A reorg above the snapshot leaves the walk unchanged; one at or
   below it makes the next page answer 409, and the walk starts again. A malformed `at` or `after` is
-  400, and so is `after` without `at=<height>:<hash>` (a height-only snapshot cannot detect a reorg);
-  an empty index is 503.
+  400, a position above 2^31 - 1 included (a block holds at most 2,000 transactions), and so is
+  `after` without `at=<height>:<hash>` (a height-only snapshot cannot detect a reorg); an empty index
+  is 503.
   - Without `format`, or with `format=1`, a proposal row is `{ txid, domain, payload_hash, uri, expires_epoch,
     proposer, fee, height, time, pos }` and an attestation row `{ txid, proposal_id, attester, score, confidence,
     fee, height, time, pos }`. Any other `format` is 400.

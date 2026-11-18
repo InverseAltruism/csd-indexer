@@ -44,6 +44,21 @@ or later).
     backends like every other index: `blocks(hash)` for the header-batch lookups, and `outputs(height)`,
     `outputs(spent_height)` and `address_history(height)` for the write and unwind paths
     (`test/schema-indexes.test.ts`).
+  - Three feed indexes, `FEED_INDEX_DDL` in the same DDL: `proposals(domain, height)`, `proposals(height)` and
+    `attestations(height)`, which the chain-order feeds walk from the cursor (section 4). A start on a database that
+    lacks them builds them (`test/feed-page-plan.test.ts`). The boot DDL is one multi-statement string, which
+    Postgres runs in one transaction, where `CREATE INDEX CONCURRENTLY` is refused: each build holds a SHARE lock on
+    its table, so reads go on and writes wait until the DDL commits. The writer is the indexer process itself, and it
+    writes only after the DDL.
+  - A start on Postgres runs two transactions, the DDL and the totals rebuild (`bootTx`), each with
+    `SET LOCAL statement_timeout = 0`, since an index build and the rebuild grow with the rows, and
+    `SET LOCAL lock_timeout` of `BOOT_LOCK_TIMEOUT_MS` (5 s), so a lock another session holds (an open write
+    transaction, a `VACUUM FULL`, a hand-run `LOCK`) fails the start with "the start waited 5000 ms for a lock
+    another session holds" after at most 5 s per lock, and the next store call starts again; ordinary statements keep
+    the 30 s statement timeout. The DDL locks six tables (SHARE) and the rebuild the two totals tables (SHARE ROW
+    EXCLUSIVE), and reads the others (ACCESS SHARE, which waits only for ACCESS EXCLUSIVE). SQLite has no statement
+    timeout; a start waits `busy_timeout` (5 s) for another process's write lock and fails with "database is locked",
+    and the next `store()` opens it again (`test/boot-rebuild-timeout.test.ts`).
 - `src/indexer.ts`: the sync engine. `syncOnce()` (chainwork regression guard, then `reconcileTipWindow`, then the
   forward scan), `writeBlock()` (one db transaction per block, self-clearing per height), `unwindAbove()` (reorg
   undo), `findReorgAncestor()`. The anti-wedge parsers `safeValue`, `safeEpoch` and `clampInt`.
@@ -138,9 +153,26 @@ The endpoint list for integrators is `README.md` "The API"; keep it in step with
 - CSD extras: `/domains`; `/domain/:d/proposals`; `/proposal/:id[/attestations]`, keyset-paginated, which is how the
   CairnX resolver fetches complete attestation lists; `/blocks/at-or-after/:time` (the lowest height whose time is at
   or after, over `idx_blocks_time`); `/proposals` and `/attestations` (chain order, a snapshot block `at` and an
-  `after=<height>:<pos>` keyset that needs the hashed snapshot `at=<height>:<hash>` (400 without), 409 when a reorg
+  `after=<height>:<pos>` keyset that needs the hashed snapshot `at=<height>:<hash>` (400 without, and 400 for a
+  position above `PG_INTEGER_MAX`, the range of the 4-byte `txs.pos` on Postgres, which a position in a block of at
+  most 2,000 transactions never reaches; `test/feed-cursor-range.test.ts`), 409 when a reorg
   reaches the snapshot; `format=2` adds each row's transaction's outputs by a LEFT JOIN on `outputs` around the
-  page statement, after its LIMIT, so a page stays one statement; `test/chain-feeds.test.ts`); `/address/:a/reputation` (aggregates over the newest 200
+  page statement, after its LIMIT, so a page stays one statement; `test/chain-feeds.test.ts`). The cursor, the
+  snapshot bound and the LIMIT apply inside the row source, which walks a feed index (section 1) in height order
+  from the cursor, reads each row's position from `txs` and sorts only within a height, so a page of proposals, or
+  of attestations without `domain`, reads its rows and the rest of the heights at its two ends, whatever the feed's
+  size. An attestation's domain is its proposal's, which no attestations index holds, so a domain's attestation
+  page has two arms in its one statement, and a CTE gives one of them the page's limit and the other a limit of 0,
+  which both engines read once and stop at before the arm runs. A domain with fewer than `FEED_DOMAIN_SMALL` (one
+  full page) proposals and attestations is read from its proposals, bounded by that count whatever the chain's
+  size; a larger one walks attestations by height and probes each one's proposal, reading every domain's
+  attestations in the page's height range, which for a domain with many proposals and few attestations is up to all
+  of them. CROSS JOINs fix SQLite's join order (without per-domain statistics it reads every domain from its
+  proposals); Postgres orders each arm's joins by its statistics. `test/feed-page-plan.test.ts` pins the plans and
+  the executed work (SQLite VM steps, Postgres rows read); `test/feed-page-equivalence.test.ts` compares every
+  request shape, through either arm, with the statement the feeds ran before (`test/_feed-page-legacy.ts`, kept for
+  that comparison only);
+  `/address/:a/reputation` (aggregates over the newest 200
   attestations; past that `truncated: true` and a `note` naming the window; `test/reputation-window.test.ts`);
   `/analytics/*`.
 - `/health`: version, backend, indexed_height, chainwork, stale; counts memoized per tip; `checkpoint_floor`;
@@ -234,5 +266,8 @@ COMMIT by hand.
   (`test/live-check.test.ts` runs it against a mock), `test/_reconcile.mjs` (per-attester rows sum to node
   aggregates), `test/_browser_verify.mjs`, `test/_backend-diff.mjs` (a sqlite-versus-pg row diff at a finalized
   height) and `test/_backend-bench.mjs`. `npx tsx test/_backend-bench.mjs --feeds --scale <n>` runs only its feed
-  section, on a scratch SQLite file and no live data: n times the given feed row counts, full walks of both feeds
-  in format 1 and 2, and the page statements' query plans.
+  section, on a scratch SQLite file, or with `--pg <dsn>` in a scratch schema of a scratch Postgres (never a live
+  database: it writes rows), and no live data: n times the given feed row counts in three domains, full walks of
+  both feeds in format 1 and 2 per `--domains`, and the plans of each walk's first and last page statement
+  (`EXPLAIN (ANALYZE, BUFFERS)` on Postgres). `--index-build` times the feed indexes' builds on the loaded rows and
+  a start without and with them; `--diff` runs `test/_feed-diff.ts` over the rows instead of the walks.

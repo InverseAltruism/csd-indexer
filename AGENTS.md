@@ -142,6 +142,9 @@ is a narrative in `docs/incidents/README.md`.
   number of queries, one at a time, so a request holds at most one connection. `test/address-fanout.test.ts`.
 - Address txs page on the full (height, txid) keyset; a height-only cursor drops same-height txids (incident 4).
   `test/pagination.test.ts`.
+- A chain-order feed page reads its own rows: the cursor, the snapshot bound and the limit apply inside the row
+  source, which walks the feed indexes, and every answer equals the one the statement it replaced gave, byte for byte.
+  `test/feed-page-plan.test.ts`, `test/feed-page-equivalence.test.ts`.
 - When touching SQL, watch the Postgres port bug class (incident 5): coinbase vout 0xFFFFFFFF overflows int4; DISTINCT
   with ORDER BY random() is rejected; bind counts are strict; ORDER BY tie order depends on the engine (tie-break with
   txid or vout). node:sqlite has no `.transaction()` helper: `Store.tx` runs BEGIN and COMMIT by hand.

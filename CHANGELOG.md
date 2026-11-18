@@ -14,14 +14,91 @@
   sizes; format 2 for a proposal paying only change, one without outputs, several outputs to one address, a value
   past 2^53 and an output with no address, a fill paying a seller and a fee, the same rows and outputs paged by
   `after=` as in one page with one statement per page, and the refusal of an unknown format.
-- `test/_backend-bench.mjs --feeds` loads n times the given feed rows into a scratch SQLite file and walks both feeds
-  in both formats. At 100 times the live counts read on 2026-11-18 (cairnx:v1 122,200 proposals and 27,000
-  attestations among 314,600 and 53,100), a full walk at `limit=1000` took 25.7 s (format 1) and 28.1 s (format 2)
-  for the proposals, 6.3 s and 6.6 s for the attestations, the median of 3 runs on a loaded host. Both formats read
-  every row of the domain on each page (the plan materializes the record source before the cursor applies), about
-  200 ms per page at that size; format 2 adds a primary-key read of `outputs` per page row. No index is added: the
-  growth is in the format 1 statement, and with `proposals(domain, height)` and `attestations(height)` added the plan
-  still materializes every row of the domain.
+- A page of `/proposals` or `/attestations` reads its own rows. The page statement read every row of the feed, or of
+  the domain, at or below the snapshot and sorted them for each page, so a full walk grew with the square of the row
+  count. The cursor, the snapshot bound and the limit now apply inside the row source, which walks a new index in
+  height order from the cursor, reads each row's position from `txs` and sorts only within a height. The snapshot
+  check and the rows are still one statement, a missing snapshot block still answers 409 and an empty page 200, and
+  format 2 still joins the outputs after the limit in that statement. A domain's attestations need two arms, since an
+  attestation's domain is its proposal's: a domain under one full page (`FEED_DOMAIN_SMALL`, 1,000) of proposals and
+  of attestations is read from its proposals, a larger one by walking attestations by height, and a CTE gives the
+  chosen arm the page's limit and the other a limit of 0, which both engines stop at before the arm runs. On SQLite a
+  domain with a page or more of proposals and few attestations still reads up to every attestation in the page's
+  height range, where the old statement read every proposal of the domain; Postgres orders that arm's joins by its
+  statistics and may read the domain's proposals instead.
+- The answers are unchanged, byte for byte, but for the one change below. `test/_feed-diff.ts` sends each request
+  through the real app twice, with the old statement (`test/_feed-page-legacy.ts`, kept for this comparison only) and
+  the new one, and compares status and body. Over the bench rows below, for both feeds, the domain filters cairnx:v1,
+  the small domain, a domain without rows, the empty string and none, limits 1, 7 and 1000, formats absent, 1 and 2,
+  `at` as height and hash, height only and absent, and walks from the beginning, after the first row of a height with
+  more rows, about two pages before the end, after the last row, past the snapshot and at the largest position the
+  route accepts (2^31 - 1): at scale 1, 68,339 pages on SQLite and 68,339 on Postgres 16 with every walk to its end;
+  at scale 100, 10,197 pages on SQLite and 7,668 on Postgres, every walk at limit 1000 to its end and those at limits
+  1 and 7 stopped at 20 pages. The scale-100 runs started that walk at 2^31 instead, before the route refused it,
+  where both statements answered 500 on Postgres and a page on SQLite; the page statement has not changed since.
+  0 differences in each, and in every walk each row is strictly after the one before in (height, pos).
+- The one deliberate change in an answer: `after=<height>:<pos>` with a position above 2^31 - 1 (`PG_INTEGER_MAX` in
+  `src/db.ts`, the range of the 4-byte `txs.pos` on Postgres) answers 400 `{"error":"want after=<height>:<position in
+  block>"}` on both backends, as any malformed cursor does. It answered 500 on Postgres, where the bind fails, and a
+  page on SQLite. A block holds at most 2,000 transactions (the node's `MAX_BLOCK_TXS`, which csd-codec does not
+  export), so no row's position comes near the bound and no cursor a page gave is refused. Heights, `at=` and the
+  cursor's, bind against BIGINT and answer as before up to 2^53 - 1. `/address/:a/utxo` takes its `vout` bound from
+  the same constant, unchanged. `test/feed-cursor-range.test.ts`, on both backends, fails without the check (500 on
+  Postgres, 200 on SQLite).
+- A start on Postgres runs the schema DDL and the totals rebuild each in its own transaction with
+  `SET LOCAL statement_timeout = 0` and `SET LOCAL lock_timeout = 5000` (`bootTx` and `BOOT_LOCK_TIMEOUT_MS` in
+  `src/db.ts`). The DDL ran under the pool's 30 s statement timeout, so on a large enough existing database an index
+  build would be cancelled, the DDL rolled back, and every later start would try the same build again; it now runs
+  as long as the build takes, and every other statement keeps the timeout. A lock another session holds is waited
+  for at most 5 s per lock, where the DDL waited up to the 30 s timeout and the rebuild without a bound. The DDL takes
+  SHARE locks on six tables, the rebuild SHARE ROW EXCLUSIVE on the two totals tables and ACCESS SHARE on what it
+  reads (which waits only for ACCESS EXCLUSIVE). Past that the start fails with "the start waited 5000 ms for a lock
+  another session holds", and the next store call starts again. SQLite has no statement timeout: a start waits
+  `busy_timeout` (5 s) for another process's write lock, fails with "database is locked", and the next `store()` opens
+  it again (5,008 ms in a run by hand), so it needs no change. `test/boot-rebuild-timeout.test.ts`: a start that
+  builds the three indexes over 400,000 proposals and 100,000 attestations under a 50 ms statement timeout completes,
+  and an ordinary read on its connection still times out; a start behind another session's SHARE ROW EXCLUSIVE lock
+  on proposals fails with that error and the next one completes. The first fails without the DDL's
+  `SET LOCAL statement_timeout` ("canceling statement due to statement timeout"), the second without the
+  `lock_timeout` (the start hangs until the test kills it at 30 s).
+- Indexes `proposals(domain, height)`, `proposals(height)` and `attestations(height)` (`FEED_INDEX_DDL` in `src/db.ts`)
+  are in the boot DDL, so the first start of this version on an existing database builds them. On the scale-100 rows
+  below the three builds took 308, 164 and 30 ms on SQLite and 347, 151 and 44 ms on Postgres 16 (a start on those
+  rows took 5,992 ms without the indexes and 5,565 ms with them on SQLite, most of it the totals rebuild, and 1,058 and
+  539 ms on Postgres). On Postgres the boot DDL is one multi-statement string, which runs as one transaction, where
+  `CREATE INDEX CONCURRENTLY` is refused; each build holds a SHARE lock on its table, so reads go on and writes wait
+  (checked on a scratch cluster), and every start already takes that lock for each existing index. The writer is the
+  indexer process, which writes only after the DDL. The height indexes also serve `writeBlock`'s and `unwindAbove`'s
+  deletes of proposals and attestations by height, which scanned both tables on every block write.
+- `test/_backend-bench.mjs --feeds` loads n times the given feed rows into a scratch SQLite file, or with `--pg` into a
+  scratch schema of a scratch Postgres, and walks both feeds in both formats per `--domains`; `--index-build` times
+  the index builds and `--diff` runs the differential above. At 100 times the live counts read on 2026-11-18
+  (cairnx:v1 122,200 proposals and 27,000 attestations, among 314,900 and 53,300 with a second domain and a small third
+  one of 300 and 200), a full walk at `limit=1000` took, before and after, page p50 in parentheses:
+
+  | feed, format 1 | SQLite before | SQLite after | Postgres before | Postgres after |
+  |---|---|---|---|---|
+  | proposals of cairnx:v1 | 27,548 ms (215.7) | 1,369 ms (10.8) | 17,086 ms (125.5) | 1,600 ms (12.0) |
+  | all proposals | 116,398 ms (374.6) | 3,037 ms (7.6) | 109,344 ms (259.8) | 3,711 ms (10.6) |
+  | attestations of cairnx:v1 | 7,548 ms (276.8) | 489 ms (16.6) | 2,829 ms (107.5) | 698 ms (22.7) |
+  | all attestations | 4,721 ms (89.8) | 459 ms (7.7) | 3,875 ms (72.6) | 666 ms (10.9) |
+  | attestations of the small domain, one page | 6.7 ms | 6.2 ms | 6.5 ms | 7.5 ms |
+  | attestations of a domain without rows, one page | 0.4 ms | 0.6 ms | 1.4 ms | 2.2 ms |
+
+  The median of 3 runs, except Postgres before (1 run), on a loaded shared host. Format 2 adds a primary-key read of
+  `outputs` per page row (proposals of cairnx:v1 after: 2,780 ms on SQLite, 2,590 ms on Postgres). Timed alone on
+  the same rows (median of 50 runs), a first attestation page of cairnx:v1 went from 314 to 11 ms on SQLite and from
+  320 to 21 ms on Postgres. The arm choice counts a small domain's rows before reading them, so such a page costs
+  more on SQLite (the small domain's 200 rows: 3.77 to 5.28 ms; a domain without rows: 0.06 to 0.17 ms) and the
+  empty domain's on Postgres (0.57 to 1.41 ms), while the small domain's on Postgres went from 14.57 to 4.38 ms.
+- `test/feed-page-plan.test.ts`: on a feed of 2,000 blocks, for every statement shape and a first and a late page,
+  the SQLite plan holds no scan of a record table, txs or outputs, no sort of the whole row source and no read of the
+  record table outside the page's range; SQLite's VM steps for a late page are at most twice the first page's; the
+  rows Postgres reads from the record table are those of the page and the heights at its ends (for a domain under
+  `FEED_DOMAIN_SMALL`, its own rows, counted and then read); the statement it
+  replaced fails each check; a start creates the indexes on a database that lacks them; the deletes by height search
+  them. `test/feed-page-equivalence.test.ts` runs the differential on a chain written through `writeBlock`, before
+  and after a reorg, through either arm, and shows it fails on a reordered reference.
 
 ## 0.3.11
 
