@@ -139,7 +139,8 @@ The endpoint list for integrators is `README.md` "The API"; keep it in step with
   CairnX resolver fetches complete attestation lists; `/blocks/at-or-after/:time` (the lowest height whose time is at
   or after, over `idx_blocks_time`); `/proposals` and `/attestations` (chain order, a snapshot block `at` and an
   `after=<height>:<pos>` keyset that needs the hashed snapshot `at=<height>:<hash>` (400 without), 409 when a reorg
-  reaches the snapshot; `test/chain-feeds.test.ts`); `/address/:a/reputation` (aggregates over the newest 200
+  reaches the snapshot; `format=2` adds each row's transaction's outputs by a LEFT JOIN on `outputs` around the
+  page statement, after its LIMIT, so a page stays one statement; `test/chain-feeds.test.ts`); `/address/:a/reputation` (aggregates over the newest 200
   attestations; past that `truncated: true` and a `note` naming the window; `test/reputation-window.test.ts`);
   `/analytics/*`.
 - `/health`: version, backend, indexed_height, chainwork, stale; counts memoized per tip; `checkpoint_floor`;
@@ -232,4 +233,6 @@ COMMIT by hand.
 - Live gates, not CI, run via tsx from the repo dir against a live deployment: `test/_live_check.mjs`
   (`test/live-check.test.ts` runs it against a mock), `test/_reconcile.mjs` (per-attester rows sum to node
   aggregates), `test/_browser_verify.mjs`, `test/_backend-diff.mjs` (a sqlite-versus-pg row diff at a finalized
-  height) and `test/_backend-bench.mjs`.
+  height) and `test/_backend-bench.mjs`. `npx tsx test/_backend-bench.mjs --feeds --scale <n>` runs only its feed
+  section, on a scratch SQLite file and no live data: n times the given feed row counts, full walks of both feeds
+  in format 1 and 2, and the page statements' query plans.

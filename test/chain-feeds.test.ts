@@ -25,7 +25,8 @@ test.after(async () => { srv.close(); await closeDb(); });
 
 const U = "uplink:v1", OTHER = "cairnx:v1", DEPTH = 3;
 const id = (n: number) => "0x" + n.toString(16).padStart(64, "0");
-type Rec = { kind: "P"; txid: string; domain: string } | { kind: "A"; txid: string; of: string };
+type Out = { script_pubkey: string; value: number | string };
+type Rec = ({ kind: "P"; txid: string; domain: string; expires?: number | string } | { kind: "A"; txid: string; of: string }) & { outs?: Out[] };
 type Blk = { height: number; time: number; tag: string; recs: Rec[] };
 const P = (n: number, domain = U): Rec => ({ kind: "P", txid: id(n), domain });
 const A = (n: number, of: number): Rec => ({ kind: "A", txid: id(n), of: id(of) });
@@ -53,9 +54,10 @@ function rpcBlock(b: Blk, prev: string) {
   const out = { script_pubkey: "0x" + "c3".repeat(20), value: 1 };
   const txs: unknown[] = [{ txid: h256(`coinbase-${b.tag}-${b.height}`), inputs: [], outputs: [out] }];
   for (const r of b.recs) {
+    const outputs = r.outs ?? [out];
     txs.push(r.kind === "P"
-      ? { txid: r.txid, inputs: [], outputs: [out], app: { type: "Propose", domain: r.domain, payload_hash: id(1), uri: `u${r.txid.slice(-4)}`, expires_epoch: 9 } }
-      : { txid: r.txid, inputs: [], outputs: [out], app: { type: "Attest", proposal_id: r.of, score: 100, confidence: 100 } });
+      ? { txid: r.txid, inputs: [], outputs, app: { type: "Propose", domain: r.domain, payload_hash: id(1), uri: `u${r.txid.slice(-4)}`, expires_epoch: r.expires ?? 9 } }
+      : { txid: r.txid, inputs: [], outputs, app: { type: "Attest", proposal_id: r.of, score: 100, confidence: 100 } });
   }
   return { hash: hashOf(b), height: b.height, chainwork: String(b.height + 1), header: { bits: 0x1e00ffff, merkle: id(2), nonce: 0, prev, time: b.time, version: 1 }, txs } as never;
 }
@@ -203,5 +205,126 @@ test("a cursor without a hashed snapshot is refused; with one it pages", async (
       assert.match(r.body.error, /after needs at=<height>:<block hash>/);
     }
     assert.equal((await get(`${path}?${q}&at=6:${hash}&limit=1&after=${after}`)).status, 200, `${path} honest page 2`);
+  }
+});
+
+// ── format=2: each row also carries its transaction's outputs ──
+const SELLER = "0x" + "5e".repeat(20), FEEADDR = "0x" + "fe".repeat(20), BUYER = "0x" + "b0".repeat(20), TREAS = "0x" + "7a".repeat(20);
+const C3 = "0x" + "c3".repeat(20);
+const o = (script_pubkey: string, value: number | string): Out => ({ script_pubkey, value });
+const BIG = "18014398509481985"; // 2^54 + 1, past Number.MAX_SAFE_INTEGER
+const WITH_OUTS: Record<number, Rec[]> = {
+  ...MAIN,
+  1: [{ ...P(0x9201, OTHER), outs: [o(BUYER, 4_999)] }, { ...P(0x9202, OTHER), outs: [] }],
+  4: [P(0x9003), { ...P(0x9203, OTHER), outs: [o(TREAS, 100), o(TREAS, 200), o(BUYER, 3), o(TREAS, 300)] }],
+  7: [A(0xa005, 0x9003), { ...P(0x9204, OTHER), expires: "18446744073709551615", outs: [o(TREAS, BIG), o("0x12", 1)] } as Rec],
+  8: [P(0x9004), { ...A(0xa201, 0x9203), outs: [o(SELLER, 1_000_000), o(FEEADDR, 10_000), o(BUYER, 7)] }],
+};
+const X = `domain=${encodeURIComponent(OTHER)}`;
+const text = async (p: string) => { const r = await fetch(base + p); return { status: r.status, body: await r.text() }; };
+
+test("format absent and format=1 answer today's bytes", async () => {
+  await resetStoreForTests();
+  const blocks = chain("m", MAIN);
+  await load(blocks);
+  // The released resolver's request shape; the digest is of the answer the code before format=2 gave.
+  const shape = `/proposals?domain=${encodeURIComponent(U)}&at=6:${hashOf(blocks[6]!)}&limit=1000`;
+  const today = await text(shape);
+  assert.equal(createHash("sha256").update(today.body).digest("hex"), "e6cbce4f475e090954483ca13bbedb4d00bb09a4f7ce9169c9fb691705ff2f34");
+  for (const path of ["/proposals", "/attestations"]) {
+    for (const q of ["", `${X}&`, `domain=${encodeURIComponent(U)}&`]) {
+      for (const lim of [1, 2, 1000]) {
+        const plain = await text(`${path}?${q}at=6:${hashOf(blocks[6]!)}&limit=${lim}`);
+        const one = await text(`${path}?${q}at=6:${hashOf(blocks[6]!)}&limit=${lim}&format=1`);
+        assert.equal(plain.status, 200);
+        assert.equal(one.body, plain.body, `${path}?${q}limit=${lim}`);
+        assert.ok(!plain.body.includes("outputs") && !plain.body.includes("format"));
+      }
+    }
+  }
+});
+
+test("format=2 rows carry their transaction's outputs in output order, values past 2^53 as decimal strings", async () => {
+  await resetStoreForTests();
+  const blocks = chain("m", WITH_OUTS);
+  await load(blocks);
+  const at = `9:${hashOf(blocks[9]!)}`;
+  const props = await get(`/proposals?${X}&at=${at}&format=2`);
+  assert.equal(props.status, 200);
+  assert.equal(props.body.format, 2);
+  assert.deepEqual(props.body.at, { height: 9, hash: hashOf(blocks[9]!) });
+  assert.deepEqual(props.body.rows.map((r: any) => [r.txid, r.height, r.pos, r.outputs]), [
+    [id(0x9201), 1, 1, [{ addr: BUYER, value: 4_999 }]],
+    [id(0x9202), 1, 2, []],
+    [id(0x9203), 4, 2, [{ addr: TREAS, value: 100 }, { addr: TREAS, value: 200 }, { addr: BUYER, value: 3 }, { addr: TREAS, value: 300 }]],
+    [id(0x9100), 6, 1, [{ addr: C3, value: 1 }]],
+    [id(0x9204), 7, 2, [{ addr: TREAS, value: BIG }, { addr: null, value: 1 }]],
+  ]);
+  const big = props.body.rows[4];
+  assert.equal(big.expires_epoch, "9007199254740992", "the expiry sentinel travels as format 1 serves it");
+  assert.equal(props.body.rows[1].expires_epoch, 9);
+
+  const atts = await text(`/attestations?${X}&at=${at}&format=2`);
+  assert.equal(atts.body, JSON.stringify({
+    format: 2, at: { height: 9, hash: hashOf(blocks[9]!) },
+    rows: [
+      { txid: id(0xa001), proposal_id: id(0x9100), attester: C3, score: 100, confidence: 100, fee: 0, height: 3, time: 1200, pos: 2, outputs: [{ addr: C3, value: 1 }] },
+      { txid: id(0xa201), proposal_id: id(0x9203), attester: SELLER, score: 100, confidence: 100, fee: 0, height: 8, time: 1600, pos: 2,
+        outputs: [{ addr: SELLER, value: 1_000_000 }, { addr: FEEADDR, value: 10_000 }, { addr: BUYER, value: 7 }] },
+    ],
+    next: null,
+  }), "a fill pays the seller and a fee");
+
+  // Without the outputs a format=2 row is the format=1 row, field for field and in the same order.
+  for (const path of ["/proposals", "/attestations"]) {
+    const one = await get(`${path}?at=${at}`), two = await get(`${path}?at=${at}&format=2`);
+    assert.equal(JSON.stringify(two.body.rows.map(({ outputs: _o, ...r }: any) => r)), JSON.stringify(one.body.rows), path);
+    assert.equal(two.body.next, one.body.next);
+  }
+});
+
+test("format=2 paged with after= serves the same rows and outputs as one large page, one statement per page", async () => {
+  await resetStoreForTests();
+  const blocks = chain("m", WITH_OUTS);
+  await load(blocks);
+  const { store } = await import("../src/db.js");
+  const s = store() as unknown as Record<"get" | "all", (...a: unknown[]) => Promise<unknown>>;
+  let calls = 0;
+  const orig = { get: s.get.bind(store()), all: s.all.bind(store()) };
+  for (const m of ["get", "all"] as const) s[m] = async (...a: unknown[]) => { calls++; return await orig[m](...a); };
+  try {
+    for (const path of ["/proposals", "/attestations"]) {
+      for (const q of ["", X]) {
+        calls = 0;
+        const whole = await get(`${path}?${q}&at=9:${hashOf(blocks[9]!)}&format=2`);
+        assert.equal(calls, 1, `${path} ${q}: one statement for a page`);
+        assert.ok(whole.body.rows.length >= 2 && whole.body.rows.every((r: any) => Array.isArray(r.outputs) && r.outputs.length > 0 || r.txid === id(0x9202)));
+        for (const lim of [1, 2]) {
+          const rows: any[] = [];
+          for (let after: string | null = null, i = 0; i === 0 || after; i++) {
+            calls = 0;
+            const r = await get(`${path}?${q}&at=9:${hashOf(blocks[9]!)}&limit=${lim}&format=2${after ? `&after=${after}` : ""}`);
+            assert.equal(r.status, 200);
+            assert.equal(calls, 1);
+            rows.push(...r.body.rows);
+            after = r.body.next;
+          }
+          assert.deepEqual(rows, whole.body.rows, `${path} ${q} limit=${lim}`);
+        }
+      }
+    }
+  } finally { Object.assign(s, orig); }
+});
+
+test("an unknown format is refused with the route's error shape", async () => {
+  await resetStoreForTests();
+  await load(chain("m", MAIN));
+  for (const path of ["/proposals", "/attestations"]) {
+    for (const f of ["3", "0", "", "two", "2.0", "02", "1&format=2"]) {
+      const r = await get(`${path}?format=${f}`);
+      assert.equal(r.status, 400, `${path} format=${f}`);
+      assert.deepEqual(r.body, { error: "want format=1 or format=2" });
+    }
+    for (const f of ["1", "2"]) assert.equal((await get(`${path}?format=${f}`)).status, 200, `${path} format=${f}`);
   }
 });

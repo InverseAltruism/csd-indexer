@@ -101,6 +101,19 @@ The extras:
   below it makes the next page answer 409, and the walk starts again. A malformed `at` or `after` is
   400, and so is `after` without `at=<height>:<hash>` (a height-only snapshot cannot detect a reorg);
   an empty index is 503.
+  - Without `format`, or with `format=1`, a proposal row is `{ txid, domain, payload_hash, uri, expires_epoch,
+    proposer, fee, height, time, pos }` and an attestation row `{ txid, proposal_id, attester, score, confidence,
+    fee, height, time, pos }`. Any other `format` is 400.
+  - With `format=2` the answer is `{ format: 2, at, rows, next }` and each row also carries `outputs`: its
+    transaction's outputs in output order, `[{ addr, value }]`, one entry per output (two outputs to one address are
+    two entries; a transaction without outputs has `[]`). `addr` is the address as `/tx/:id` gives it (`0x` and 40
+    lowercase hex), or null for an output whose script is no address; `value` is in base units. The rows and their
+    outputs are one read of the chain the snapshot `at` names, so a walk under one `at=<height>:<hash>` gets the
+    outputs of the same transactions as its rows, and `limit` counts rows (a row's outputs are never split across
+    pages).
+  - Integers in either format, `value` included, are a JSON number up to 2^53 - 1 and a decimal string above it.
+    An `expires_epoch` above 2^53 - 1 is stored as 2^53 and travels as the string `"9007199254740992"` in both
+    formats.
 - `GET /address/:a/reputation`: aggregates over the address's newest 200 attestations; past that the
   answer says `truncated: true` and names the window.
 - `GET /miners/coinbase?limit=N`: the same totals for every address, most outputs first (limit 1 to 1000,
