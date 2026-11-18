@@ -9,7 +9,7 @@ import { dirname, join } from "node:path";
 import { readFileSync, realpathSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { CFG, host, port } from "./config.js";
-import { store } from "./db.js";
+import { store, PG_INTEGER_MAX } from "./db.js";
 import * as q from "./queries.js";
 import * as analytics from "./analytics.js";
 import { merkleProof } from "./merkle.js";
@@ -216,15 +216,15 @@ export function buildApp() {
     const ids = await q.addressTxids(req.params.a!, { height: h0, txid: last });
     res.json(await q.txsWithOutputs(ids.map((r) => r.txid)));
   }));
-  // One page of q.UTXO_PAGE; the next page is ?after=<block_height>:<txid>:<vout> of the last row. outputs.vout is a
-  // 4-byte integer on Postgres, so a larger vout is refused here rather than failing the query.
+  // One page of q.UTXO_PAGE; the next page is ?after=<block_height>:<txid>:<vout> of the last row. A vout above
+  // outputs.vout's range on Postgres (PG_INTEGER_MAX) is refused here rather than failing the query.
   app.get("/address/:a/utxo", h(async (req, res) => {
     if (!ADDR.test(req.params.a!.toLowerCase())) return bad(res, "want /address/0x<40-hex>");
     let after: q.UtxoCursor | null = null;
     if (req.query.after !== undefined) {
       const m = /^(\d{1,16}):(0x[0-9a-fA-F]{64}):(\d{1,10})$/.exec(String(req.query.after));
       const height = Number(m?.[1]), vout = Number(m?.[3]);
-      if (!m || !Number.isSafeInteger(height) || vout > 2 ** 31 - 1) return bad(res, "want after=<height>:<txid>:<vout> of the previous page's last row");
+      if (!m || !Number.isSafeInteger(height) || vout > PG_INTEGER_MAX) return bad(res, "want after=<height>:<txid>:<vout> of the previous page's last row");
       after = { height, txid: m[2]!.toLowerCase(), vout };
     }
     res.json((await q.addressUtxos(req.params.a!, after)).map((o) => ({ txid: o.txid, vout: o.vout, value: o.value, status: { confirmed: true, block_height: o.height } })));
@@ -268,8 +268,11 @@ export function buildApp() {
     if (fmt === undefined) return bad(res, `want format=${q.FEED_FORMATS.join(" or format=")}`);
     const atM = at === undefined ? null : /^(\d+)(?::(0x[0-9a-fA-F]{64}))?$/.exec(String(at));
     if (at !== undefined && (!atM || !Number.isSafeInteger(Number(atM[1])))) return bad(res, "want at=<height> or at=<height>:<block hash>");
+    // A block holds at most 2,000 transactions (the node's MAX_BLOCK_TXS, which csd-codec does not export, so it is not
+    // declared here): no row's position comes near txs.pos's range, and a position above it is refused like any other
+    // malformed cursor, where Postgres would fail the statement (test/feed-cursor-range.test.ts).
     const afterM = after === undefined ? null : /^(\d+):(\d+)$/.exec(String(after));
-    if (after !== undefined && (!afterM || !Number.isSafeInteger(Number(afterM[1])) || !Number.isSafeInteger(Number(afterM[2])))) {
+    if (after !== undefined && (!afterM || !Number.isSafeInteger(Number(afterM[1])) || !(Number(afterM[2]) <= PG_INTEGER_MAX))) {
       return bad(res, "want after=<height>:<position in block>");
     }
     if (afterM && !atM?.[2]) return bad(res, "after needs at=<height>:<block hash> from the first page's answer");

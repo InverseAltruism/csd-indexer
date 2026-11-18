@@ -52,6 +52,17 @@ export interface Store {
 }
 
 // ── shared DDL (kept to the dialect intersection; BIGINT where a value can pass 2^31) ──
+// The chain-order feeds' page statements (queries.ts feedPageStatement) walk these in height order from the cursor,
+// so a page reads its own rows instead of every row of the feed; indexer.ts writeBlock's and unwindAbove's deletes of
+// proposals and attestations by height search the height ones. Exported for the feed bench, which times each build.
+export const FEED_INDEX_DDL = [
+  "CREATE INDEX IF NOT EXISTS idx_prop_domain_height ON proposals(domain, height)",
+  "CREATE INDEX IF NOT EXISTS idx_prop_height ON proposals(height)",
+  "CREATE INDEX IF NOT EXISTS idx_att_height ON attestations(height)",
+] as const;
+// An INTEGER column (txs.pos, outputs.vout) is 4 bytes on Postgres, where a larger bind fails the statement; SQLite's
+// INTEGER is 8 bytes. A route refuses a cursor value above this instead of answering 500 on one backend only.
+export const PG_INTEGER_MAX = 2 ** 31 - 1;
 // blocks.version is BIGINT (u32 in the codec; int4 overflowed on pg and wedged writeBlock). A Postgres
 // database created before 0.2.11 needs `ALTER TABLE blocks ALTER COLUMN version TYPE BIGINT` once:
 // CREATE TABLE IF NOT EXISTS does not alter an existing table. sqlite INTEGER is already 64-bit.
@@ -121,6 +132,7 @@ const DDL = `
   CREATE INDEX IF NOT EXISTS idx_out_height       ON outputs(height);
   CREATE INDEX IF NOT EXISTS idx_out_spent_height ON outputs(spent_height);
   CREATE INDEX IF NOT EXISTS idx_addrhist_height  ON address_history(height);
+${FEED_INDEX_DDL.map((s) => `  ${s};`).join("\n")}
 `;
 
 // The coinbase outputs paying an address: the one definition coinbase_totals summarises. Callers append
@@ -237,6 +249,29 @@ class SqliteStore implements Store {
 }
 
 // ── postgres backend ──
+// A start's two transactions, the schema DDL and the totals rebuild, grow with the rows: an index the DDL adds is built
+// over every row of its table, and the rebuild reads every outputs and address_history row, which anyone can add. The
+// pool's 30 s statement timeout would fail every start past that, so each runs without it, and every other statement
+// on the connection keeps it (SET LOCAL). A lock another session holds is waited for at most BOOT_LOCK_TIMEOUT_MS per
+// lock; past that the transaction fails (SQLSTATE 55P03) and rolls back, and the next store call starts again
+// (test/boot-rebuild-timeout.test.ts).
+export const BOOT_LOCK_TIMEOUT_MS = 5000;
+async function bootTx(c: import("pg").PoolClient, statements: readonly string[]): Promise<void> {
+  await c.query("BEGIN");
+  try {
+    await c.query("SET LOCAL statement_timeout = 0");
+    await c.query(`SET LOCAL lock_timeout = ${BOOT_LOCK_TIMEOUT_MS}`);
+    for (const q of statements) await c.query(q);
+    await c.query("COMMIT");
+  } catch (e) {
+    try { await c.query("ROLLBACK"); } catch { /* connection gone */ }
+    if ((e as { code?: string }).code === "55P03") {
+      throw new Error(`the start waited ${BOOT_LOCK_TIMEOUT_MS} ms for a lock another session holds; the next store call starts again (${(e as Error).message})`, { cause: e });
+    }
+    throw e;
+  }
+}
+
 // `?` placeholders are translated to $1..$n so call sites stay dialect-free.
 function toPg(sql: string): string {
   let n = 0;
@@ -269,7 +304,7 @@ class PgStore implements Store {
       // 3.x has no built-in maxWaitingClients, so the queue length is bounded explicitly below in
       // acquireGuard() (the prior comment claimed "never queue forever" but the queue was unbounded).
       connectionTimeoutMillis: 10_000,
-      // server-side guards: statement_timeout (30s) caps any single query (the start's totals rebuild aside) so no runaway read
+      // server-side guards: statement_timeout (30s) caps any single query (a start's DDL and rebuild aside, bootTx) so no runaway read
       // starves the block writer; idle_in_transaction_session_timeout (60s) keeps an abandoned
       // BEGIN from holding locks. Both exceed connectionTimeoutMillis by design; the acquire
       // timeout fails fast; these bound work that is already running on a connection.
@@ -295,18 +330,8 @@ class PgStore implements Store {
       try {
         await c.query(`CREATE SCHEMA IF NOT EXISTS ${this.schemaSafe}`);
         await c.query(`SET search_path TO ${this.schemaSafe}`);
-        await c.query(DDL);
-        await c.query("BEGIN");
-        try {
-          // The rebuild reads every outputs and address_history row, which grows with rows anyone can add: the 30 s cap
-          // would fail every start. SET LOCAL lifts it for this transaction only (test/boot-rebuild-timeout.test.ts).
-          await c.query("SET LOCAL statement_timeout = 0");
-          for (const q of totalsRebuildSql(this.backend)) await c.query(q);
-          await c.query("COMMIT");
-        } catch (e) {
-          try { await c.query("ROLLBACK"); } catch { /* connection gone */ }
-          throw e;
-        }
+        await bootTx(c, [DDL]);
+        await bootTx(c, totalsRebuildSql(this.backend));
       } finally { c.release(); }
     })();
     this._ready = p;
