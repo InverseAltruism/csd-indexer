@@ -137,7 +137,9 @@ is a narrative in `docs/incidents/README.md`.
 - Never point anything at :8790 as the default RPC: that is the miner's RPC; :8789 is primary, :8790 fallback only.
 - Every serial-poll read of the node is bounded by a timeout, so a backend that stalls `/block` cannot wedge the
   loop. `test/rpc-timeout.test.ts`.
-- Error responses never leak internals: the wrapper `h()` in `src/server.ts` answers without a pg DSN, SQL or a path.
+- Error responses never leak internals: the wrapper `h()` in `src/server.ts` answers without a pg DSN, SQL or a path,
+  and the app's final error handler answers what Express refuses before a route runs (a path that does not
+  percent-decode: 400) in the same shape. `test/error-body.test.ts`.
 - A list read never holds one pool connection per row (incident 10): the list endpoints read a page in a constant
   number of queries, one at a time, so a request holds at most one connection. `test/address-fanout.test.ts`.
 - Address txs page on the full (height, txid) keyset; a height-only cursor drops same-height txids (incident 4).

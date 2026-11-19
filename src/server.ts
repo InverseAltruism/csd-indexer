@@ -2,8 +2,8 @@
 // against it unchanged) plus the CSD-specific extras the thin node omits; merkle
 // proofs, per-attester data, domain views. Every response is a
 // derived view; trust comes from the light client re-verifying the merkle proofs.
-import express, { type Request, type Response } from "express";
-import { createServer, type Server } from "node:http";
+import express, { type NextFunction, type Request, type Response } from "express";
+import { createServer, STATUS_CODES, type Server } from "node:http";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { readFileSync, realpathSync } from "node:fs";
@@ -336,6 +336,16 @@ export function buildApp() {
   app.get("/analytics/supply/total", supplyText((f) => f.total));
   app.get("/analytics/supply/circulating", supplyText((f) => f.circulating));
   app.get("/analytics/series", h(async (req, res) => res.json(await analytics.series(String(req.query.window ?? "1d"), Number(req.query.points ?? 56)))));
+
+  // Last: an error raised outside h(), such as a path parameter that does not percent-decode (Express sets status
+  // 400 on it before any route runs), is answered in the routes' error shape. Express's default handler would send
+  // the stack, with the install path, unless NODE_ENV is "production". Four parameters mark it as the error handler.
+  app.use((err: unknown, _req: Request, res: Response, next: NextFunction) => {
+    if (res.headersSent) return next(err);
+    const s = (err as { status?: unknown } | null)?.status;
+    if (typeof s === "number" && s >= 400 && s < 500) return res.status(s).json({ error: (STATUS_CODES[s] ?? "bad request").toLowerCase() });
+    fail(res, err);
+  });
 
   return app;
 }

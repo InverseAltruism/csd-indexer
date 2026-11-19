@@ -17,6 +17,11 @@
   stops reading is dropped, on the ack path and on the event path, with at most the bound and one frame queued. The
   60 KiB case of `test/stream.test.ts`, which pins ws's 64 KiB frame limit, now sends 470 domains of 128 bytes in one
   frame of about 60 KiB instead of one 60 KiB domain, and that file's server listens on an ephemeral port.
+- A path parameter that does not percent-decode (`/block/%E0%A4%A`) answers 400 `{"error":"bad request"}`. Express
+  refused it before any route ran and its default handler sent an HTML page with the stack and the install path,
+  since neither the Dockerfile nor the README sets `NODE_ENV`. The app's final error handler answers such an error in
+  the routes' shape: a 4xx status with its name, anything else as `h()` does (500 `{"error":"internal error"}`, the
+  error logged). Every route's own error body is unchanged. `test/error-body.test.ts`.
 
 ## 0.3.12
 
