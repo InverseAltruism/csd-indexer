@@ -39,7 +39,8 @@ or later).
     its rows at an earlier place (section 5, First occurrence).
   - The two exceptions are the derived per-address tables `coinbase_totals` and `address_totals` (section 5, Derived
     totals).
-  - Exact-integer policy: a number within 2^53, a bigint past it, never lossy.
+  - Exact-integer policy: a number within 2^53, a bigint past it, never lossy, from the parsed block on (`res.json()`
+    in `src/rpc.ts` rounds a node value above 2^53 before `safeValue`; no output holds that much).
   - Four additive, idempotent transport indexes sit in the shared DDL constant and are applied at boot on both
     backends like every other index: `blocks(hash)` for the header-batch lookups, and `outputs(height)`,
     `outputs(spent_height)` and `address_history(height)` for the write and unwind paths
@@ -137,7 +138,8 @@ forward from `indexedHeight()+1`, one `writeBlock` per height. `writeBlock` runs
 prior contents of that height, insert the block row (the node-reported chainwork as TEXT), resolve inputs against the
 indexer's own `outputs` table (the electrs model, zero extra RPC), write outputs, spends, `address_history` and the
 Propose and Attest app rows; a txid `txs` already holds gets one `tx_repeats` row and nothing else. Events emit only
-near the tip; status goes from tentative to confirmed past `finalDepth` (6).
+near the tip, once per block when it is written, with the status of the block's depth at that moment: confirmed at
+`finalDepth` (6) or deeper below the node's tip, else tentative. An event is not sent again when its block deepens.
 
 Reorg undo: two detectors. (a) `reconcileTipWindow` catches equal-height and lower-height reorgs (heavier in chainwork
 but not taller, possible under LWMA) by walking down to the last converged hash; (b) `findReorgAncestor` catches a

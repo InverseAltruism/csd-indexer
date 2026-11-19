@@ -22,6 +22,13 @@
   since neither the Dockerfile nor the README sets `NODE_ENV`. The app's final error handler answers such an error in
   the routes' shape: a 4xx status with its name, anything else as `h()` does (500 `{"error":"internal error"}`, the
   error logged). Every route's own error body is unchanged. `test/error-body.test.ts`.
+- `test/checkpoint-floor.test.ts` pins the forward scan's checkpoint-floor refusal (`syncOnce`): a heavier, taller
+  branch forking below the floor is refused by `reconcileTipWindow` and then by the forward scan, whose check no test
+  turned red without.
+- Corrected statements, no code change: events are emitted once per block when it is written, with the status of its
+  depth then, and are not re-sent as `confirmed` when the block deepens (`src/events.ts`, `docs/specs/indexer.md`
+  section 3); output values are exact from the parsed block on, while the node's JSON is parsed with `res.json()`,
+  which rounds a value above 2^53 before `safeValue` (AGENTS.md, the spec's exact-integer line).
 
 ## 0.3.12
 

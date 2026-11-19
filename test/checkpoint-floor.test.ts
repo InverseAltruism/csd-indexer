@@ -63,6 +63,23 @@ test("floor: REFUSES to unwind below the floor even for a heavier chain (deep an
   assert.equal(rowsAfter, rowsBefore, "no rows deleted");
 });
 
+// The node's branch is heavier and taller and forks below the floor: reconcileTipWindow refuses first, then the forward
+// scan meets the next block's mismatched prev and findReorgAncestor returns the deep ancestor. Only the forward scan's
+// own floor check stands between that ancestor and an unwind.
+test("floor: the forward scan REFUSES a heavier, taller branch whose ancestor is below the floor", async () => {
+  await resetStoreForTests();
+  CHAIN = buildChain(["g", "Pa", "Pb", "Pc", "Pd", "Pe"]); // 0..5
+  await syncOnce();
+  assert.equal(await indexedHeight(), 5);
+  // heavier, diverging at height 2 (ancestor 1, below the floor 3), and taller than the index
+  CHAIN = buildChain(["g", "Pa", "Fb", "Fc", "Fd", "Fe", "Ff", "Fg"]); // 0..7
+  const r = await syncOnce();
+  assert.equal(r.reorgs, 0, "no unwind signalled");
+  assert.equal(await indexedHeight(), 5, "index held at its tip");
+  assert.equal(await storedHash(2), h32("blk-Pb"), "the block above the ancestor is kept");
+  assert.equal(await storedHash(5), h32("blk-Pe"), "tip still present");
+});
+
 test("floor: ALLOWS an unwind whose ancestor is AT the floor", async () => {
   // fresh index 0..5 (WORK_EPOCH keeps this heavier than the prior test's chains)
   CHAIN = buildChain(["g", "Pa", "Pb", "Pc", "Pd", "Pe"]); // 0..5

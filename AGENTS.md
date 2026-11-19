@@ -105,9 +105,11 @@ is a narrative in `docs/incidents/README.md`.
 - sqlite dbTx isolation: BEGIN..COMMIT atomicity against HTTP readers holds only because every await inside a dbTx
   callback is a store call (a microtask). Never add a fetch, fs or timer await inside a dbTx callback.
   `test/dbtx-isolation.test.ts`.
-- Exact integers end to end: CSD max supply exceeds 2^53, so values parse as BigInt (`safeValue`), store as BIGINT and
-  serialize through `amt()` or `jsonSafe()`: a number within 2^53, a bigint past it, never lossy. A stray bigint in a
-  response object throws in JSON.stringify and the endpoint answers 500. `test/json-safe-read.test.ts`.
+- Exact integers from the parsed block on: CSD max supply exceeds 2^53, so values become BigInt (`safeValue`), store
+  as BIGINT and serialize through `amt()` or `jsonSafe()`: a number within 2^53, a bigint past it, never lossy. The
+  node's JSON itself is parsed with `res.json()` (`src/rpc.ts`), so an output value above 2^53 is rounded to a double
+  before `safeValue` sees it; one output would have to hold about 85.7 percent of csd-codec's `maxSupplyBase`. A stray
+  bigint in a response object throws in JSON.stringify and the endpoint answers 500. `test/json-safe-read.test.ts`.
 - Anti-wedge clamps (incident 2): `safeValue` clamps to int64 max, because an over-range bind throws inside
   `writeBlock`, rolls back, and the same block poisons every poll. `safeEpoch` clamps an `expires_epoch` above 2^53
   to a non-safe-integer sentinel. Consensus-bound app integers that feed arithmetic or a range comparison go through
