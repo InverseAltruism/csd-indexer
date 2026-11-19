@@ -39,7 +39,8 @@ or later).
     its rows at an earlier place (section 5, First occurrence).
   - The two exceptions are the derived per-address tables `coinbase_totals` and `address_totals` (section 5, Derived
     totals).
-  - Exact-integer policy: a number within 2^53, a bigint past it, never lossy.
+  - Exact-integer policy: a number within 2^53, a bigint past it, never lossy, from the parsed block on (`res.json()`
+    in `src/rpc.ts` rounds a node value above 2^53 before `safeValue`; no output holds that much).
   - Four additive, idempotent transport indexes sit in the shared DDL constant and are applied at boot on both
     backends like every other index: `blocks(hash)` for the header-batch lookups, and `outputs(height)`,
     `outputs(spent_height)` and `address_history(height)` for the write and unwind paths
@@ -80,8 +81,28 @@ or later).
   connection (`test/address-fanout.test.ts`; `docs/incidents/README.md` 10).
 - `src/stream.ts` and `src/events.ts`: the event bus, the SSE firehoses and WS `/ws`.
   - Caps: 500 SSE connections (`CSD_INDEX_MAX_SSE`), 500 WS clients (`CSD_INDEX_MAX_WS`), 1000 subscription keys
-    (`CSD_INDEX_MAX_SUB`), a 4 MiB outbound buffer per connection (`CSD_INDEX_MAX_SSE_BUFFER`;
-    `test/sse-overflow.test.ts`), 64 KiB per WS frame (ws's `maxPayload`, refused with 1009 before it is buffered).
+    (`CSD_INDEX_MAX_SUB`), a 4 MiB outbound buffer per SSE or WS connection (`CSD_INDEX_MAX_SSE_BUFFER`; past it the
+    connection is dropped, a WS socket with `terminate()`; `test/sse-overflow.test.ts`, `test/ws-bounds.test.ts`),
+    64 KiB per WS frame (ws's `maxPayload`, refused with 1009 before it is buffered).
+  - A WS subscription key longer than any an event carries adds nothing: a domain over csd-codec's `MAX_DOMAIN_BYTES`
+    (128) UTF-8 bytes, an address over 42 characters, a proposal id over 66. With the key cap this bounds what one
+    connection holds, and so the ack, which echoes the whole subscription (`test/ws-bounds.test.ts`).
+  - Pongs: ws's automatic pong is off (`autoPong: false`), since it is written outside `boundedSend`. The `ping`
+    listener echoes the ping's payload only while nothing is queued for the socket (`bufferedAmount === 0`), so a
+    client that pings and never reads holds at most one pong and keeps its socket. A ping is answered when nothing is
+    queued for the connection; a client behind its own queued bytes, typically right after a large ack, can miss a
+    pong. A frame ws emits after `terminate()` (the rest of a chunk it had read) returns at the handler's first
+    line, so a dropped socket costs no further acks (`test/ws-bounds.test.ts`).
+  - Worst case, with the defaults: one WS connection queues at most the outbound bound plus the frame that crossed it.
+    The largest frame is the ack at the key caps with every key at its bound and built only from the 27 control
+    characters JSON writes in six bytes (`\u00XX`), the most it writes for one UTF-16 code unit: 1,425,077 bytes
+    (`test/ws-bounds.test.ts` prints it), so a connection queues at most 4,194,304 + 1,425,077 = 5,619,381 bytes. Its
+    keys are at most 472,000 bytes of string data (1,000 keys per category of at most 128, 42 and 66 UTF-16 code units,
+    two bytes each). `CSD_INDEX_MAX_WS` caps connections at 500, so the WS side can queue up to 2,809,690,500 bytes
+    (2.62 GiB) and hold up to 236,000,000 bytes of keys, plus the kernel's socket buffers; each SSE connection has the
+    same outbound bound and `CSD_INDEX_MAX_SSE` caps them at 500 as well. A self-host sizes these for its memory:
+    lower `CSD_INDEX_MAX_WS` and `CSD_INDEX_MAX_SSE` first, and keep `CSD_INDEX_MAX_SSE_BUFFER` above the largest ack,
+    or a reading client at the key caps can be dropped by its own ack.
   - The process has no uncaughtException handler, so nothing a client sends may throw out of the WS listeners. The
     message handler checks the frame's shape and closes only its own socket (1011) on a throw. Every socket, one
     refused over the client cap (1013) included, gets an `error` listener first thing, since ws emits a protocol error
@@ -116,7 +137,7 @@ reads:
 | `CSD_INDEX_MAX_SSE` | 500 | SSE connection cap |
 | `CSD_INDEX_MAX_WS` | 500 | WS client cap |
 | `CSD_INDEX_MAX_SUB` | 1000 | subscription keys per WS client and category |
-| `CSD_INDEX_MAX_SSE_BUFFER` | 4194304 | bytes of outbound buffer per SSE connection |
+| `CSD_INDEX_MAX_SSE_BUFFER` | 4194304 | bytes of outbound buffer per SSE or WS connection |
 | `CSD_CONFIRMATIONS_DISPLAY` | 3 | read, consulted by nothing |
 | `CSD_INDEX_BATCH` | 200 | read, consulted by nothing |
 
@@ -133,7 +154,8 @@ forward from `indexedHeight()+1`, one `writeBlock` per height. `writeBlock` runs
 prior contents of that height, insert the block row (the node-reported chainwork as TEXT), resolve inputs against the
 indexer's own `outputs` table (the electrs model, zero extra RPC), write outputs, spends, `address_history` and the
 Propose and Attest app rows; a txid `txs` already holds gets one `tx_repeats` row and nothing else. Events emit only
-near the tip; status goes from tentative to confirmed past `finalDepth` (6).
+near the tip, once per block when it is written, with the status of the block's depth at that moment: confirmed at
+`finalDepth` (6) or deeper below the node's tip, else tentative. An event is not sent again when its block deepens.
 
 Reorg undo: two detectors. (a) `reconcileTipWindow` catches equal-height and lower-height reorgs (heavier in chainwork
 but not taller, possible under LWMA) by walking down to the last converged hash; (b) `findReorgAncestor` catches a

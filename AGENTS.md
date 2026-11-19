@@ -18,8 +18,8 @@ are kept privately by the maintainers.
 - Check: `npm ci && npm run typecheck && npm run lint && npm run check:dashes-paths && npm test` (offline; Node 26,
   as CI runs it; `node:sqlite` needs 22 or later).
 - Red lines: never unwind on absence of evidence or below the checkpoint floor; never reconcile against a node with
-  less chainwork; exact integers end to end; consensus values come from the pinned csd-sdk packages; replay may
-  reject more, never accept different. Each is under Invariants or Working rules.
+  less chainwork; exact integers from the parsed block on; consensus values come from the pinned csd-sdk packages;
+  replay may reject more, never accept different. Each is under Invariants or Working rules.
 - Explorer changes: browser-test them through the front-door proxy as well as on :8793 (Explorer rules).
 - It runs from source with `tsx`: no build step, not published to npm (`private: true`). The version and the
   dependency pins live in `package.json` only; git tags mark releases. It listens on 127.0.0.1:8793 by default
@@ -105,9 +105,11 @@ is a narrative in `docs/incidents/README.md`.
 - sqlite dbTx isolation: BEGIN..COMMIT atomicity against HTTP readers holds only because every await inside a dbTx
   callback is a store call (a microtask). Never add a fetch, fs or timer await inside a dbTx callback.
   `test/dbtx-isolation.test.ts`.
-- Exact integers end to end: CSD max supply exceeds 2^53, so values parse as BigInt (`safeValue`), store as BIGINT and
-  serialize through `amt()` or `jsonSafe()`: a number within 2^53, a bigint past it, never lossy. A stray bigint in a
-  response object throws in JSON.stringify and the endpoint answers 500. `test/json-safe-read.test.ts`.
+- Exact integers from the parsed block on: CSD max supply exceeds 2^53, so values become BigInt (`safeValue`), store
+  as BIGINT and serialize through `amt()` or `jsonSafe()`: a number within 2^53, a bigint past it, never lossy. The
+  node's JSON itself is parsed with `res.json()` (`src/rpc.ts`), so an output value above 2^53 is rounded to a double
+  before `safeValue` sees it; one output would have to hold about 85.7 percent of csd-codec's `maxSupplyBase`. A stray
+  bigint in a response object throws in JSON.stringify and the endpoint answers 500. `test/json-safe-read.test.ts`.
 - Anti-wedge clamps (incident 2): `safeValue` clamps to int64 max, because an over-range bind throws inside
   `writeBlock`, rolls back, and the same block poisons every poll. `safeEpoch` clamps an `expires_epoch` above 2^53
   to a non-safe-integer sentinel. Consensus-bound app integers that feed arithmetic or a range comparison go through
@@ -137,7 +139,9 @@ is a narrative in `docs/incidents/README.md`.
 - Never point anything at :8790 as the default RPC: that is the miner's RPC; :8789 is primary, :8790 fallback only.
 - Every serial-poll read of the node is bounded by a timeout, so a backend that stalls `/block` cannot wedge the
   loop. `test/rpc-timeout.test.ts`.
-- Error responses never leak internals: the wrapper `h()` in `src/server.ts` answers without a pg DSN, SQL or a path.
+- Error responses never leak internals: the wrapper `h()` in `src/server.ts` answers without a pg DSN, SQL or a path,
+  and the app's final error handler answers what Express refuses before a route runs (a path that does not
+  percent-decode: 400) in the same shape. `test/error-body.test.ts`.
 - A list read never holds one pool connection per row (incident 10): the list endpoints read a page in a constant
   number of queries, one at a time, so a request holds at most one connection. `test/address-fanout.test.ts`.
 - Address txs page on the full (height, txid) keyset; a height-only cursor drops same-height txids (incident 4).
@@ -151,6 +155,11 @@ is a narrative in `docs/incidents/README.md`.
 - The process has no uncaughtException handler, so nothing a client sends may throw out of the WS listeners: the
   message handler closes only its own socket on a throw, and every socket gets an `error` listener first thing.
   `test/stream.test.ts`.
+- One stream connection's subscription keys, outbound queue and work after a drop are bounded: a WS key longer than
+  any an event carries adds nothing; every hello, ack, event and SSE ping goes through `boundedSend`, which drops an
+  SSE or WS connection once its queued bytes pass `CSD_INDEX_MAX_SSE_BUFFER`, and a WS pong is sent only while
+  nothing is queued for its socket; a WS frame that arrives after the drop is not handled. `test/ws-bounds.test.ts`,
+  `test/sse-overflow.test.ts`.
 - There is deliberately no sqlite-to-Postgres copy tool: a fresh replay is the integrity check.
 - Keep `README.md` "The API" in step with `src/server.ts`. Keep binary and screenshot artifacts out of the repo
   (the repo-root `csd-index.db*` files are gitignored dev artifacts).

@@ -34,7 +34,7 @@ test("checkpointDefault: the positive number in the given file, else 38142", () 
 type Probed = {
   checkpointFloor: number; scanFrom: number; finalDepth: number; pollSecs: number; maxAheadBlocks: number;
   routePlausibility: boolean; workEscapeCycles: number; powVerifyTimeoutMs: number; routeBlockSecs: number;
-  maxSse: number; maxWs: number; maxSubKeys: number; maxSseBuffer: number;
+  maxSse: number; maxWs: number; maxSubKeys: number; maxStreamBuffer: number;
 };
 function probe(env: Record<string, string | undefined>): Probed {
   const e: Record<string, string> = {};
@@ -87,9 +87,9 @@ test("HAPPY PATH: an empty string and zero still mean 'unset', exactly as before
 // false), and a garbage CSD_INDEX_MAX_SSE or CSD_INDEX_MAX_SSE_BUFFER removed that bound the same way.
 const RPC_STREAM_KEYS = {
   CSD_RPC_WORK_ESCAPE: "workEscapeCycles", CSD_RPC_POW_TIMEOUT: "powVerifyTimeoutMs", CSD_RPC_BLOCK_SECS: "routeBlockSecs",
-  CSD_INDEX_MAX_SSE: "maxSse", CSD_INDEX_MAX_WS: "maxWs", CSD_INDEX_MAX_SUB: "maxSubKeys", CSD_INDEX_MAX_SSE_BUFFER: "maxSseBuffer",
+  CSD_INDEX_MAX_SSE: "maxSse", CSD_INDEX_MAX_WS: "maxWs", CSD_INDEX_MAX_SUB: "maxSubKeys", CSD_INDEX_MAX_SSE_BUFFER: "maxStreamBuffer",
 } as const;
-const RPC_STREAM_DEFAULTS = { workEscapeCycles: 20, powVerifyTimeoutMs: 5000, routeBlockSecs: 120, maxSse: 500, maxWs: 500, maxSubKeys: 1000, maxSseBuffer: 4 * 1024 * 1024 };
+const RPC_STREAM_DEFAULTS = { workEscapeCycles: 20, powVerifyTimeoutMs: 5000, routeBlockSecs: 120, maxSse: 500, maxWs: 500, maxSubKeys: 1000, maxStreamBuffer: 4 * 1024 * 1024 };
 
 test("HAPPY PATH: the rpc and stream knobs default as their call sites did, and the plausibility gate is on", async () => {
   const c = probe({});

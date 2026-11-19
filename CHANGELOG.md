@@ -1,5 +1,51 @@
 # Changelog
 
+## 0.3.13
+
+- WebSocket `/ws` bounds three things one connection could grow without limit: the subscription keys it holds, the
+  queue of every frame the server sends it, pongs included, and the work done for frames that arrive after it is
+  dropped. A subscription key longer than any an event carries adds nothing, as a field of the wrong type already did:
+  a domain over csd-codec's `MAX_DOMAIN_BYTES` (128 UTF-8 bytes, the node's limit), an address over 42 characters, a
+  proposal id over 66. A key could be as long as the 64 KiB frame, so the 1,000 keys per category a connection may
+  hold could pin about 196 MB of keys, and every subscribe frame, `{}` included, is acked with the whole subscription;
+  a client that stopped reading and kept sending tiny frames made the server queue that ack again for each one. Each
+  hello, ack and event now goes through the rule the SSE streams had (one `boundedSend` in `src/stream.ts`): past
+  `CSD_INDEX_MAX_SSE_BUFFER` (4 MiB) queued, the socket is dropped with `terminate()`. The spec already listed that
+  bound per connection; the code applied it to SSE only. ws's automatic pong is off (`autoPong: false`): it was
+  written outside that rule, so a client that never read and sent only pings queued pongs without limit. A pong now
+  echoes the ping's payload only while nothing is queued for the socket: such a client holds at most one pong and
+  keeps its socket. A ping is answered when nothing is queued for the connection, so a client behind its own queued
+  bytes, typically right after a large ack, can miss a pong. ws still emits the rest of a chunk it has read
+  after `terminate()`; the message handler returns at once for a socket that is no longer open, so those frames build
+  no ack. The ack still echoes the subscription, as README and the front door's API page document it, and is bounded
+  by the key cap and the key bound; `docs/specs/indexer.md` gives the worst case per connection and for the default
+  connection cap. `CFG.maxSseBuffer` is renamed `maxStreamBuffer`; the environment variable keeps its name.
+  `test/ws-bounds.test.ts` (in process, ephemeral port, a client cap of 1): an over-long key adds nothing and a key
+  at each bound is tracked and receives its events; at the caps the ack is queued whole and the reading client stays;
+  the largest ack is measured; a client that stops reading is dropped, on the ack path and on the event path, with at
+  most the bound and one frame queued, and its bus listener and slot are freed while it still holds its socket; a
+  burst received before the drop builds no ack after it; a flood of pings from a client that reads nothing queues at
+  most one pong; a reading client that pings with nothing queued gets each ping's payload back, and one behind
+  its own acks gets a pong only for pings that met no queue. The 60 KiB case of `test/stream.test.ts`, which pins
+  ws's 64 KiB frame limit, now sends 470 domains of 128 bytes in one frame of about 60 KiB instead of one 60 KiB
+  domain, and that file's server listens on an ephemeral port.
+- A path parameter that does not percent-decode (`/block/%E0%A4%A`) answers 400 `{"error":"bad request"}`. Express
+  refused it before any route ran and its default handler sent an HTML page with the stack and the install path,
+  since neither the Dockerfile nor the README sets `NODE_ENV`. The app's final error handler (`finalErrorHandler`)
+  answers such an error in the routes' shape, with `Content-Type: application/json` set explicitly: a 4xx status with
+  its name, anything else as `h()` does (500 `{"error":"internal error"}`, the error logged). It also answers `GET /`
+  with an unsatisfiable `Range` (416) or a failing `If-Match` (412), which sendFile passes on after it has set the
+  page's type. A 4xx that reaches it is not logged, where Express's default handler logged its stack for every such
+  request; the 500 path logs as before. A response already started is passed to Express, which ends it. Every
+  route's own error body is unchanged. `test/error-body.test.ts`.
+- `test/checkpoint-floor.test.ts` pins the forward scan's checkpoint-floor refusal (`syncOnce`): a heavier, taller
+  branch forking below the floor is refused by `reconcileTipWindow` and then by the forward scan, whose check no test
+  turned red without.
+- Corrected statements, no code change: events are emitted once per block when it is written, with the status of its
+  depth then, and are not re-sent as `confirmed` when the block deepens (`src/events.ts`, `docs/specs/indexer.md`
+  section 3); output values are exact from the parsed block on, while the node's JSON is parsed with `res.json()`,
+  which rounds a value above 2^53 before `safeValue` (AGENTS.md, the spec's exact-integer line).
+
 ## 0.3.12
 
 - `GET /proposals` and `GET /attestations` take `format`. `format=2` answers `{ format: 2, at, rows, next }`, each row

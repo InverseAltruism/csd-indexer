@@ -94,11 +94,11 @@ export const CFG = {
   // Chain target block spacing (s) for the wall-clock-aware route delta cap; never used for consensus.
   routeBlockSecs: Math.max(1, num("CSD_RPC_BLOCK_SECS", 120)),
   // Streaming bounds (stream.ts): SSE and WS connection caps, subscription keys per WS client and
-  // category, and the per-SSE-connection outbound buffer in bytes.
+  // category, and the outbound buffer in bytes per SSE or WS connection (the env name predates WS's use of it).
   maxSse: num("CSD_INDEX_MAX_SSE", 500),
   maxWs: num("CSD_INDEX_MAX_WS", 500),
   maxSubKeys: num("CSD_INDEX_MAX_SUB", 1000),
-  maxSseBuffer: num("CSD_INDEX_MAX_SSE_BUFFER", 4 * 1024 * 1024),
+  maxStreamBuffer: num("CSD_INDEX_MAX_SSE_BUFFER", 4 * 1024 * 1024),
 };
 
 export function host(): string { return CFG.listen.split(":")[0] || "127.0.0.1"; }

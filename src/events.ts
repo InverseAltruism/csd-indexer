@@ -1,7 +1,8 @@
 // A tiny in-process event bus for streaming. The indexer publishes block/proposal/
-// attestation/reorg events; the SSE + WS layers subscribe. Reorg-safe by contract:
-// tip events are emitted as `tentative`, deepen to `confirmed` past finalDepth, and a
-// `reorg` event tells subscribers to roll back optimistic state (per the roadmap).
+// attestation/reorg events; the SSE + WS layers subscribe. A block's events are emitted
+// once, when it is written, with the status of its depth then (`confirmed` at finalDepth or
+// deeper, else `tentative`); none is re-sent as its block deepens. A `reorg` event tells
+// subscribers to roll back optimistic state.
 import { EventEmitter } from "node:events";
 
 export type IndexEvent =

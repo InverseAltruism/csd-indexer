@@ -143,8 +143,12 @@ Live updates:
 - WebSocket `/ws`: send `{"track-all": true}`, or `{"track-domain": [...]}`, `{"track-address": [...]}`,
   `{"track-proposal": id}`. Over the WebSocket, block events go only to track-all clients. Each subscribe is
   acknowledged with what the socket now tracks; a frame that is not a JSON object is ignored, a field that is not
-  the documented array adds nothing, and a frame over 64 KiB or one that is not valid WebSocket closes that socket
-  (1009, 1007).
+  the documented array adds nothing, a key longer than any the chain carries (a domain over 128 UTF-8 bytes, an
+  address over 42 characters, a proposal id over 66) adds nothing, and a frame over 64 KiB or one that is not valid
+  WebSocket closes that socket (1009, 1007). A client of the WebSocket or of an SSE stream that stops reading is dropped
+  once more than 4 MiB (the default) is queued for it. A WebSocket ping is answered with a pong carrying its payload
+  when nothing is queued for that socket; a client still receiving a large ack can miss one, so a keepalive should
+  tolerate a missed pong.
 
 ## The explorer
 

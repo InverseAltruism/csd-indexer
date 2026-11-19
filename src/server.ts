@@ -2,8 +2,8 @@
 // against it unchanged) plus the CSD-specific extras the thin node omits; merkle
 // proofs, per-attester data, domain views. Every response is a
 // derived view; trust comes from the light client re-verifying the merkle proofs.
-import express, { type Request, type Response } from "express";
-import { createServer, type Server } from "node:http";
+import express, { type NextFunction, type Request, type Response } from "express";
+import { createServer, STATUS_CODES, type Server } from "node:http";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { readFileSync, realpathSync } from "node:fs";
@@ -45,6 +45,30 @@ export function readCommit(root: string): string {
 // What this process loaded, read once at start: a pull without a restart shows as a mismatch with the tree.
 const BUILD = { commit: readCommit(ROOT), startedAt: Date.now() };
 
+// CAIRN-IDX-ERR-1: never leak the raw error to a public client; a thrown error here can carry a
+// pg connection string, the failing SQL/schema, or a sqlite file path. Log the full error
+// server-side and return a generic, stable body. Status stays 500 (clients branch on status).
+// The type is set because a handler such as sendFile may have set another before it failed.
+const fail = (res: Response, e: unknown) => {
+  console.error("[csd-indexer] handler error:", e);
+  if (!res.headersSent) res.status(500).type("json").json({ error: "internal error" });
+};
+
+/** Mounted last by buildApp: an error raised outside h(), such as a path parameter that does not percent-decode
+ *  (Express sets status 400 on it before any route runs) or sendFile's 412 and 416, is answered in the routes' error
+ *  shape. Express's default handler would send the stack, with the install path, unless NODE_ENV is "production". A
+ *  4xx is the client's and is not logged; anything else goes to fail(). A response already started is left to
+ *  Express, which ends it. Four parameters mark it as an error handler. */
+export function finalErrorHandler(err: unknown, _req: Request, res: Response, next: NextFunction): void {
+  if (res.headersSent) return next(err);
+  const s = (err as { status?: unknown } | null)?.status;
+  if (typeof s === "number" && s >= 400 && s < 500) {
+    res.status(s).type("json").json({ error: (STATUS_CODES[s] ?? "bad request").toLowerCase() });
+    return;
+  }
+  fail(res, err);
+}
+
 export function buildApp() {
   const app = express();
   app.set("etag", false);
@@ -62,13 +86,6 @@ export function buildApp() {
   // async handlers: express 4 doesn't catch a rejected promise, so wrap every handler.
   // Params are typed as plain strings (the routes below only read params they declare).
   type Req = Request<Record<string, string>, unknown, unknown, Record<string, string | undefined>>;
-  // CAIRN-IDX-ERR-1: never leak the raw error to a public client; a thrown error here can carry a
-  // pg connection string, the failing SQL/schema, or a sqlite file path. Log the full error
-  // server-side and return a generic, stable body. Status stays 500 (clients branch on status).
-  const fail = (res: Response, e: unknown) => {
-    console.error("[csd-indexer] handler error:", e);
-    if (!res.headersSent) res.status(500).json({ error: "internal error" });
-  };
   const h = (fn: (req: Req, res: Response) => Promise<unknown>) =>
     (req: Req, res: Response) => { fn(req, res).catch((e) => fail(res, e)); };
 
@@ -336,6 +353,8 @@ export function buildApp() {
   app.get("/analytics/supply/total", supplyText((f) => f.total));
   app.get("/analytics/supply/circulating", supplyText((f) => f.circulating));
   app.get("/analytics/series", h(async (req, res) => res.json(await analytics.series(String(req.query.window ?? "1d"), Number(req.query.points ?? 56)))));
+
+  app.use(finalErrorHandler);
 
   return app;
 }

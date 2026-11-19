@@ -617,7 +617,8 @@ export async function syncOnce(): Promise<IndexResult> {
 }
 
 // Emit streaming events only for blocks near the tip (don't flood the firehose during
-// a from-genesis backfill). status deepens to "confirmed" past finalDepth. A position in `repeats`
+// a from-genesis backfill). status is the block's depth when it is written, "confirmed" at finalDepth or deeper;
+// the events are emitted that once, not again as the block deepens. A position in `repeats`
 // (writeBlock) is a txid whose record event belongs to an earlier place, so it emits none here.
 function emitBlockEvents(blk: rpc.RpcBlock, tip: number, repeats: ReadonlySet<number>): void {
   if (tip - blk.height > CFG.finalDepth + 5) return;
