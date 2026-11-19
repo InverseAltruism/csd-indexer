@@ -5,12 +5,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
+import express, { type NextFunction, type Request, type Response } from "express";
 import { tmpDb } from "./_tmpdb.js";
 
 process.env.CSD_INDEX_DB = tmpDb("error-body");
 process.env.CSD_INDEX_PG_SCHEMA = "t_error_body";
 
-const { buildApp } = await import("../src/server.js");
+const { buildApp, finalErrorHandler } = await import("../src/server.js");
 const { closeDb } = await import("../src/db.js");
 const srv = buildApp().listen(0, "127.0.0.1");
 await new Promise((r) => srv.once("listening", r));
@@ -49,4 +50,72 @@ test("HAPPY PATH: the routes' own error bodies and statuses are unchanged", asyn
   assert.equal((await get("/domain/cairn%3Awall/proposals")).status, 200);
   // a path no route serves keeps Express's 404
   assert.equal((await get("/no/such/route")).status, 404);
+});
+
+// send sets Content-Type for the file before it refuses a range or a precondition; the refusal still answers JSON.
+test("GET / with an unsatisfiable Range (416) or a failing If-Match (412) answers JSON as JSON", async () => {
+  for (const [headers, status, body] of [
+    [{ range: "bytes=999999999-" }, 416, '{"error":"range not satisfiable"}'],
+    [{ "if-match": '"no-such-etag"' }, 412, '{"error":"precondition failed"}'],
+  ] as const) {
+    const r = await fetch(base + "/", { headers });
+    const text = await r.text();
+    assert.deepEqual([r.status, text], [status, body], JSON.stringify(headers));
+    assert.match(r.headers.get("content-type") ?? "", /^application\/json/, JSON.stringify(headers));
+  }
+  // HAPPY PATH: the page itself and a satisfiable range
+  const page = await fetch(base + "/");
+  assert.equal(page.status, 200);
+  assert.match(page.headers.get("content-type") ?? "", /^text\/html/);
+  assert.equal((await fetch(base + "/", { headers: { range: "bytes=0-9" } })).status, 206);
+});
+
+// The handler's other branches, mounted after routes that fail as no route of the app does today.
+test("the final handler answers a 5xx status as fail() does and logs it, and a 4xx without a log", async () => {
+  const app = express();
+  app.get("/unavailable", (_q: Request, _r: Response, next: NextFunction) => next(Object.assign(new Error("db down"), { status: 503 })));
+  app.get("/refused", (_q: Request, _r: Response, next: NextFunction) => next(Object.assign(new Error("no"), { status: 403 })));
+  app.use(finalErrorHandler);
+  const s = app.listen(0, "127.0.0.1");
+  await new Promise((r) => s.once("listening", r));
+  const at = `http://127.0.0.1:${(s.address() as AddressInfo).port}`;
+  const logged: unknown[][] = [];
+  const realError = console.error;
+  console.error = (...a: unknown[]) => { logged.push(a); };
+  try {
+    const r = await fetch(at + "/unavailable");
+    assert.deepEqual([r.status, await r.text()], [500, '{"error":"internal error"}']);
+    assert.match(r.headers.get("content-type") ?? "", /^application\/json/);
+    assert.equal(logged.length, 1, "a 5xx is logged once");
+    assert.equal((logged[0]![1] as Error).message, "db down");
+    const f = await fetch(at + "/refused");
+    assert.deepEqual([f.status, await f.text()], [403, '{"error":"forbidden"}']);
+    assert.equal(logged.length, 1, "a 4xx is not logged");
+  } finally {
+    console.error = realError;
+    s.close();
+  }
+});
+
+test("an error after the head was sent ends that response; no second head is written", async () => {
+  const app = express();
+  app.get("/late", (_q: Request, r: Response, next: NextFunction) => { r.status(200).write("partial"); next(new Error("after the head")); });
+  app.use(finalErrorHandler);
+  const s = app.listen(0, "127.0.0.1");
+  await new Promise((r) => s.once("listening", r));
+  const at = `http://127.0.0.1:${(s.address() as AddressInfo).port}`;
+  try {
+    const r = await fetch(at + "/late");
+    assert.equal(r.status, 200, "the first head stands");
+    let t: ReturnType<typeof setTimeout> | undefined;
+    const settled = await Promise.race([
+      r.text().then(() => "ended", () => "ended"),
+      new Promise<string>((res) => { t = setTimeout(() => res("still open after 3 s"), 3000); }),
+    ]);
+    clearTimeout(t);
+    assert.equal(settled, "ended", "the started response is ended, not left open");
+  } finally {
+    s.closeAllConnections();
+    s.close();
+  }
 });

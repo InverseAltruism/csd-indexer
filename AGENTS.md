@@ -18,8 +18,8 @@ are kept privately by the maintainers.
 - Check: `npm ci && npm run typecheck && npm run lint && npm run check:dashes-paths && npm test` (offline; Node 26,
   as CI runs it; `node:sqlite` needs 22 or later).
 - Red lines: never unwind on absence of evidence or below the checkpoint floor; never reconcile against a node with
-  less chainwork; exact integers end to end; consensus values come from the pinned csd-sdk packages; replay may
-  reject more, never accept different. Each is under Invariants or Working rules.
+  less chainwork; exact integers from the parsed block on; consensus values come from the pinned csd-sdk packages;
+  replay may reject more, never accept different. Each is under Invariants or Working rules.
 - Explorer changes: browser-test them through the front-door proxy as well as on :8793 (Explorer rules).
 - It runs from source with `tsx`: no build step, not published to npm (`private: true`). The version and the
   dependency pins live in `package.json` only; git tags mark releases. It listens on 127.0.0.1:8793 by default
@@ -155,9 +155,11 @@ is a narrative in `docs/incidents/README.md`.
 - The process has no uncaughtException handler, so nothing a client sends may throw out of the WS listeners: the
   message handler closes only its own socket on a throw, and every socket gets an `error` listener first thing.
   `test/stream.test.ts`.
-- What one stream client can make the process hold is bounded: a WS subscription key longer than any an event carries
-  adds nothing, and an SSE or WS connection is dropped once its queued bytes pass `CSD_INDEX_MAX_SSE_BUFFER`.
-  `test/ws-bounds.test.ts`, `test/sse-overflow.test.ts`.
+- One stream connection's subscription keys, outbound queue and work after a drop are bounded: a WS key longer than
+  any an event carries adds nothing; every hello, ack, event and SSE ping goes through `boundedSend`, which drops an
+  SSE or WS connection once its queued bytes pass `CSD_INDEX_MAX_SSE_BUFFER`, and a WS pong is sent only while
+  nothing is queued for its socket; a WS frame that arrives after the drop is not handled. `test/ws-bounds.test.ts`,
+  `test/sse-overflow.test.ts`.
 - There is deliberately no sqlite-to-Postgres copy tool: a fresh replay is the integrity check.
 - Keep `README.md` "The API" in step with `src/server.ts`. Keep binary and screenshot artifacts out of the repo
   (the repo-root `csd-index.db*` files are gitignored dev artifacts).

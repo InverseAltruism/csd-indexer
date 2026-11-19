@@ -94,7 +94,8 @@ function matches(sub: Sub, e: IndexEvent): boolean {
 }
 
 export function attachWs(server: Server): WebSocketServer {
-  const wss = new WebSocketServer({ server, path: "/ws", maxPayload: WS_MAX_FRAME });
+  // autoPong off: ws's automatic pong is written outside boundedSend (see the ping listener below).
+  const wss = new WebSocketServer({ server, path: "/ws", maxPayload: WS_MAX_FRAME, autoPong: false });
   wss.on("connection", (ws: WebSocket) => {
     // First, before the cap's early return: a socket closed with 1013 still has its earlier frames read, and ws emits a
     // protocol error (an oversize or malformed frame) on the socket before closing it with its code.
@@ -110,9 +111,14 @@ export function attachWs(server: Server): WebSocketServer {
       drop: () => ws.terminate(),
     });
     const off = bus.onEvent((e) => { if (matches(sub, e)) send(JSON.stringify(e)); });
+    // A pong echoes the ping's payload and goes out only while nothing is queued for this socket, so a client that
+    // pings and never reads holds at most one pong; a reading client gets one per ping.
+    ws.on("ping", (data) => { if (ws.readyState === ws.OPEN && ws.bufferedAmount === 0) ws.pong(data); });
     // A throw from these listeners, like an `error` emitted with no listener, is uncaught and ends the process, the sync
     // loop with the API (test/stream.test.ts); a frame that still throws past the shape checks closes its own socket only.
     ws.on("message", (raw) => {
+      // ws still emits the rest of a chunk it read before terminate(); a dropped socket's frames are not handled.
+      if (ws.readyState !== ws.OPEN) return;
       try {
         let msg: unknown; try { msg = JSON.parse(String(raw)); } catch { return; }
         if (msg === null || typeof msg !== "object" || Array.isArray(msg)) return;

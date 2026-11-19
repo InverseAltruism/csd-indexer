@@ -146,7 +146,8 @@ Live updates:
   the documented array adds nothing, a key longer than any the chain carries (a domain over 128 UTF-8 bytes, an
   address over 42 characters, a proposal id over 66) adds nothing, and a frame over 64 KiB or one that is not valid
   WebSocket closes that socket (1009, 1007). A client of the WebSocket or of an SSE stream that stops reading is dropped
-  once more than 4 MiB (the default) is queued for it.
+  once more than 4 MiB (the default) is queued for it. A WebSocket ping is answered with a pong carrying its payload
+  while nothing is queued for that socket.
 
 ## The explorer
 
