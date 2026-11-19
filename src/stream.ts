@@ -112,7 +112,7 @@ export function attachWs(server: Server): WebSocketServer {
     });
     const off = bus.onEvent((e) => { if (matches(sub, e)) send(JSON.stringify(e)); });
     // A pong echoes the ping's payload and goes out only while nothing is queued for this socket, so a client that
-    // pings and never reads holds at most one pong; a reading client gets one per ping.
+    // pings and never reads holds at most one pong; a ping that meets queued bytes (a large ack, say) gets none.
     ws.on("ping", (data) => { if (ws.readyState === ws.OPEN && ws.bufferedAmount === 0) ws.pong(data); });
     // A throw from these listeners, like an `error` emitted with no listener, is uncaught and ends the process, the sync
     // loop with the API (test/stream.test.ts); a frame that still throws past the shape checks closes its own socket only.

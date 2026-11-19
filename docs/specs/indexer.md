@@ -89,15 +89,17 @@ or later).
     connection holds, and so the ack, which echoes the whole subscription (`test/ws-bounds.test.ts`).
   - Pongs: ws's automatic pong is off (`autoPong: false`), since it is written outside `boundedSend`. The `ping`
     listener echoes the ping's payload only while nothing is queued for the socket (`bufferedAmount === 0`), so a
-    client that pings and never reads holds at most one pong and keeps its socket; a reading client gets a pong for
-    each ping. A frame ws emits after `terminate()` (the rest of a chunk it had read) returns at the handler's first
+    client that pings and never reads holds at most one pong and keeps its socket. A ping is answered when nothing is
+    queued for the connection; a client behind its own queued bytes, typically right after a large ack, can miss a
+    pong. A frame ws emits after `terminate()` (the rest of a chunk it had read) returns at the handler's first
     line, so a dropped socket costs no further acks (`test/ws-bounds.test.ts`).
   - Worst case, with the defaults: one WS connection queues at most the outbound bound plus the frame that crossed it.
-    The largest frame is the ack at the key caps with every key at its bound and every character one JSON writes in
-    six bytes (`\u0001`): 1,366,727 bytes (`test/ws-bounds.test.ts` prints it), so a connection queues at most
-    5,561,031 bytes. Its keys are at most 472,000 bytes of string data (1,000 keys per category, two bytes per UTF-16
-    code unit). `CSD_INDEX_MAX_WS` caps connections at 500, so the WS side can queue up to 2,780,515,500 bytes
-    (2.59 GiB) and hold up to 236,000,000 bytes of keys, plus the kernel's socket buffers; each SSE connection has the
+    The largest frame is the ack at the key caps with every key at its bound and built only from the 27 control
+    characters JSON writes in six bytes (`\u00XX`), the most it writes for one UTF-16 code unit: 1,425,077 bytes
+    (`test/ws-bounds.test.ts` prints it), so a connection queues at most 4,194,304 + 1,425,077 = 5,619,381 bytes. Its
+    keys are at most 472,000 bytes of string data (1,000 keys per category of at most 128, 42 and 66 UTF-16 code units,
+    two bytes each). `CSD_INDEX_MAX_WS` caps connections at 500, so the WS side can queue up to 2,809,690,500 bytes
+    (2.62 GiB) and hold up to 236,000,000 bytes of keys, plus the kernel's socket buffers; each SSE connection has the
     same outbound bound and `CSD_INDEX_MAX_SSE` caps them at 500 as well. A self-host sizes these for its memory:
     lower `CSD_INDEX_MAX_WS` and `CSD_INDEX_MAX_SSE` first, and keep `CSD_INDEX_MAX_SSE_BUFFER` above the largest ack,
     or a reading client at the key caps can be dropped by its own ack.

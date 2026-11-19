@@ -147,28 +147,43 @@ test("a connection holds at most the key cap of keys at the longest length; its 
   await finish(ws, srv);
 });
 
-// The largest ack: every key at its bound and made of characters JSON writes as six bytes (\u0001), the key cap full in
-// all three categories. The figure is what one honest subscriber at the caps receives per subscribe frame.
-test("the largest ack a connection can be sent fits under the outbound bound and reaches a reading client", async () => {
-  const { ws, srv, first } = await open();
-  assert.equal(await first, '{"hello":true}');
-  const cap = CFG.maxSubKeys, ctl = "\u0001";
-  const key = (i: number, len: number) => `${i}:`.padEnd(len, ctl);
-  // One frame, one ack; the acks are kept as text (only the last is parsed) so the test holds little.
-  let ack = "";
+// The largest ack: the key cap full in all three categories, every key at its bound and built only from the 27 control
+// characters JSON writes as six bytes (\u00XX; U+0008, U+0009, U+000A, U+000C and U+000D have two-byte escapes), the
+// key's index in base 27 first so the keys stay distinct. Six bytes is the most JSON writes for one UTF-16 code unit,
+// and every bound admits at least as many code units as it admits UTF-8 bytes of these characters, so no subscription
+// gets a larger ack. Returns that ack as text; acks are kept as text (only the last is parsed) so the test holds little.
+const SIX_BYTE = Array.from({ length: 32 }, (_, c) => String.fromCharCode(c)).filter((ch) => JSON.stringify(ch).length === 8);
+const sixByteKey = (i: number, len: number) => {
+  let k = "";
+  for (let n = i, d = 0; d < 3; d++, n = Math.floor(n / 27)) k += SIX_BYTE[n % 27];
+  return k.padEnd(len, SIX_BYTE[0]);
+};
+async function fillLargest(ws: WebSocket): Promise<string> {
+  let ack: Buffer = Buffer.alloc(0);
   for (const [field, len, per] of [["track-domain", MAX_DOMAIN_BYTES, 80], ["track-address", 42, 240], ["track-proposal", 66, 150]] as const) {
-    for (let from = 0; from < cap; from += per) {
-      const frame = JSON.stringify({ [field]: Array.from({ length: Math.min(per, cap - from) }, (_, i) => key(from + i, len)) });
+    for (let from = 0; from < CFG.maxSubKeys; from += per) {
+      const frame = JSON.stringify({ [field]: Array.from({ length: Math.min(per, CFG.maxSubKeys - from) }, (_, i) => sixByteKey(from + i, len)) });
       assert.ok(frame.length < 64 * 1024, `frame of ${frame.length} bytes`);
-      const got = new Promise<string>((r) => ws.once("message", (m) => r(String(m))));
+      const got = new Promise<Buffer>((r) => ws.once("message", (m) => r(m as Buffer)));
       ws.send(frame);
       ack = await got;
     }
   }
+  return ack.toString();
+}
+
+test("the largest ack a connection can be sent fits under the outbound bound and reaches a reading client", async () => {
+  const { ws, srv, first } = await open();
+  assert.equal(await first, '{"hello":true}');
+  const cap = CFG.maxSubKeys;
+  assert.equal(SIX_BYTE.length, 27);
+  assert.equal(JSON.stringify(sixByteKey(cap - 1, MAX_DOMAIN_BYTES)).length, 2 + 6 * MAX_DOMAIN_BYTES);
+  assert.equal(utf8(sixByteKey(cap - 1, MAX_DOMAIN_BYTES)), MAX_DOMAIN_BYTES);
+  const ack = await fillLargest(ws);
   const t = JSON.parse(ack).tracking;
-  assert.deepEqual([t.domains.length, t.addresses.length, t.proposals.length], [cap, cap, cap]);
+  assert.deepEqual([t.domains.length, t.addresses.length, t.proposals.length, t.all], [cap, cap, cap, false]);
   const bytes = utf8(ack);
-  console.log(`ws bounds: largest ack ${bytes} bytes (${cap} keys per category at the bounds, each character written as 6 bytes); ` +
+  console.log(`ws bounds: largest ack ${bytes} bytes (${cap} distinct keys per category at the bounds, each character written as 6 bytes); ` +
     `outbound bound ${CFG.maxStreamBuffer}`);
   assert.ok(bytes < CFG.maxStreamBuffer, `the largest ack (${bytes} bytes) is under the bound`);
   assert.equal(srv.sock.readyState, WebSocket.OPEN);
@@ -282,7 +297,7 @@ for (const [payloadLen, budget] of [[125, 24 * 1024 * 1024], [0, 1024 * 1024]] a
   });
 }
 
-test("HAPPY PATH: a reading client gets a pong for each ping, with the ping's payload", async () => {
+test("HAPPY PATH: a reading client that pings while nothing is queued for it gets a pong for each ping, with the ping's payload", async () => {
   const { ws, srv } = await open();
   const pongs: string[] = [];
   ws.on("pong", (d) => { pongs.push(String(d)); });
@@ -290,5 +305,44 @@ test("HAPPY PATH: a reading client gets a pong for each ping, with the ping's pa
   for (const p of sent) { ws.ping(Buffer.from(p)); await sleep(20); }
   for (let i = 0; i < 50 && pongs.length < sent.length; i++) await sleep(10);
   assert.deepEqual(pongs, sent);
+  await finish(ws, srv);
+});
+
+// The stated limit: a ping that arrives while the connection has bytes queued (here right behind two acks of the largest
+// size, under the bound together) gets no pong. Whether a given ping meets a queue depends on timing, so the test asserts
+// the rule, not a count: every pong was sent with nothing queued, the pongs are the pings' payloads in order, and a ping
+// with nothing queued after the rounds is answered.
+test("a reading client behind its own queued bytes can miss a pong; no pong is ever queued behind other bytes", async () => {
+  const { ws, srv } = await open();
+  await fillLargest(ws);
+  const queuedAtPong: number[] = [];
+  let queuedAtPing = 0;
+  srv.sock.on("ping", () => { if (srv.sock.bufferedAmount > 0) queuedAtPing++; });
+  const realPong = srv.sock.pong.bind(srv.sock);
+  srv.sock.pong = ((...a: Parameters<WebSocket["pong"]>) => { queuedAtPong.push(srv.sock.bufferedAmount); realPong(...a); }) as WebSocket["pong"];
+  const pongs: string[] = [];
+  ws.on("pong", (d) => { pongs.push(String(d)); });
+  const sent: string[] = [];
+  for (let i = 0; i < 10; i++) {
+    let acks = 0;
+    const both = new Promise<void>((r) => {
+      const on = (m: Buffer) => { if (m.subarray(0, 6).toString() === '{"ack"' && ++acks === 2) { ws.off("message", on); r(); } };
+      ws.on("message", on);
+    });
+    ws.send("{}"); ws.send("{}");
+    sent.push(`p${i}`); ws.ping(Buffer.from(`p${i}`));
+    await both;
+    await sleep(20);
+  }
+  ws.ping(Buffer.from("last"));
+  for (let i = 0; i < 100 && pongs.at(-1) !== "last"; i++) await sleep(10);
+  console.log(`ws bounds: ${sent.length} pings behind two largest acks each: ${queuedAtPing} met a queue, ${pongs.length - 1} answered; ` +
+    `queued bytes at each pong sent: ${[...new Set(queuedAtPong)].join(",")}`);
+  assert.ok(queuedAtPong.every((q) => q === 0), `every pong was sent with nothing queued (${queuedAtPong.join(",")})`);
+  assert.equal(pongs.at(-1), "last", "a ping with nothing queued is answered");
+  const answered = pongs.slice(0, -1);
+  assert.ok(answered.length <= sent.length);
+  let j = 0;
+  for (const p of answered) { while (j < sent.length && sent[j] !== p) j++; assert.ok(j++ < sent.length, `pong ${p} echoes a ping, in order`); }
   await finish(ws, srv);
 });

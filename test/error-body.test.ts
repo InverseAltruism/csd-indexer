@@ -71,10 +71,12 @@ test("GET / with an unsatisfiable Range (416) or a failing If-Match (412) answer
 });
 
 // The handler's other branches, mounted after routes that fail as no route of the app does today.
-test("the final handler answers a 5xx status as fail() does and logs it, and a 4xx without a log", async () => {
+test("the final handler answers a 5xx status as fail() does and logs it, a 4xx without a log, and JSON over a type already set", async () => {
   const app = express();
   app.get("/unavailable", (_q: Request, _r: Response, next: NextFunction) => next(Object.assign(new Error("db down"), { status: 503 })));
   app.get("/refused", (_q: Request, _r: Response, next: NextFunction) => next(Object.assign(new Error("no"), { status: 403 })));
+  // as the supply routes do: a type is set, then the handler fails
+  app.get("/typed", (_q: Request, r: Response, next: NextFunction) => { r.type("text/plain"); next(new Error("after the type")); });
   app.use(finalErrorHandler);
   const s = app.listen(0, "127.0.0.1");
   await new Promise((r) => s.once("listening", r));
@@ -91,6 +93,10 @@ test("the final handler answers a 5xx status as fail() does and logs it, and a 4
     const f = await fetch(at + "/refused");
     assert.deepEqual([f.status, await f.text()], [403, '{"error":"forbidden"}']);
     assert.equal(logged.length, 1, "a 4xx is not logged");
+    const t = await fetch(at + "/typed");
+    assert.deepEqual([t.status, await t.text()], [500, '{"error":"internal error"}']);
+    assert.match(t.headers.get("content-type") ?? "", /^application\/json/, "fail() answers JSON as JSON over a type already set");
+    assert.equal(logged.length, 2);
   } finally {
     console.error = realError;
     s.close();

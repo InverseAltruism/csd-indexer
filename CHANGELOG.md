@@ -14,7 +14,8 @@
   bound per connection; the code applied it to SSE only. ws's automatic pong is off (`autoPong: false`): it was
   written outside that rule, so a client that never read and sent only pings queued pongs without limit. A pong now
   echoes the ping's payload only while nothing is queued for the socket: such a client holds at most one pong and
-  keeps its socket, and a reading client gets a pong for each ping. ws still emits the rest of a chunk it has read
+  keeps its socket. A ping is answered when nothing is queued for the connection, so a client behind its own queued
+  bytes, typically right after a large ack, can miss a pong. ws still emits the rest of a chunk it has read
   after `terminate()`; the message handler returns at once for a socket that is no longer open, so those frames build
   no ack. The ack still echoes the subscription, as README and the front door's API page document it, and is bounded
   by the key cap and the key bound; `docs/specs/indexer.md` gives the worst case per connection and for the default
@@ -24,7 +25,8 @@
   the largest ack is measured; a client that stops reading is dropped, on the ack path and on the event path, with at
   most the bound and one frame queued, and its bus listener and slot are freed while it still holds its socket; a
   burst received before the drop builds no ack after it; a flood of pings from a client that reads nothing queues at
-  most one pong; a reading client gets each ping's payload back. The 60 KiB case of `test/stream.test.ts`, which pins
+  most one pong; a reading client that pings with nothing queued gets each ping's payload back, and one behind
+  its own acks gets a pong only for pings that met no queue. The 60 KiB case of `test/stream.test.ts`, which pins
   ws's 64 KiB frame limit, now sends 470 domains of 128 bytes in one frame of about 60 KiB instead of one 60 KiB
   domain, and that file's server listens on an ephemeral port.
 - A path parameter that does not percent-decode (`/block/%E0%A4%A`) answers 400 `{"error":"bad request"}`. Express
