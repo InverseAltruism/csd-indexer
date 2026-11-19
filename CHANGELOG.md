@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.3.13
+
+- WebSocket `/ws` bounds what one connection can make the process hold. A subscription key longer than any an event
+  carries adds nothing, as a field of the wrong type already did: a domain over csd-codec's `MAX_DOMAIN_BYTES` (128
+  UTF-8 bytes, the node's limit), an address over 42 characters, a proposal id over 66. A key could be as long as the
+  64 KiB frame, so the 1,000 keys per category a connection may hold could pin about 196 MB of keys, and every
+  subscribe frame, `{}` included, is acked with the whole subscription; a client that stopped reading and kept sending
+  tiny frames made the server queue that ack again for each one. Each WS send now goes through the rule the SSE
+  streams had (one `boundedSend` in `src/stream.ts`): past `CSD_INDEX_MAX_SSE_BUFFER` (4 MiB) queued, the socket is
+  dropped with `terminate()`. The spec already listed that bound per connection; the code applied it to SSE only.
+  The ack still echoes the subscription, as README and the front door's API page document it, and is now bounded by
+  the key cap and the key bound. `CFG.maxSseBuffer` is renamed `maxStreamBuffer`; the environment variable keeps its
+  name. `test/ws-bounds.test.ts` (in process, ephemeral port): an over-long key adds nothing and a key at each bound
+  is tracked and receives its events; at the caps the ack is queued whole and the reading client stays; a client that
+  stops reading is dropped, on the ack path and on the event path, with at most the bound and one frame queued. The
+  60 KiB case of `test/stream.test.ts`, which pins ws's 64 KiB frame limit, now sends 470 domains of 128 bytes in one
+  frame of about 60 KiB instead of one 60 KiB domain, and that file's server listens on an ephemeral port.
+
 ## 0.3.12
 
 - `GET /proposals` and `GET /attestations` take `format`. `format=2` answers `{ format: 2, at, rows, next }`, each row

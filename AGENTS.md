@@ -151,6 +151,9 @@ is a narrative in `docs/incidents/README.md`.
 - The process has no uncaughtException handler, so nothing a client sends may throw out of the WS listeners: the
   message handler closes only its own socket on a throw, and every socket gets an `error` listener first thing.
   `test/stream.test.ts`.
+- What one stream client can make the process hold is bounded: a WS subscription key longer than any an event carries
+  adds nothing, and an SSE or WS connection is dropped once its queued bytes pass `CSD_INDEX_MAX_SSE_BUFFER`.
+  `test/ws-bounds.test.ts`, `test/sse-overflow.test.ts`.
 - There is deliberately no sqlite-to-Postgres copy tool: a fresh replay is the integrity check.
 - Keep `README.md` "The API" in step with `src/server.ts`. Keep binary and screenshot artifacts out of the repo
   (the repo-root `csd-index.db*` files are gitignored dev artifacts).

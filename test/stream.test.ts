@@ -4,6 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import type { AddressInfo } from "node:net";
 import { WebSocket } from "ws";
 import { tmpDb } from "./_tmpdb.js";
 
@@ -14,9 +15,9 @@ process.env.CSD_INDEX_PG_SCHEMA = "t_stream";
 const { serve } = await import("../src/server.js");
 const { bus } = await import("../src/events.js");
 
-const PORT = 18799;
-const server = serve(PORT, "127.0.0.1");
-await new Promise((r) => setTimeout(r, 250));
+const server = serve(0, "127.0.0.1");
+await new Promise((r) => server.once("listening", r));
+const PORT = (server.address() as AddressInfo).port;
 
 const next = (ws: WebSocket, pred: (m: any) => boolean, ms = 2000) =>
   new Promise<any>((resolve, reject) => {
@@ -155,6 +156,8 @@ test("WS: a frame whose handling throws closes only that socket (1011); another 
   ws.close();
 });
 
+// The frame under the limit is about 60 KiB of domains no longer than a chain domain (a longer key adds nothing,
+// test/ws-bounds.test.ts), so the frame size is what this case checks.
 test("WS: a frame over 64 KiB is refused before it is buffered (1009); a subscribe under it is acked", async () => {
   const big = await openWs(CHILD);
   const code = Promise.race([closed(big), exited]);
@@ -162,8 +165,11 @@ test("WS: a frame over 64 KiB is refused before it is buffered (1009); a subscri
   assert.equal(await code, 1009);
   await alive();
   const ws = await openWs(CHILD);
-  ws.send(JSON.stringify({ "track-domain": ["d".repeat(60 * 1024)] }));
-  assert.equal((await acked(ws, () => true, "60 KiB")).tracking.domains[0].length, 60 * 1024);
+  const domains = Array.from({ length: 470 }, (_, i) => `d${i}:`.padEnd(128, "d"));
+  const frame = JSON.stringify({ "track-domain": domains });
+  assert.ok(frame.length > 60 * 1024 && frame.length < 64 * 1024, `frame of ${frame.length} bytes`);
+  ws.send(frame);
+  assert.deepEqual((await acked(ws, () => true, "60 KiB")).tracking.domains, domains);
   ws.close();
 });
 

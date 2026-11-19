@@ -5,6 +5,7 @@
 import type { Request, Response } from "express";
 import type { Server } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
+import { MAX_DOMAIN_BYTES } from "@inversealtruism/csd-codec";
 import { bus, type IndexEvent } from "./events.js";
 import { CFG } from "./config.js";
 
@@ -13,11 +14,20 @@ import { CFG } from "./config.js";
 const MAX_SSE = CFG.maxSse;
 const MAX_WS = CFG.maxWs;
 const MAX_SUB_KEYS = CFG.maxSubKeys;
-// CAIRN-IDX-SSE-1: per-connection outbound buffer cap. A slow-loris client that stops reading lets
-// res.write() queue frames in the kernel/Node socket buffer unbounded; once the in-flight estimate
-// crosses this bound we drop the connection rather than grow memory.
-const MAX_SSE_BUFFER = CFG.maxSseBuffer;
+// Per-connection outbound bound, SSE and WS alike. A client that stops reading lets every write queue in the process
+// without limit; once a connection's queued bytes pass this bound it is dropped instead.
+const MAX_OUT_BUFFER = CFG.maxStreamBuffer;
 let sseOpen = 0, wsOpen = 0;
+
+/** The one send rule for both transports: write the frame while the connection is open, then drop the connection if
+ *  its queued bytes are past MAX_OUT_BUFFER. A connection holds at most the bound plus the frame that crossed it. */
+function boundedSend(c: { open(): boolean; write(s: string): void; queued(): number; drop(): void }): (s: string) => void {
+  return (s) => {
+    if (!c.open()) return;
+    c.write(s);
+    if (c.queued() > MAX_OUT_BUFFER) c.drop();
+  };
+}
 
 // ── SSE: GET /stream/all and /stream/domain/:d ──
 export function sseHandler(filter?: (e: IndexEvent) => boolean) {
@@ -31,18 +41,16 @@ export function sseHandler(filter?: (e: IndexEvent) => boolean) {
     res.flushHeaders?.();
     let closed = false;
     const cleanup = () => { if (closed) return; closed = true; clearInterval(ping); off(); sseOpen--; };
-    // CAIRN-IDX-SSE-1: write a frame only while the socket is draining. res.write() returns false
-    // once the outbound buffer fills; res.writableLength is Node's in-flight byte estimate. If the
-    // client isn't reading and the buffer crosses MAX_SSE_BUFFER, TEAR DOWN here instead of buffering
-    // without bound. Call cleanup() (not a bare closed=true): cleanup is the idempotent teardown
-    // (closed=true + clearInterval(ping) + off() + sseOpen--), so it both stops further sends AND frees
-    // the timer/listener/slot; the 'close' handler then no-ops. A bare closed=true would poison cleanup's
-    // own `if (closed) return` sentinel and permanently leak the ping timer, bus listener, and SSE slot.
-    const send = (s: string) => {
-      if (closed) return;
-      res.write(s);
-      if (res.writableLength > MAX_SSE_BUFFER) { cleanup(); try { res.end(); } catch { /* already closing */ } }
-    };
+    // res.writableLength is Node's in-flight byte estimate. The drop must call cleanup() (not a bare closed=true):
+    // cleanup is the idempotent teardown (closed=true + clearInterval(ping) + off() + sseOpen--), so it both stops
+    // further sends AND frees the timer/listener/slot; the 'close' handler then no-ops. A bare closed=true would poison
+    // cleanup's own `if (closed) return` sentinel and permanently leak the ping timer, bus listener, and SSE slot.
+    const send = boundedSend({
+      open: () => !closed,
+      write: (s) => res.write(s),
+      queued: () => res.writableLength,
+      drop: () => { cleanup(); try { res.end(); } catch { /* already closing */ } },
+    });
     send(`event: hello\ndata: {"ok":true}\n\n`);
     const ping = setInterval(() => send(`: ping\n\n`), 25000);
     const off = bus.onEvent((e) => {
@@ -54,7 +62,15 @@ export function sseHandler(filter?: (e: IndexEvent) => boolean) {
   };
 }
 
-const capAdd = (set: Set<string>, items: Iterable<string>) => { for (const x of items) { if (set.size >= MAX_SUB_KEYS) break; set.add(x); } };
+// A key longer than any an event can carry adds nothing, so a connection holds at most MAX_SUB_KEYS keys of the longest
+// length per category. The longest: a domain is at most MAX_DOMAIN_BYTES UTF-8 bytes (the node refuses a longer one),
+// an attester address is 0x and 40 hex characters, a proposal id is 0x and 64.
+const fitsDomain = (k: string) => Buffer.byteLength(k, "utf8") <= MAX_DOMAIN_BYTES;
+const fitsAddress = (k: string) => k.length <= 2 + 40;
+const fitsProposal = (k: string) => k.length <= 2 + 64;
+const capAdd = (set: Set<string>, items: string[], fits: (k: string) => boolean) => {
+  for (const x of items) { if (set.size >= MAX_SUB_KEYS) break; if (fits(x)) set.add(x); }
+};
 // A subscribe field of another type than its documented one adds nothing.
 const list = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
 // Largest subscribe frame; ws refuses a longer one with 1009 before buffering it.
@@ -86,7 +102,14 @@ export function attachWs(server: Server): WebSocketServer {
     if (wsOpen >= MAX_WS) { ws.close(1013, "too many clients"); return; }
     wsOpen++;
     const sub: Sub = { domains: new Set(), addresses: new Set(), proposals: new Set(), all: false };
-    const off = bus.onEvent((e) => { if (ws.readyState === ws.OPEN && matches(sub, e)) ws.send(JSON.stringify(e)); });
+    // terminate(), not close(): a close frame would queue behind the bytes the client is not reading.
+    const send = boundedSend({
+      open: () => ws.readyState === ws.OPEN,
+      write: (s) => ws.send(s),
+      queued: () => ws.bufferedAmount,
+      drop: () => ws.terminate(),
+    });
+    const off = bus.onEvent((e) => { if (matches(sub, e)) send(JSON.stringify(e)); });
     // A throw from these listeners, like an `error` emitted with no listener, is uncaught and ends the process, the sync
     // loop with the API (test/stream.test.ts); a frame that still throws past the shape checks closes its own socket only.
     ws.on("message", (raw) => {
@@ -95,17 +118,17 @@ export function attachWs(server: Server): WebSocketServer {
         if (msg === null || typeof msg !== "object" || Array.isArray(msg)) return;
         const m = msg as Record<string, unknown>;
         if (m["track-all"]) sub.all = true;
-        capAdd(sub.domains, list(m["track-domain"]).map(String));
-        capAdd(sub.addresses, list(m["track-address"]).map((a) => String(a).toLowerCase()));
+        capAdd(sub.domains, list(m["track-domain"]).map(String), fitsDomain);
+        capAdd(sub.addresses, list(m["track-address"]).map((a) => String(a).toLowerCase()), fitsAddress);
         const p = m["track-proposal"];
-        capAdd(sub.proposals, (Array.isArray(p) ? p : p ? [p] : []).map(String));
-        ws.send(JSON.stringify({ ack: true, tracking: { domains: [...sub.domains], addresses: [...sub.addresses], proposals: [...sub.proposals], all: sub.all } }));
+        capAdd(sub.proposals, (Array.isArray(p) ? p : p ? [p] : []).map(String), fitsProposal);
+        send(JSON.stringify({ ack: true, tracking: { domains: [...sub.domains], addresses: [...sub.addresses], proposals: [...sub.proposals], all: sub.all } }));
       } catch {
         ws.close(1011, "subscribe frame not handled");
       }
     });
     ws.on("close", () => { off(); wsOpen--; });
-    ws.send(JSON.stringify({ hello: true }));
+    send(JSON.stringify({ hello: true }));
   });
   return wss;
 }

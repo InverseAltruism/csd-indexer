@@ -80,8 +80,12 @@ or later).
   connection (`test/address-fanout.test.ts`; `docs/incidents/README.md` 10).
 - `src/stream.ts` and `src/events.ts`: the event bus, the SSE firehoses and WS `/ws`.
   - Caps: 500 SSE connections (`CSD_INDEX_MAX_SSE`), 500 WS clients (`CSD_INDEX_MAX_WS`), 1000 subscription keys
-    (`CSD_INDEX_MAX_SUB`), a 4 MiB outbound buffer per connection (`CSD_INDEX_MAX_SSE_BUFFER`;
-    `test/sse-overflow.test.ts`), 64 KiB per WS frame (ws's `maxPayload`, refused with 1009 before it is buffered).
+    (`CSD_INDEX_MAX_SUB`), a 4 MiB outbound buffer per SSE or WS connection (`CSD_INDEX_MAX_SSE_BUFFER`; past it the
+    connection is dropped, a WS socket with `terminate()`; `test/sse-overflow.test.ts`, `test/ws-bounds.test.ts`),
+    64 KiB per WS frame (ws's `maxPayload`, refused with 1009 before it is buffered).
+  - A WS subscription key longer than any an event carries adds nothing: a domain over csd-codec's `MAX_DOMAIN_BYTES`
+    (128) UTF-8 bytes, an address over 42 characters, a proposal id over 66. With the key cap this bounds what one
+    connection holds, and so the ack, which echoes the whole subscription (`test/ws-bounds.test.ts`).
   - The process has no uncaughtException handler, so nothing a client sends may throw out of the WS listeners. The
     message handler checks the frame's shape and closes only its own socket (1011) on a throw. Every socket, one
     refused over the client cap (1013) included, gets an `error` listener first thing, since ws emits a protocol error
@@ -116,7 +120,7 @@ reads:
 | `CSD_INDEX_MAX_SSE` | 500 | SSE connection cap |
 | `CSD_INDEX_MAX_WS` | 500 | WS client cap |
 | `CSD_INDEX_MAX_SUB` | 1000 | subscription keys per WS client and category |
-| `CSD_INDEX_MAX_SSE_BUFFER` | 4194304 | bytes of outbound buffer per SSE connection |
+| `CSD_INDEX_MAX_SSE_BUFFER` | 4194304 | bytes of outbound buffer per SSE or WS connection |
 | `CSD_CONFIRMATIONS_DISPLAY` | 3 | read, consulted by nothing |
 | `CSD_INDEX_BATCH` | 200 | read, consulted by nothing |
 

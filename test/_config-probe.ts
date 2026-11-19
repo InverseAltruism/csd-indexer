@@ -16,5 +16,5 @@ process.stdout.write(JSON.stringify({
   maxSse: CFG.maxSse,
   maxWs: CFG.maxWs,
   maxSubKeys: CFG.maxSubKeys,
-  maxSseBuffer: CFG.maxSseBuffer,
+  maxStreamBuffer: CFG.maxStreamBuffer,
 }));
