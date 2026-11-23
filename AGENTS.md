@@ -151,6 +151,10 @@ is a narrative in `docs/incidents/README.md`.
   percent-decode: 400) in the same shape. `test/error-body.test.ts`.
 - A list read never holds one pool connection per row (incident 10): the list endpoints read a page in a constant
   number of queries, one at a time, so a request holds at most one connection. `test/address-fanout.test.ts`.
+- One answer, one view: a route reads its rows in one statement or inside `snapshot()` (`src/db.ts`: REPEATABLE READ
+  on Postgres, a deferred transaction on SQLite), so a reorg's commit cannot land between two of its reads; a
+  snapshot callback awaits only store reads, as a dbTx callback does. The hot routes (`/tx/:id`, the address and
+  block lists) are single statements. `test/snapshot-reads.test.ts`, `test/pg-reorg-read-race.test.ts`.
 - Address txs page on the full (height, txid) keyset; a height-only cursor drops same-height txids (incident 4).
   `test/pagination.test.ts`.
 - A chain-order feed page reads its own rows: the cursor, the snapshot bound and the limit apply inside the row

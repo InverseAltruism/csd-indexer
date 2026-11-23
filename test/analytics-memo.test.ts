@@ -5,6 +5,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { tmpDb } from "./_tmpdb.js";
+import { spyStore } from "./_store-spy.js";
 
 const DB = tmpDb("memo");
 process.env.CSD_INDEX_DB = DB;
@@ -38,9 +39,8 @@ for (const [i, value] of [700, 500, 500, 300, 100].entries()) {
 
 // GROUP BY addr scans of the unspent outputs (the rich list's query), counted at the store
 let scans = 0;
-const st = store() as unknown as { all: (...a: unknown[]) => Promise<unknown> };
-const all = st.all.bind(store());
-st.all = (...a: unknown[]) => { if (/GROUP BY addr/.test(String(a[0]))) scans++; return all(...a); };
+const all = store().all.bind(store());
+spyStore(store(), (m, a, real) => { if (m === "all" && /GROUP BY addr/.test(String(a[0]))) scans++; return real(...a); });
 
 test("same tip → cached object (hit); new block → recompute (bust)", async () => {
   const r1 = await supply();

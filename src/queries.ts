@@ -54,39 +54,64 @@ export async function recentBlocks(limit = 25): Promise<BlockRow[]> {
   return jsonSafeAll(await store().all<BlockRow>("SELECT * FROM blocks ORDER BY height DESC LIMIT ?", limit));
 }
 // A block's (txid, pos) list: its txs rows plus its tx_repeats rows, the positions whose txid has its row at an
-// earlier place (indexer.ts writeBlock). Binds the height twice.
-const BLOCK_TX_LIST = "(SELECT txid, pos FROM txs WHERE height=? UNION ALL SELECT txid, pos FROM tx_repeats WHERE height=?)";
+// earlier place (indexer.ts writeBlock). `h` is the height expression, used twice: "?" binds the height twice.
+export const BLOCK_TX_LIST = (h: string) => `(SELECT txid, pos FROM txs WHERE height=${h} UNION ALL SELECT txid, pos FROM tx_repeats WHERE height=${h})`;
 export async function blockTxids(height: number): Promise<string[]> {
-  return (await store().all<{ txid: string }>(`SELECT txid FROM ${BLOCK_TX_LIST} b ORDER BY pos`, height, height)).map(r => r.txid);
+  return (await store().all<{ txid: string }>(`SELECT txid FROM ${BLOCK_TX_LIST("?")} b ORDER BY pos`, height, height)).map(r => r.txid);
 }
 export async function tx(txid: string): Promise<TxRow | null> {
   return jsonSafe(((await store().get<TxRow>("SELECT * FROM txs WHERE txid=?", txid)) as TxRow) ?? null);
+}
+/** A tx's height and the indexed tip, in one statement; null for an unknown txid. */
+export async function txStatus(txid: string): Promise<{ height: number; tip_height: number } | null> {
+  const r = await store().get<{ height: number; tip_height: number }>(
+    "SELECT t.height, (SELECT MAX(height) FROM blocks) AS tip_height FROM txs t WHERE t.txid=?", txid);
+  return r ? { height: Number(r.height), tip_height: Number(r.tip_height ?? -1) } : null;
 }
 // The tx rows of one block in block order: one query, where a per-txid lookup would hold one pool
 // connection per tx of the block. Each row is the txid's one row (`tx`), so a position listed in tx_repeats
 // carries the height and pos of the txid's first occurrence.
 export async function blockTxs(height: number): Promise<TxRow[]> {
-  return jsonSafeAll(await store().all<TxRow>(`SELECT t.* FROM ${BLOCK_TX_LIST} b JOIN txs t ON t.txid = b.txid ORDER BY b.pos`, height, height));
+  return jsonSafeAll(await store().all<TxRow>(`SELECT t.* FROM ${BLOCK_TX_LIST("?")} b JOIN txs t ON t.txid = b.txid ORDER BY b.pos`, height, height));
 }
-// Tx rows with their outputs for a list of txids, in the list's order (an unknown txid is left out),
-// in two queries whatever the list length. Callers pass a page (at most addressTxids' limit), so the
-// IN list stays far below both engines' bind-parameter limits.
+// The routes' reads of a block's list by its hash, each one statement (one view on both backends): a block a reorg
+// removes answers null, never an empty list or another block's list under its hash. A block holding no
+// transaction is one row with a null txid.
+const BY_HASH = "(SELECT height FROM blocks WHERE hash = ?)";
+const blockListByHash = (cols: string, join: string) =>
+  `SELECT b.height AS block_height, ${cols} FROM blocks b LEFT JOIN ${BLOCK_TX_LIST(BY_HASH)} l ON 1 = 1 ${join} WHERE b.hash = ? ORDER BY l.pos`;
+export async function blockTxidsByHash(hash: string): Promise<string[] | null> {
+  const h = hash.toLowerCase();
+  const rows = await store().all<{ txid: string | null }>(blockListByHash("l.txid", ""), h, h, h);
+  return rows.length ? rows.flatMap((r) => (r.txid == null ? [] : [r.txid])) : null;
+}
+export async function blockTxsByHash(hash: string): Promise<TxRow[] | null> {
+  const h = hash.toLowerCase();
+  const rows = await store().all<Record<string, unknown>>(blockListByHash("t.*", "LEFT JOIN txs t ON t.txid = l.txid"), h, h, h);
+  return rows.length ? rows.flatMap(({ block_height: _b, ...t }) => (t.txid == null ? [] : [jsonSafe(t as unknown as TxRow)])) : null;
+}
+
+// Tx rows with their outputs, in one statement: `page` is a statement whose rows are (txid, ord), the txids in the
+// answer's order (an unknown txid is left out). One statement is one view on both backends, so a reorg's commit
+// cannot land between a tx row and its outputs (an `outputs: []` for a tx that has outputs). Callers pass a page (at
+// most addressTxids' limit), so an IN list stays far below both engines' bind-parameter limits.
+const OUT_COLS = ["vout", "addr", "value", "height", "spent_txid", "spent_height"] as const;
+async function txsWithOutputsOf(page: string, params: unknown[]): Promise<(TxRow & { outputs: OutRow[] })[]> {
+  const raw = await store().all<Record<string, unknown>>(
+    `SELECT t.*, ${OUT_COLS.map((c) => `o.${c} AS out_${c}`).join(", ")} FROM (${page}) p JOIN txs t ON t.txid = p.txid ` +
+    "LEFT JOIN outputs o ON o.txid = t.txid ORDER BY p.ord, o.vout", ...params);
+  const out: (TxRow & { outputs: OutRow[] })[] = [];
+  for (const r of raw) {
+    const row: Record<string, unknown> = {}, o: Record<string, unknown> = { txid: r.txid };
+    for (const [k, v] of Object.entries(r)) if (k.startsWith("out_")) o[k.slice(4)] = v; else row[k] = v;
+    if (out[out.length - 1]?.txid !== row.txid) out.push({ ...jsonSafe(row as unknown as TxRow), outputs: [] });
+    if (o.vout != null) out[out.length - 1]!.outputs.push({ ...(o as unknown as OutRow), value: amt(o.value as never) });
+  }
+  return out;
+}
 export async function txsWithOutputs(txids: string[]): Promise<(TxRow & { outputs: OutRow[] })[]> {
   if (txids.length === 0) return [];
-  const marks = txids.map(() => "?").join(",");
-  const rows = jsonSafeAll(await store().all<TxRow>(`SELECT * FROM txs WHERE txid IN (${marks})`, ...txids));
-  const outs = await store().all<OutRow>(`SELECT * FROM outputs WHERE txid IN (${marks}) ORDER BY txid, vout`, ...txids);
-  const byTx = new Map<string, OutRow[]>();
-  for (const o of outs) {
-    const list = byTx.get(o.txid) ?? [];
-    list.push({ ...o, value: amt(o.value as never) });
-    byTx.set(o.txid, list);
-  }
-  const byId = new Map(rows.map((r) => [r.txid, r]));
-  return txids.flatMap((id) => {
-    const t = byId.get(id);
-    return t ? [{ ...t, outputs: byTx.get(id) ?? [] }] : [];
-  });
+  return txsWithOutputsOf(txids.map((_, i) => `SELECT CAST(? AS TEXT) AS txid, ${i} AS ord`).join(" UNION ALL "), txids);
 }
 
 // Esplora-style address tx list: distinct txids touching addr, newest-first.
@@ -94,19 +119,29 @@ export async function txsWithOutputs(txids: string[]): Promise<(TxRow & { output
 // `height DESC, txid ASC` order; a height-only cursor silently DROPS the remaining same-height txids when
 // one block has more than `limit` txids touching the address (a busy treasury/faucet/exchange address):
 // page 1 fills with `limit` rows all at height H, the next page `height < H` skips the rest of H forever.
-// Mirrors the (height, txid) keyset attestationsFor already uses.
+// Mirrors the (height, txid) keyset attestationsFor already uses. `cursorHeight` is the cursor's height expression.
+const addressPageSql = (cursorHeight: string | null) =>
+  "SELECT DISTINCT txid, height FROM address_history WHERE addr=?" +
+  (cursorHeight == null ? "" : ` AND (height < ${cursorHeight} OR (height = ${cursorHeight} AND txid > ?))`) +
+  " ORDER BY height DESC, txid LIMIT ?";
 export async function addressTxids(
   addr: string,
   cursor: { height: number; txid: string } | null,
   limit = 25,
 ): Promise<{ txid: string; height: number }[]> {
   const a = addr.toLowerCase();
-  if (cursor == null) {
-    return await store().all("SELECT DISTINCT txid, height FROM address_history WHERE addr=? ORDER BY height DESC, txid LIMIT ?", a, limit) as never;
-  }
-  return await store().all(
-    "SELECT DISTINCT txid, height FROM address_history WHERE addr=? AND (height < ? OR (height = ? AND txid > ?)) ORDER BY height DESC, txid LIMIT ?",
-    a, cursor.height, cursor.height, cursor.txid.toLowerCase(), limit) as never;
+  if (cursor == null) return await store().all(addressPageSql(null), a, limit) as never;
+  return await store().all(addressPageSql("?"), a, cursor.height, cursor.height, cursor.txid.toLowerCase(), limit) as never;
+}
+/** An address's tx page with outputs in one statement: newest first, or after the last-seen txid `last` of the
+ *  previous page; a `last` that is not in the address's history answers no rows (end of pages). */
+export async function addressTxPage(addr: string, last: string | null, limit = 25): Promise<(TxRow & { outputs: OutRow[] })[]> {
+  const a = addr.toLowerCase();
+  const rank = "ROW_NUMBER() OVER (ORDER BY height DESC, txid) AS ord";
+  if (last == null) return txsWithOutputsOf(`SELECT txid, ${rank} FROM (${addressPageSql(null)}) x`, [a, limit]);
+  const l = last.toLowerCase();
+  const cur = "(SELECT height FROM address_history WHERE addr=? AND txid=? LIMIT 1)";
+  return txsWithOutputsOf(`SELECT txid, ${rank} FROM (${addressPageSql(cur)}) x`, [a, a, l, a, l, l, limit]);
 }
 // Height at which a given txid touches an address (for resolving an Esplora last-seen-txid page cursor).
 export async function addressTxidHeight(addr: string, txid: string): Promise<number | null> {

@@ -85,7 +85,8 @@ or later).
   re-exported), tx classification (Coinbase, Propose, Attest, Transfer), and `storableText`, the stored form of a
   Propose's domain and uri.
 - `src/merkle.ts`: Electrum-format merkle proofs built with csd-codec's `merkleBranch` (the same function the L0 light
-  client folds). It returns the PoW-committed header root, never a self-recomputed one.
+  client folds). It returns the PoW-committed header root, never a self-recomputed one: a block stored without a
+  header root gives no proof (`test/indexer.test.ts`).
 - `src/queries.ts`: the read-side SQL; `amt()` and `jsonSafe()`, the bigint to JSON-safe serialization; the `heightOk`
   guard.
 - `src/analytics.ts`: `/analytics/{miners,richlist,supply,series}`. The emission schedule is single-sourced from
@@ -94,9 +95,17 @@ or later).
   (`test/analytics-memo.test.ts`).
 - `src/server.ts`: the Express app and every route. The error wrapper `h()` never leaks a pg DSN, SQL or a path.
   `/address/:a` reads one `address_totals` row, whatever the address holds, since anyone can add outputs to any
-  address. The list endpoints (`/address/:a/txs`, `/address/:a/txs/chain/:last`, `/block/:hash/txs`) read a page in a
-  constant number of queries (`q.txsWithOutputs`, `q.blockTxs`), one at a time, so a request holds at most one pool
-  connection (`test/address-fanout.test.ts`; `docs/incidents/README.md` 10).
+  address. The list endpoints (`/address/:a/txs`, `/address/:a/txs/chain/:last`, `/block/:hash/txids`, `/block/:hash/txs`)
+  and `/tx/:id` read their answer in one statement (`q.addressTxPage`, `q.txsWithOutputs`, `q.blockTxidsByHash`,
+  `q.blockTxsByHash`), so a request holds one pool connection (`test/address-fanout.test.ts`;
+  `docs/incidents/README.md` 10) and reads one view: a block a reorg removes answers 404, never an empty list or
+  another block's list under its hash. `/tx/:id/merkle-proof`, `/tx/:id/status` and `/blocks/tip/hash` are one
+  statement each; `/health`, `/proposal/:id` and the analytics computations read several statements inside
+  `snapshot()` (`src/db.ts`), one REPEATABLE READ transaction on Postgres and one deferred transaction on SQLite,
+  whose WAL snapshot also holds against a separate `index` process (`test/snapshot-reads.test.ts` commits a reorg's
+  unwind on another connection after each statement of each route; `test/pg-reorg-read-race.test.ts` races readers
+  against reorg swaps on Postgres). A snapshot costs two round trips on Postgres (about 0.1 ms on a local socket),
+  which is why the hot routes are single statements instead.
 - `src/stream.ts` and `src/events.ts`: the event bus, the SSE firehoses and WS `/ws`.
   - Caps: 500 SSE connections (`CSD_INDEX_MAX_SSE`), 500 WS clients (`CSD_INDEX_MAX_WS`), 1000 subscription keys
     (`CSD_INDEX_MAX_SUB`), a 4 MiB outbound buffer per SSE or WS connection (`CSD_INDEX_MAX_SSE_BUFFER`; past it the

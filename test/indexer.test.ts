@@ -250,6 +250,12 @@ test("redteam F2: merkleProof returns the CONSENSUS header root, so a lying node
   // the branch itself is honest: it folds to the REAL tx-list root; the header is the lie the
   // consumer now detects (instead of being handed a self-consistent root that hid the lie).
   assert.ok(verifyMerkleProof(cbD.txid, pL.pos, pL.merkle, merkleRoot([cbC.txid, cbD.txid])), "branch folds to the real tx-list root");
+  // a header served without a merkle root gives no proof: the answer never carries a root the indexer computed
+  const cbE = coinbase("f2cbE", ADDR_A);
+  const rootless = mkBlock(9102, "0x" + "00".repeat(32), [cbE]);
+  (rootless.header as { merkle?: string }).merkle = undefined;
+  await writeBlock(rootless);
+  assert.equal(await merkleProof(cbE.txid), null, "no stored header root, no proof");
 });
 
 test("GRX-WIRE-CLAMP-1: an over-2^53 consensus expires_epoch is stored as a NON-safe sentinel (fork-guard fires identically on Granus and SPV) AND never overflows the BIGINT bind (no indexer wedge)", async () => {

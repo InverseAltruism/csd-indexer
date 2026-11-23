@@ -8,6 +8,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
 import { tmpDb } from "./_tmpdb.js";
+import { spyStore } from "./_store-spy.js";
 
 const DB = tmpDb("analytics");
 process.env.CSD_INDEX_DB = DB;
@@ -195,9 +196,7 @@ test("blockReward halves per era and hits zero after 64", () => {
 // read must not be kept for the tip (the next read answers the figure). Last in the file: it adds a block.
 test("supply routes: a store error on the supply query answers 500 without a number; the next read answers", async () => {
   await store().run(SQL_BLOCK, 11, id(1011), id(1010), id(2011), 1_700_000_000 + 11 * 120, 0x1e00ffff, 11, 1, 1, "11000");
-  const st = store() as unknown as { get: (...a: unknown[]) => Promise<unknown> };
-  const get = st.get.bind(store());
-  st.get = (...a: unknown[]) => (/SUM\(o\.value\)/.test(String(a[0])) ? Promise.reject(new Error("db down")) : get(...a));
+  const undo = spyStore(store(), (m, a, real) => (m === "get" && /SUM\(o\.value\)/.test(String(a[0])) ? Promise.reject(new Error("db down")) : real(...a)));
   try {
     for (const path of ["/analytics/supply/total", "/analytics/supply/circulating"]) {
       const r = await getText(path);
@@ -205,7 +204,7 @@ test("supply routes: a store error on the supply query answers 500 without a num
       assert.doesNotMatch(r.body, /\d/, path);
     }
   } finally {
-    delete (st as { get?: unknown }).get;
+    undo();
   }
   for (const path of ["/analytics/supply/total", "/analytics/supply/circulating"]) {
     const r = await getText(path);

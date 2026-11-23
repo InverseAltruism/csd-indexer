@@ -18,6 +18,21 @@
   the honest failover cases of `test/rpc-route-plausibility.test.ts` and `test/route-guard-visibility.test.ts` serve
   that chain, and `test/rpc-failover.test.ts` and `test/rpc-pow-route.test.ts`, whose mocks serve one header at
   every height, test the selection with the PoW check alone (the switch off).
+- One answer, one view. `/tx/:id`, `/address/:a/txs`, `/address/:a/txs/chain/:last`, `/block/:hash/txids` and
+  `/block/:hash/txs` read in two or three statements, so on Postgres a reorg's commit between them answered 200 with
+  `outputs: []` for a tx with outputs, or `[]` for a block holding transactions (175 of 20,148 answers in
+  `test/pg-reorg-read-race.test.ts` before; the resolver's scanner reads `/tx/:id` outputs for payment checks). Each
+  is now one statement; so are `/tx/:id/merkle-proof`, `/tx/:id/status` and `/blocks/tip/hash`. `/health` (a tip
+  height without its hash), `/proposal/:id` (an attestation count that is not the list's length) and the analytics
+  figures (emitted supply from one tip's coinbase sum and the next tip's fees) read inside `snapshot()` in
+  `src/db.ts`: REPEATABLE READ on Postgres, a deferred transaction on SQLite, which also holds against a separate
+  `index` process. `test/snapshot-reads.test.ts` commits the unwind of the top block on another connection after each
+  statement of each route, on both backends: red on 0.3.13's routes (6 of 6), green now. On a scratch Postgres with
+  20,000 blocks (`/tx/:id`, the 25-row page of an address with 20,000 transactions, a header read as cairn's
+  `/api/headers` makes it, `/block/:hash/txs`; median of 1,500 GETs, three rounds, twice before and once after):
+  0.580 to 0.799 ms before and 0.569 to 0.662 ms after; 2.331 to 3.049 and 2.297 to 2.372; 0.712 to 0.857 and 0.763
+  to 0.858 (the same code); 0.745 to 0.865 and 0.790 to 0.819. A merkle proof for a block stored without a header
+  root is now no proof (404): it carried a root the indexer computed from its own list.
 - The block writer never waits behind readers on Postgres. It shared the readers' pool and its wait cap, so a read
   flood refused its store calls with "indexer db pool saturated" (in a measured flood of slow `/address/:a/utxo`
   reads, 69 of 79 block writes) and the tip froze while it lasted. `syncOnce` now runs on a pool of one connection of

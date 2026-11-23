@@ -6,7 +6,7 @@
 // Integer columns arrive from the store as number-when-exact / bigint-past-2^53 (db.ts):
 // big() normalizes to BigInt for math, amt() serializes (a stray BigInt would crash
 // JSON.stringify; total emission crosses 2^53 in a few years and must never 500 these endpoints).
-import { store } from "./db.js";
+import { store, snapshot } from "./db.js";
 import { addressStats, amt, tipRow as tipRowCanonical } from "./queries.js";
 import { COIN, workForBits } from "@inversealtruism/csd-codec";
 
@@ -80,6 +80,13 @@ export function memoByTip<A extends unknown[], R>(fn: (...args: A) => Promise<R>
     p.catch(() => { if (cache.get(mk) === p) cache.delete(mk); });
     return p;
   };
+}
+
+// An analytics answer reads several statements; they run in one snapshot (db.ts snapshot), so a block committed
+// between two of them cannot mix two tips in one figure, such as emitted supply from one tip's coinbase sum and the
+// next tip's fees.
+function oneView<A extends unknown[], R>(fn: (...args: A) => Promise<R>): (...args: A) => Promise<R> {
+  return (...args: A) => snapshot(() => fn(...args));
 }
 
 type WorkPoint = { time: number | bigint; chainwork: string };
@@ -204,7 +211,7 @@ async function supplyFiguresImpl(): Promise<SupplyFigures | null> {
   // Fair-launch PoW chain: no premine and no team, locked or reserve wallets, so every unburned coin circulates.
   return { height: Number(tip.height), emitted, burned, total, circulating: total };
 }
-export const supplyFigures = memoByTip(supplyFiguresImpl);
+export const supplyFigures = memoByTip(oneView(supplyFiguresImpl));
 
 const COIN_BASE = BigInt(COIN);
 const COIN_DECIMALS = String(COIN_BASE).length - 1;
@@ -297,8 +304,8 @@ async function seriesImpl(window: string, points: number): Promise<unknown> {
 // tip, so the cache key is bounded and the dedup fires for repeated AND garbage-varied params. The
 // *Impl functions above are the uncached source of truth (and what the offline analytics test exercises
 // through these exports). supply() is argless; richlist() slices the one memoized list.
-const minersMemo = memoByTip(minersImpl);
-const richlistMemo = memoByTip(richlistImpl);
+const minersMemo = memoByTip(oneView(minersImpl));
+const richlistMemo = memoByTip(oneView(richlistImpl));
 export const miners = (window: string): Promise<unknown> => minersMemo(normWindow(window));
 export const richlist = async (limit = 100): Promise<unknown> => {
   const r = await richlistMemo();
@@ -307,5 +314,5 @@ export const richlist = async (limit = 100): Promise<unknown> => {
   return { ...r, count: holders.length, holders };
 };
 export const supply = memoByTip(supplyImpl);
-const seriesMemo = memoByTip(seriesImpl);
+const seriesMemo = memoByTip(oneView(seriesImpl));
 export const series = (window: string, points = SERIES_POINTS_DEFAULT): Promise<unknown> => seriesMemo(normWindow(window), normPoints(points));
