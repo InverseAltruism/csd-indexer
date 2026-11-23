@@ -63,6 +63,10 @@ CSD_INDEX_PG=postgres://user:pass@127.0.0.1:5432/csd_index npx tsx src/cli.ts in
 CSD_INDEX_PG=postgres://user:pass@127.0.0.1:5432/csd_index npm run run-all            # serve
 ```
 
+Postgres 14 or later (a statistics object on an expression needs it). The role in the URL need not be a superuser:
+a role that owns the database is enough (the CI job runs the suite as one), because a start creates the schema, its
+tables, indexes and statistics object and analyzes `outputs`, which takes the owner's rights.
+
 Both backends produce identical API responses, the test suite runs against each, and a
 from-genesis reindex of mainnet matches row-for-row across backends.
 

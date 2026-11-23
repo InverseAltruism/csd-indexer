@@ -57,14 +57,19 @@ jobs:
         ports: ['5432:5432']
         options: >-
           --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+    # The suite connects as a role that owns its database and is not a superuser, as a service's role is: a superuser
+    # reads catalogs such a role may not, and a start that read one passed here and failed for every other role.
     env:
-      CSD_INDEX_PG: postgres://postgres:postgres@127.0.0.1:5432/csdidx
+      CSD_INDEX_PG: postgres://csdidx:csdidx@127.0.0.1:5432/csdidx_owned
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with: { persist-credentials: false }
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version: '26' }
       - run: npm ci
+      - name: a non-superuser role that owns the test database
+        run: psql -v ON_ERROR_STOP=1 -c "CREATE ROLE csdidx LOGIN NOSUPERUSER PASSWORD 'csdidx'" -c "CREATE DATABASE csdidx_owned OWNER csdidx"
+        env: { PGHOST: 127.0.0.1, PGUSER: postgres, PGPASSWORD: postgres, PGDATABASE: csdidx }
       - name: test on the Postgres backend
         run: npm test
   # Full-history secret scan with the repo's .gitleaks.toml; the release binary is checked against its sha256.

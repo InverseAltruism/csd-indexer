@@ -73,8 +73,11 @@ const UTXO_STATS = "st_out_addr_unspent";
 const UTXO_STATS_DDL = `CREATE STATISTICS IF NOT EXISTS ${UTXO_STATS} (mcv, dependencies) ON addr, (COALESCE(spent_txid, '')) FROM outputs`;
 /** The schema statements a start applies on `backend`. */
 const schemaSql = (backend: Store["backend"]): string[] => (backend === "postgres" ? [DDL, UTXO_STATS_DDL] : [DDL]);
-const UTXO_STATS_EMPTY = "SELECT 1 FROM pg_statistic_ext s LEFT JOIN pg_statistic_ext_data d ON d.stxoid = s.oid " +
-  `WHERE s.stxname = '${UTXO_STATS}' AND s.stxnamespace = current_schema()::regnamespace AND d.stxoid IS NULL`;
+// The statistics object exists and holds no data yet. pg_statistic_ext_data is readable by a superuser only; the
+// pg_stats_ext view shows the table owner its own rows (test/pg-nonsuperuser.test.ts).
+const UTXO_STATS_EMPTY = `SELECT 1 FROM pg_statistic_ext s WHERE s.stxname = '${UTXO_STATS}' ` +
+  "AND s.stxnamespace = current_schema()::regnamespace AND NOT EXISTS (SELECT 1 FROM pg_stats_ext v " +
+  "WHERE v.statistics_schemaname = current_schema() AND v.statistics_name = s.stxname)";
 // An INTEGER column (txs.pos, outputs.vout) is 4 bytes on Postgres, where a larger bind fails the statement; SQLite's
 // INTEGER is 8 bytes. A route refuses a cursor value above this instead of answering 500 on one backend only.
 export const PG_INTEGER_MAX = 2 ** 31 - 1;
