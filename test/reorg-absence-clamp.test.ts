@@ -85,6 +85,8 @@ test("I2a reconcile: a real tip-swap plus a transient absence below it unwinds O
 });
 
 // ── I2b: findReorgAncestor. Node withholds 9 and 10 but serves a taller 11 whose prev contradicts our 10. ──
+// The walk ends at the first height the node does not answer (9), so the pass unwinds nothing, not even the one
+// height the new block's prev contradicts, and the reorg completes once the node answers.
 test("I2b findReorgAncestor: an absence in the walk-back does not widen the unwind either", async () => {
   await resetStoreForTests();
   WITHHELD = new Set();
@@ -97,11 +99,10 @@ test("I2b findReorgAncestor: an absence in the walk-back does not widen the unwi
   WITHHELD = new Set([9, 10]);
   const r = await syncOnce();
 
-  assert.equal(r.reorgs, 1, "the forward scan did detect the divergence at our tip");
-  assert.equal(r.reorgDepth, 1, "depth=1: clamped to the one height the new block's prev contradicted");
+  assert.equal(r.reorgs, 0, "the walk-back met a height the node did not answer: no evidence, no unwind this pass");
   assert.equal(await storedHash(9), h32("blk-P9"), "height 9 survived the walk-back absence");
   assert.equal(await propCount("dom-P9"), 1, "height 9's proposal survived");
-  assert.equal(await indexedHeight(), 9, "tip is the last surviving canonical height; the withheld 10 replays next poll");
+  assert.equal(await indexedHeight(), 10, "nothing unwound; the contradicted 10 is re-checked next poll");
 
   // the node recovers: the genuine reorg completes normally, nothing was lost in between
   WITHHELD = new Set();

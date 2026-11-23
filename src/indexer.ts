@@ -431,17 +431,16 @@ async function findReorgAncestor(newBlock: rpc.RpcBlock): Promise<number> {
   // contradiction at prevH, so that is where the bound starts.
   let lowestMismatch = prevH;
   const clampAncestor = (a: number) => (a < lowestMismatch - 1 ? lowestMismatch - 1 : a);
-  let sawNodeAbsence = false;
   for (let h = prevH - 1; h >= CFG.scanFrom; h--) {
     const nodeBlk = await rpc.blockByHeight(h);
-    if (!nodeBlk) { sawNodeAbsence = true; continue; }      // node didn't answer; absence, not divergence
+    // CAIRN-IDXREORG-2: a height the node does not answer is absence, not divergence: the walk stops there and the
+    // pass retries, so a node that answers no deeper block costs one read, not one per indexed height
+    // (test/absence-walk-bound.test.ts).
+    if (!nodeBlk) return REORG_ABORT;
     const ours = await storedHash(h);
     if (ours && nodeBlk.hash === ours) return clampAncestor(h); // common ancestor
     if (ours) lowestMismatch = h;                           // confirmed contradiction (walk is descending)
   }
-  // CAIRN-IDXREORG-2: only fall to the scan floor on CONFIRMED divergence. If the walk-back found no match
-  // because the node withheld deeper blocks, abort+retry instead of wiping the index down to the floor.
-  if (sawNodeAbsence) return REORG_ABORT;
   return clampAncestor(CFG.scanFrom - 1);                   // diverged below the floor → re-scan from scanFrom
 }
 
@@ -488,7 +487,8 @@ async function reconcileTipWindow(tip: number): Promise<number> {
   if (converged < 0) {                                     // deep divergence; walk on to the floor
     for (let h = fastFloor - 1; h >= CFG.scanFrom; h--) {
       const nb = await rpc.blockByHeight(h);
-      if (!nb) { sawNodeAbsence = true; continue; }
+      // The first height the node does not answer ends the walk with no evidence (test/absence-walk-bound.test.ts).
+      if (!nb) return 0;
       const ours = await storedHash(h);
       if (ours) {
         if (nb.hash === ours) { converged = h; break; }

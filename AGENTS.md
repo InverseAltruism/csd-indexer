@@ -101,7 +101,9 @@ is a narrative in `docs/incidents/README.md`.
   else the built-in fallback 38142 (`checkpointDefault`); an empty env string does not disable it.
   `test/checkpoint-floor.test.ts`, `test/config-knob-positive.test.ts`.
 - Never unwind on absence of evidence (incident 3): only a confirmed contiguous hash mismatch justifies an unwind,
-  and a null block from the node aborts the pass. `test/reorg-absence-clamp.test.ts`, `test/reorg-e2e.test.ts`.
+  and a null block from the node aborts the pass: below the tip window, the first height the node does not answer ends
+  the walk, so the pass costs a bounded number of reads. `test/reorg-absence-clamp.test.ts`, `test/reorg-e2e.test.ts`,
+  `test/absence-walk-bound.test.ts`.
 - sqlite dbTx isolation: BEGIN..COMMIT atomicity against HTTP readers holds only because every await inside a dbTx
   callback is a store call (a microtask). Never add a fetch, fs or timer await inside a dbTx callback.
   `test/dbtx-isolation.test.ts`.

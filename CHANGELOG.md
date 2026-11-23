@@ -18,6 +18,14 @@
   the honest failover cases of `test/rpc-route-plausibility.test.ts` and `test/route-guard-visibility.test.ts` serve
   that chain, and `test/rpc-failover.test.ts` and `test/rpc-pow-route.test.ts`, whose mocks serve one header at
   every height, test the selection with the PoW check alone (the switch off).
+- A backend that answers `/tip` and no block below some height costs a bounded number of reads per pass. Both reorg
+  walks skipped a height the node did not answer and went on to the scan floor, one node read per indexed height
+  (300 and 600 reads on a 300-block index in `test/absence-walk-bound.test.ts`; about 148,000 at the live height),
+  and the pass did not fail over while it lasted; a node rebuilding its state after a restart answers that way. The
+  deep part of `reconcileTipWindow` and `findReorgAncestor` now stop at the first such height and the pass changes
+  nothing (8 and 10 reads). The red line holds and narrows: an absence no longer lets the forward scan unwind even the
+  one height a new block's prev contradicts; that reorg completes on the pass where the node answers
+  (`test/reorg-absence-clamp.test.ts` I2b now asserts no unwind on the absent pass, then the completed reorg).
 - The forward scan's checkpoint-floor refusal holds at the default scan floor. With `CSD_INDEX_FROM=0`,
   `findReorgAncestor`'s "diverged down to the scan floor" (`scanFrom - 1`) and its "no reorg" were both -1, so
   against a heavier, taller chain that shares no block with the index the pass logged that it refused to unwind and
