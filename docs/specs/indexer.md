@@ -25,7 +25,21 @@ or later).
     `src/rpc.ts` is the adapter that reads the local anchor and passes `CFG`: a delta cap (`CSD_RPC_MAX_AHEAD`, 128)
     plus an LWMA ease factor (`CSD_RPC_MAX_EASE`, 16), anchored on the indexer's own local finality-gated headers
     (never the live primary), so a real min-difficulty header claiming huge chainwork cannot capture the feed while a
-    genuinely-ahead honest secondary still wins. Kill switch `CSD_RPC_ROUTE_PLAUSIBILITY=0`, read once at start.
+    genuinely-ahead honest secondary still wins.
+  - The link proof (`contenderLinks`): from the contender's tip down, each header it serves at the next lower height
+    must meet its bits and hash to the prev of the one above, until a prev is the primary's tip (the trust anchor's,
+    in a primary outage) or a block the index stores, and the height it holds there must be the height the walk
+    reached. The tip itself must be neither, so at least one header is new. A header that the index or the primary
+    already holds, claimed higher with a huge chainwork, passed the PoW and plausibility checks before this and made
+    the replaying backend the active one (`test/rpc-route-link.test.ts`). One `CSD_RPC_POW_TIMEOUT` deadline covers
+    all the fetches of one proof; an honest contender one block ahead costs the one tip-header fetch as before.
+  - Kill switch `CSD_RPC_ROUTE_PLAUSIBILITY=0`, read once at start: it turns off the plausibility gate and the link
+    proof; the PoW check stays.
+  - ROUTE-1 decides which backend is read. The blocks the active backend serves, and the chainwork it reports, are
+    not checked against their headers: a backend that becomes active with real headers is trusted for the bodies as
+    the primary is.
+  - A `/tip` whose height is not a non-negative integer leaves that backend out of the selection, and from the active
+    backend it fails the pass (`test/rpc-tip-height.test.ts`).
   - The route delta cap grows with the local tip's age at `CSD_RPC_BLOCK_SECS` (120) per block; the tip-header fetch
     for a contender times out after `CSD_RPC_POW_TIMEOUT` (5000 ms).
   - Every serial-poll read is bounded by an AbortSignal timeout (`CSD_RPC_TIMEOUT`, 10 s), so a backend that stalls
@@ -131,9 +145,9 @@ reads:
 | `CSD_RPC_WORK_ESCAPE` | 20 | cycles the active backend may stay below the best chainwork before a forced switch |
 | `CSD_RPC_MAX_AHEAD` | 128 | ROUTE-1 delta cap: blocks a contender may claim beyond the local tip |
 | `CSD_RPC_MAX_EASE` | 16 | ROUTE-1 ease factor: how much easier than the local target a contender's tip may be |
-| `CSD_RPC_ROUTE_PLAUSIBILITY` | on | `0` turns the plausibility gate off |
+| `CSD_RPC_ROUTE_PLAUSIBILITY` | on | `0` turns the plausibility gate and the link proof off |
 | `CSD_RPC_BLOCK_SECS` | 120 | target block spacing for the wall-clock-aware delta cap; never used for consensus |
-| `CSD_RPC_POW_TIMEOUT` | 5000 | milliseconds before a contender's tip-header fetch is aborted |
+| `CSD_RPC_POW_TIMEOUT` | 5000 | milliseconds before a contender's header fetches (tip and link proof) are aborted |
 | `CSD_INDEX_MAX_SSE` | 500 | SSE connection cap |
 | `CSD_INDEX_MAX_WS` | 500 | WS client cap |
 | `CSD_INDEX_MAX_SUB` | 1000 | subscription keys per WS client and category |

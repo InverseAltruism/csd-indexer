@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.3.14
+
+- A non-primary backend wins the backend selection only with a proof of the chain it claims (`contenderLinks` in
+  `src/rpc.ts`): from its claimed tip down, PoW-valid headers that hash-link at consecutive heights to the primary's
+  tip or to a block the index stores, at the height that block holds, with at least one new header. Before, the
+  check verified the claimed tip header's PoW and hash, and its plausibility against the local difficulty, but not
+  where the header sits: a backend that answered `/tip` with a height 4 above the primary's, the primary's own tip
+  hash and a huge chainwork, and served that header at the claimed height, became the active backend and rewrote the
+  index above the fork with its own blocks (an attacker address ended with 11 outputs on a 10-block index in the
+  driver). The honest cases select as before: a secondary five real headers ahead, a secondary on a branch from a
+  stored block, a secondary 150 headers ahead of a frozen primary. A secondary one block ahead costs the one header
+  fetch it cost before; a longer proof shares the `CSD_RPC_POW_TIMEOUT` deadline. `CSD_RPC_ROUTE_PLAUSIBILITY=0`
+  turns the proof off with the plausibility gate. The bodies of the blocks the active backend serves are still not
+  checked against their headers (README "Honest limits", AGENTS.md ROUTE-1).
+  `test/rpc-route-link.test.ts` (with `test/fixtures/header-chain.ts`, 160 consecutive mainnet headers from 32796);
+  the honest failover cases of `test/rpc-route-plausibility.test.ts` and `test/route-guard-visibility.test.ts` serve
+  that chain, and `test/rpc-failover.test.ts` and `test/rpc-pow-route.test.ts`, whose mocks serve one header at
+  every height, test the selection with the PoW check alone (the switch off).
+- A `/tip` height that is not a non-negative integer is unusable. A backend answering `"abc"` gave the selection a NaN
+  best height, which voided its 3-block hysteresis, and the active backend answering it, or no height, gave the tip
+  window nothing to converge at: the pass unwound to the scan floor, the whole index when the index was below the
+  checkpoint floor. Such a backend is now left out of the selection, and from the active backend the pass fails
+  before it reads the chain. `test/rpc-tip-height.test.ts`.
+
 ## 0.3.13
 
 - WebSocket `/ws` bounds three things one connection could grow without limit: the subscription keys it holds, the

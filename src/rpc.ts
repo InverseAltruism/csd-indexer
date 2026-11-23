@@ -109,21 +109,59 @@ async function expectedLocalBits(localHeight: number): Promise<number | null> {
   }
 }
 
-// Fetch a backend's tip header (at its claimed tip height), then apply BOTH ROUTE-1 rules with a SINGLE
-// header fetch: (a) the self-referential PoW + hash-binding verdict (tipHeaderPowOk) and (b) the F6
-// local-anchored plausibility gate (contenderPlausible). FAIL SOFT: any fetch/shape error → false (the
-// backend simply cannot win; no throw, no read added to the healthy path; this runs only for a backend
-// that CLAIMS to out-work the trust anchor).
-async function contenderEligible(base: string, claimedHeight: number, claimedTipHash: string | null): Promise<boolean> {
+// Fetch a backend's tip header (at its claimed tip height) and apply the ROUTE-1 rules: (a) the self-referential PoW +
+// hash-binding verdict (tipHeaderPowOk), then, unless CSD_RPC_ROUTE_PLAUSIBILITY=0, (b) the F6 local-anchored
+// plausibility gate (contenderPlausible) and (c) the link proof (contenderLinks). FAIL SOFT: any fetch/shape error →
+// false (the backend simply cannot win; no throw, no read added to the healthy path; this runs only for a backend
+// that CLAIMS to out-work the trust anchor). One deadline of CFG.powVerifyTimeoutMs covers every fetch of one proof.
+async function contenderEligible(base: string, claimedHeight: number, claimedTipHash: string | null, anchor: Probe): Promise<boolean> {
   if (!claimedTipHash) return false;
   try {
-    const res = await fetch(base + `/block/height/${claimedHeight}`, { signal: AbortSignal.timeout(CFG.powVerifyTimeoutMs) });
-    if (!res.ok) return false;
-    const j: any = await res.json();
-    const b = j.block ?? j;
-    if (!b || !b.header) return false;
-    if (!tipHeaderPowOk(b.header, claimedTipHash)) return false;      // ROUTE-1: self-referential PoW + hash-bind
-    return await contenderPlausible(claimedHeight, b.header);          // F6: local-anchored plausibility
+    const signal = AbortSignal.timeout(CFG.powVerifyTimeoutMs);
+    const header = await headerAt(base, claimedHeight, signal);
+    if (!header) return false;
+    if (!tipHeaderPowOk(header, claimedTipHash)) return false;        // ROUTE-1: self-referential PoW + hash-bind
+    if (!CFG.routePlausibility) return true;
+    if (!(await contenderPlausible(claimedHeight, header))) return false; // F6: local-anchored plausibility
+    return await contenderLinks(base, claimedHeight, claimedTipHash.toLowerCase(), header, anchor, signal);
+  } catch { return false; }
+}
+
+async function headerAt(base: string, height: number, signal: AbortSignal): Promise<{ prev?: unknown } | null> {
+  const res = await fetch(base + `/block/height/${height}`, { signal });
+  if (!res.ok) return null;
+  const j: any = await res.json();
+  const b = j.block ?? j;
+  return b && b.header && typeof b.header === "object" ? b.header : null;
+}
+
+// The height a hash holds on the trusted view: the anchor's tip, else the indexer's own blocks table; undefined when
+// neither holds it.
+async function knownHeight(hash: string, anchor: Probe): Promise<number | undefined> {
+  if (anchor.tipHash != null && hash === anchor.tipHash.toLowerCase()) return anchor.height;
+  const r = await store().get<{ height: number | bigint }>("SELECT height FROM blocks WHERE hash=?", hash);
+  return r ? Number(r.height) : undefined;
+}
+
+// A contender's claim (its tip at claimedHeight) is backed only by headers above a block the trusted view already
+// holds: from the tip down, each header PoW-valid and hashing to the prev of the one above, served at consecutive
+// heights, until a prev is the anchor's tip or a stored block, at the height it holds there. At least one header is
+// new, so a replayed header (the anchor's tip or a stored block claimed at another height) proves nothing. A store
+// read throw fails closed, as in contenderPlausible (test/rpc-route-link.test.ts).
+async function contenderLinks(base: string, claimedHeight: number, tipHash: string, tipHeader: { prev?: unknown },
+  anchor: Probe, signal: AbortSignal): Promise<boolean> {
+  try {
+    if ((await knownHeight(tipHash, anchor)) !== undefined) return false;
+    let header = tipHeader;
+    for (let h = claimedHeight; h > CFG.scanFrom; h--) {
+      const prev = typeof header.prev === "string" ? header.prev.toLowerCase() : "";
+      const at = await knownHeight(prev, anchor);
+      if (at !== undefined) return at === h - 1;
+      const below = await headerAt(base, h - 1, signal);
+      if (!below || !tipHeaderPowOk(below, prev)) return false;
+      header = below;
+    }
+    return false;
   } catch { return false; }
 }
 
@@ -206,7 +244,7 @@ export async function selectBackend(): Promise<{ active: string; switched: boole
   const authority = primaryEntry ?? reachable.reduce((a, b) => (b.t.chainwork < a.t.chainwork ? b : a));
   const contenders = reachable.filter((r) => r !== authority && r.b !== primary && (r.t.height > authority.t.height || r.t.chainwork > authority.t.chainwork));
   if (contenders.length) {
-    const verdicts = await Promise.all(contenders.map(async (r) => ({ b: r.b, ok: await contenderEligible(r.b, r.t.height, r.t.tipHash) })));
+    const verdicts = await Promise.all(contenders.map(async (r) => ({ b: r.b, ok: await contenderEligible(r.b, r.t.height, r.t.tipHash, authority.t) })));
     const rejected = new Set(verdicts.filter((v) => !v.ok).map((v) => v.b));
     if (rejected.size) eligible = reachable.filter((r) => !rejected.has(r.b));
   }

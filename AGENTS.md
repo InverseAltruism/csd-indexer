@@ -134,8 +134,13 @@ is a narrative in `docs/incidents/README.md`.
   move `version`, so one version string never denotes two determinism-dep sets. `test/ci-workflow.test.ts`,
   `test/analytics-lockstep.test.ts`.
 - ROUTE-1: a non-primary backend may win on work or height only if its tip header is PoW-valid and hash-bound
-  (`tipHeaderPowOk`) and plausible (`contenderPlausible`) against the indexer's own finality-gated headers, never the
-  live primary. `test/rpc-pow-*.test.ts`, `test/rpc-route-plausibility.test.ts`, `test/rpc-failover.test.ts`.
+  (`tipHeaderPowOk`), plausible (`contenderPlausible`) against the indexer's own stored headers, never the live
+  primary, and linked: PoW-valid, hash-linked headers at consecutive heights from its tip down to the primary's tip or
+  a stored block, at the height that block holds, with at least one new header (`contenderLinks`), so a replayed
+  header proves nothing. A backend whose `/tip` height is not a non-negative integer is left out, and such a tip from
+  the active backend fails the pass. ROUTE-1 decides which backend is read; the blocks the active backend serves are
+  not checked against their headers. `test/rpc-pow-*.test.ts`, `test/rpc-route-plausibility.test.ts`,
+  `test/rpc-route-link.test.ts`, `test/rpc-failover.test.ts`, `test/rpc-tip-height.test.ts`.
 - Never point anything at :8790 as the default RPC: that is the miner's RPC; :8789 is primary, :8790 fallback only.
 - Every serial-poll read of the node is bounded by a timeout, so a backend that stalls `/block` cannot wedge the
   loop. `test/rpc-timeout.test.ts`.

@@ -183,7 +183,10 @@ The indexer is a convenient view of the chain, not an authority. Inclusion proof
 when a light client checks them against proof-of-work headers it verified itself; the explorer only
 checks them against the indexer's own headers. The derived data (per-attester
 breakdowns, rankings, address history) is reproducible rather than signed: the way you audit it
-is to run your own indexer and confirm you get the same numbers. A proposal's `domain` and `uri` are the
+is to run your own indexer and confirm you get the same numbers. The indexer reads blocks from one node at a time
+and does not check a block's transactions against its header: with several backends configured, another backend
+replaces the first only with proof-of-work headers above a block the first, or the index, already holds, and is then
+trusted as the first was. A proposal's `domain` and `uri` are the
 node's text with one change, on both backends: each U+0000 is stored and served as U+0001. JSON refuses both
 characters unescaped, so a uri is JSON here exactly when it is JSON on the chain; a consumer that compares a row with
 the node's bytes applies the same replacement first, and a `domain` or `uri` that holds U+0001 here may hold U+0000
