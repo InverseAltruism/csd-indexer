@@ -1178,7 +1178,7 @@ test("page helpers: own-key label lookups, escaped block-row attributes, exact b
       return {
         domain: domainLabel("constructor"), label: labelOf("constructor"), amt: amt("5", "toString"),
         hash: row.getAttribute("data-hash"), extra: row.hasAttribute("data-x"),
-        sum: fmtCSD(sumValues([{ value: 9007199254740991 }, { value: "9007199254740993" }])), neg: fmtCSD(-(2n ** 60n)),
+        sum: fmtCSD(sumValues([{ value: 9007199254740991 }, { value: "9007199254740993" }])), neg: fmtCSD(-(2n ** 60n + 1n)),
       };
     })()`) as Record<string, unknown>;
     assert.equal(got.domain, "constructor");
@@ -1187,7 +1187,7 @@ test("page helpers: own-key label lookups, escaped block-row attributes, exact b
     assert.equal(got.hash, '0x" data-x="1');
     assert.equal(got.extra, false);
     assert.equal(got.sum, "180,143,985.09481984 CSD");
-    assert.equal(got.neg, "\u221211,529,215,046.06846976 CSD");
+    assert.equal(got.neg, "\u221211,529,215,046.06846977 CSD");
   } finally { await v.close(); }
 });
 
