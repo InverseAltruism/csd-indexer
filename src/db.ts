@@ -304,6 +304,17 @@ async function bootTx(c: import("pg").PoolClient, statements: readonly string[])
   }
 }
 
+// A client checked out of the pool has no 'error' listener (pg-pool removes its own at checkout and adds it back at
+// release), and a session that ends while the client is out (a server restart, pg_terminate_backend) emits 'error' on
+// it: with no listener that ended the process. withClient listens while the client is out. At release pg-pool closes a
+// client whose connection failed (it is not queryable) instead of handing it out again (test/pg-client-loss.test.ts).
+async function withClient<T>(pool: import("pg").Pool, fn: (c: import("pg").PoolClient) => Promise<T>): Promise<T> {
+  const c = await pool.connect();
+  const onError = () => { /* the statement in flight, or the next one, fails with the connection, and fn with it */ };
+  c.on("error", onError);
+  try { return await fn(c); } finally { c.removeListener("error", onError); c.release(); }
+}
+
 // `?` placeholders are translated to $1..$n so call sites stay dialect-free.
 function toPg(sql: string): string {
   let n = 0;
@@ -382,16 +393,13 @@ class PgStore implements Store {
   private ready(): Promise<void> {
     if (this.opts.boot) return this.opts.boot.ready();
     if (this._ready) return this._ready;
-    const p = (async () => {
-      const c = await this.pool.connect();
-      try {
-        await c.query(`CREATE SCHEMA IF NOT EXISTS ${this.schemaSafe}`);
-        await c.query(`SET search_path TO ${this.schemaSafe}`);
-        await bootTx(c, schemaSql(this.backend));
-        if ((await c.query(UTXO_STATS_EMPTY)).rowCount) await bootTx(c, ["ANALYZE outputs"]);
-        await bootTx(c, totalsRebuildSql(this.backend));
-      } finally { c.release(); }
-    })();
+    const p = withClient(this.pool, async (c) => {
+      await c.query(`CREATE SCHEMA IF NOT EXISTS ${this.schemaSafe}`);
+      await c.query(`SET search_path TO ${this.schemaSafe}`);
+      await bootTx(c, schemaSql(this.backend));
+      if ((await c.query(UTXO_STATS_EMPTY)).rowCount) await bootTx(c, ["ANALYZE outputs"]);
+      await bootTx(c, totalsRebuildSql(this.backend));
+    });
     this._ready = p;
     p.catch(() => { if (this._ready === p) this._ready = null; });
     return p;
@@ -420,16 +428,17 @@ class PgStore implements Store {
   }
   private async onClient<T>(begin: string, fn: (s: Store) => Promise<T>): Promise<T> {
     await this.ready(); this.acquireGuard();
-    const c = await this.pool.connect();
-    try {
-      await c.query(begin);
-      const r = await fn(clientStore(c));
-      await c.query("COMMIT");
-      return r;
-    } catch (e) {
-      try { await c.query("ROLLBACK"); } catch { /* connection gone */ }
-      throw e;
-    } finally { c.release(); }
+    return await withClient(this.pool, async (c) => {
+      try {
+        await c.query(begin);
+        const r = await fn(clientStore(c));
+        await c.query("COMMIT");
+        return r;
+      } catch (e) {
+        try { await c.query("ROLLBACK"); } catch { /* connection gone: pg-pool closes it at release */ }
+        throw e;
+      }
+    });
   }
   async tx<T>(fn: (s: Store) => Promise<T>): Promise<T> { return await this.onClient("BEGIN", fn); }
   // REPEATABLE READ takes one snapshot at the first statement and keeps it for the transaction.
