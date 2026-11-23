@@ -342,11 +342,13 @@ for (const mode of ["status", "reset"] as const) {
     assert.equal((await pass()).active, "primary");
     S1.state = up(151, { failOnce: { h: 150, mode } });                 // a block more; the read under it fails
     assert.equal((await pass()).active, "primary");
-    S1.state = up(152);
-    const three = await pass();
-    assert.equal(three.active, "sec1");
-    readOnce(three.reads[1]!, 101, 149);                                 // the headers proved before are not read again
-    assert.equal(await indexedHeight(), 152);
+    S1.state = up(152, { failOnce: { h: 151, mode } });                 // and again
+    assert.equal((await pass()).active, "primary");
+    S1.state = up(153);
+    const four = await pass();
+    assert.equal(four.active, "sec1");
+    readOnce(four.reads[1]!, 101, 149);                                  // the headers proved before are not read again
+    assert.equal(await indexedHeight(), 153);
   });
 }
 
