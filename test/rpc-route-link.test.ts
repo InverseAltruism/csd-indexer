@@ -75,12 +75,12 @@ test("honest: a secondary five real headers above the primary's tip wins", async
 });
 
 // The index stores REAL_CHAIN[10..15] at 90..95; the primary's tip is elsewhere at 95.
-async function storedThen(b: Node): Promise<string> {
+async function storedThen(b: Node, workAt = (h: number): string | null => String(h * 1000)): Promise<string> {
   await resetStoreForTests();
   for (let h = 90; h <= 95; h++) {
     const r = REAL_CHAIN[h - 80]!;
     await store().run("INSERT INTO blocks(height,hash,prev,merkle,time,bits,nonce,version,tx_count,chainwork,orphaned) VALUES(?,?,?,?,?,?,?,?,?,?,0)",
-      h, r.hash, r.header.prev, r.header.merkle, r.header.time, r.header.bits, r.header.nonce, 1, 1, String(h * 1000));
+      h, r.hash, r.header.prev, r.header.merkle, r.header.time, r.header.bits, r.header.nonce, 1, 1, workAt(h));
   }
   A.set({ tip: () => ({ height: 95, tip: id("primary-elsewhere"), chainwork: "95000" }), block: () => undefined });
   B.set(b);
@@ -90,6 +90,10 @@ async function storedThen(b: Node): Promise<string> {
 
 test("honest: a secondary on a branch from a stored block wins (the primary is behind it)", async () => {
   assert.equal(await storedThen(realAt(80, 90, 100)), B.url(), "links to the stored block 95 through five new headers");
+});
+
+test("honest: a branch from a stored block whose chainwork does not parse wins with its claimed work", async () => {
+  assert.equal(await storedThen(realAt(80, 90, 100), (h) => (h === 95 ? null : String(h * 1000))), B.url());
 });
 
 test("replay: a stored block claimed at its own height with more work proves no new header", async () => {
