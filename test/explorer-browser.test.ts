@@ -68,7 +68,7 @@ const SERIES = { window: "1d", from: FROM, to: TIP, points: Array.from({ length:
 }) };
 const MINERS = { ok: true, window: "1d", from_height: FROM, to_height: TIP, blocks: 720, total_txs: 900, total_fees: 0, avg_interval_secs: 121,
   network_hashrate: 3.149e12, miner_count: 1, concentration: { top1: 1, top3: 1, hhi: 1 },
-  miners: [{ addr: MINER, blocks: 720, share: 1, last_height: TIP, last_time: bt(TIP), fees_collected: "0", est_hashrate: 3.149e12, est_rel_err: 0.04 }] };
+  miners: [{ addr: MINER, blocks: 720, share: 1, last_height: TIP, last_time: bt(TIP), est_hashrate: 3.149e12, est_rel_err: 0.04 }] };
 const INDEXER: Record<string, unknown> = {
   "/health": { ok: true, version: "0.2.13", backend: "sqlite", indexed_height: TIP, tip_height: TIP, seconds_since_tip: 60, stale: false, final_depth: 6,
     blocks: TIP + 1, txs: 147_000, proposals: 2300, attestations: 350 },

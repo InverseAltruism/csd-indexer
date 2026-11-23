@@ -18,6 +18,11 @@
   the honest failover cases of `test/rpc-route-plausibility.test.ts` and `test/route-guard-visibility.test.ts` serve
   that chain, and `test/rpc-failover.test.ts` and `test/rpc-pow-route.test.ts`, whose mocks serve one header at
   every height, test the selection with the PoW check alone (the switch off).
+- API field removed: `/analytics/miners` no longer answers `fees_collected` per miner. It summed the fee column of
+  the miner's coinbase rows, which is 0 by construction (a coinbase spends no indexed output), so it was 0 for every
+  miner whatever the fees (`total_fees` of the same answer is the window's fees). Nothing in the explorer, cairn,
+  cairnx, cairn-sdk or the wallet reads it (`git grep` at each `origin/master`). `test/analytics.test.ts` pins a
+  miner entry's fields.
 - A NUL byte (`%00`) in a path or query parameter answers 400 `{"error":"bad request"}` on both backends, in `h()`,
   which every REST route passes. Postgres refused U+0000 in a text bind, so such a request answered 500 and logged
   a stack there, and 404 or 200 on SQLite. No stored text holds U+0000 (`storableText` stores U+0001 for it).

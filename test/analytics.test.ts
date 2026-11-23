@@ -92,6 +92,9 @@ test("miners: shares, concentration, chainwork hashrate, Poisson error", async (
   assert.ok(Math.abs(a.est_hashrate - 0.6 * (9000 / 1080)) < 1e-6);
   assert.equal(r.total_fees, 25_000_000);
   assert.ok(Math.abs(r.avg_interval_secs - 120) < 1e-9);
+  // A miner's entry carries no fee figure: the coinbase rows it would sum hold a fee of 0 by construction, so a
+  // fees_collected field was 0 for every miner whatever the fees (25,000,000 here).
+  assert.deepEqual(Object.keys(a), ["addr", "blocks", "share", "last_height", "last_time", "est_hashrate", "est_rel_err"]);
 });
 
 test("miners: window slicing (last N blocks only)", async () => {

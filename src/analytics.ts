@@ -113,9 +113,8 @@ async function minersImpl(window: string): Promise<unknown> {
   const span = WINDOWS[window] ?? 0; // 0 / unknown → all-time
   const from = span ? Math.max(0, Number(tip.height) - span) : 0;
 
-  const rows = await store().all<{ addr: string; blocks: number | bigint; last_height: number | bigint; last_time: number | bigint; fees_collected: number | bigint | null }>(`
-    SELECT signer AS addr, COUNT(*) AS blocks, MAX(height) AS last_height, MAX(time) AS last_time,
-           SUM(fee) AS fees_collected
+  const rows = await store().all<{ addr: string; blocks: number | bigint; last_height: number | bigint; last_time: number | bigint }>(`
+    SELECT signer AS addr, COUNT(*) AS blocks, MAX(height) AS last_height, MAX(time) AS last_time
     FROM txs WHERE coinbase=1 AND height > ? AND height <= ?
     GROUP BY signer ORDER BY blocks DESC, addr ASC
   `, from, tip.height);
@@ -132,7 +131,6 @@ async function minersImpl(window: string): Promise<unknown> {
     return {
       addr: r.addr, blocks, share,
       last_height: Number(r.last_height), last_time: Number(r.last_time),
-      fees_collected: amt(r.fees_collected),
       est_hashrate: hr ? share * hr.hashrate : null,
       est_rel_err: blocks > 0 ? 1 / Math.sqrt(blocks) : null, // Poisson ±1σ
     };
