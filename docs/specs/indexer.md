@@ -36,16 +36,17 @@ or later).
     replaying backend the active one (`test/rpc-route-link.test.ts`). One `CSD_RPC_POW_TIMEOUT` deadline covers the
     fetches of one pass's proof; an honest contender one block ahead costs the one tip-header fetch as before.
   - A proof the deadline or a failed read ends goes on at the next pass: per backend at most two proved parts (each
-    the tip it was proved from, the lowest proved header, their work and the anchor tip they were compared with),
+    the tip it was proved from, the lowest proved header, their work and the anchor's tip when they were kept),
     which the next walk joins at a part's top height when the hash there is the same, so it reads on below the
     part's bottom; a short walk keeps its own part merged with the older ones that continue it, and the highest one
     under it; a proof that linked is kept the same way. A 404 for a height is a refusal; a timeout, a closed
-    connection or another status ends the pass. When the anchor's tip moved inside a part since it was compared, the
+    connection or another status ends the pass. When the anchor's tip moved inside a part since it was kept, the
     walk joins if the stored tip is nearer under the part than the anchor is under its top (a stored block at or under
     the bottom links it: the stored chain is linked), else reads the part again to meet the anchor; a joined walk
     that is refused walks again without the kept parts. A tip on another branch does not join, and a refused walk
-    leaves no record. Memory: two parts per configured backend. Cost: at most the deadline per pass and contender. A proof of n headers at r ms a read ends after about n times r divided by the
-    deadline passes, and each pass it is short logs how many headers it proved and how many at least remain.
+    leaves no record. Memory: two parts per configured backend. Cost: at most the deadline per pass and contender. A
+    proof of n headers at r ms a read ends after about n times r divided by the deadline passes, and each pass it is
+    short logs how many headers it proved and how many at least remain.
   - The chainwork a contender is ranked with is its claim, at most the linked block's chainwork (the primary's
     report for its tip, the stored figure for a stored block) plus `workForBits` of each proved header; a claim below
     that stays as claimed. A block a non-primary backend serves is stored with at most its stored parent's chainwork
