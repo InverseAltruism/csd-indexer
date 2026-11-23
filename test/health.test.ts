@@ -50,6 +50,7 @@ test("health: field shape incl. additive version/backend", async () => {
   assert.match(String(j.version), /^\d+\.\d+\.\d+/);        // package version, not "unknown"
   assert.ok(j.backend === "sqlite" || j.backend === "postgres");
   assert.equal(j.tip_height, 1);
+  assert.equal(j.node_tip_height, null, "no sync pass ran in this process");
   assert.equal(j.blocks, 2);                                 // counts() spread is preserved
   assert.equal(j.txs, 2);
   assert.equal(typeof j.seconds_since_tip, "number");

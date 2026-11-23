@@ -18,6 +18,33 @@
   the honest failover cases of `test/rpc-route-plausibility.test.ts` and `test/route-guard-visibility.test.ts` serve
   that chain, and `test/rpc-failover.test.ts` and `test/rpc-pow-route.test.ts`, whose mocks serve one header at
   every height, test the selection with the PoW check alone (the switch off).
+- Statements the code contradicted, now true: the comments that said blocks deeper than `finalDepth` are never
+  touched (a reorg is followed down to the checkpoint floor); ROUTE-1's "finality-gated" anchor (it is the newest
+  stored block, at depth 0); the statement cache's "never hit" bound (IN lists and `/analytics/series` vary the SQL);
+  the max supply in comments (about 1.05e16 base units, csd-codec's `maxSupplyBase`, not 1e17); "fractional
+  degrades to 0" (a fractional number is floored; a non-integer string is 0); "consensus data is not clamped"
+  (values and header fields go through `safeValue`). README: what `track-address` delivers (the attestations the
+  address made), that the streams carry no id or replay and the feeds are the complete read, what `final` in
+  `/tx/:id/status` means (a depth; deeper reorgs are followed), and that the miners analytics credit the address a
+  coinbase names, which its miner chooses. The hosted resolver's internal name is gone from comments and test names.
+  Each skipped test without a reason has one.
+- `/health` adds `node_tip_height`, the node's tip at this process's last sync pass (null in a process that runs no
+  sync loop). The explorer's "N blocks behind" badge compared `tip_height` with `indexed_height`, both read from the
+  index, so it never showed; it now reads `node_tip_height` (`test/explorer-browser.test.ts`, whose stub put the node
+  tip in `tip_height`).
+- The explorer's two "Circulating" figures showed `emitted_supply`; they show `circulating_supply` (emitted less the
+  burned genesis output), as the supply route defines it.
+- Exact amounts on two display paths: `/address/:a/reputation` sums `fees_paid` as BigInt and answers it as `amt()`
+  does (through `Number` a sum past 2^53 rounded: 2^53 - 1 + 2 answered 2^53; `test/reputation-window.test.ts`), and
+  the explorer sums output values as BigInt (`sumValues`; a value past 2^53 arrives as a string and `+`
+  concatenated it) and formats a negative amount past 2^53 exactly.
+- Explorer: a block row's `data-h`, `data-hash` and `data-ts` attributes are escaped like every other node-sourced
+  string, and the label lookups (`LABELS`, `DOMAIN_LABEL`, `DEC`, `SERIES_SRC`) read own keys only, so a
+  chain-written key such as `constructor` is no label (`test/explorer-browser.test.ts`, "page helpers").
+- Not changed: the `search_path` stays an unawaited `SET` on connect. Moving it into the pool's `options` dropped it
+  whenever the DSN carries its own `options` (pg lets the DSN's replace the pool's: `test/boot-rebuild-timeout.test.ts`
+  read the `public` schema), and an awaited form needs every statement to take its client explicitly; pg prints a
+  deprecation warning for it, and the manifest's caret keeps pg 9 out.
 - `/domains` orders domains with the same proposal count by their UTF-8 bytes on both backends. The tie followed the
   database's collation (bytes on SQLite, en_US.UTF-8 on the test Postgres), so the backends answered ties in
   different orders; SQLite's order is unchanged. `test/domains-order.test.ts`.

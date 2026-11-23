@@ -135,7 +135,9 @@ The extras:
   as `text/plain` (for example `6553149.49800771`, or `6553150` when whole), exact to the base unit,
   for listing sites such as CoinMarketCap. An empty index answers 503 and an error 500, never a
   number.
-- `GET /health`: version, backend, indexed height, the node-reported tip and chainwork, and `stale`; `build`
+- `GET /health`: version, backend, indexed height, the indexed tip (`tip_height`, `tip_hash`, `chainwork`, from the
+  node's blocks), `node_tip_height` (the node's tip at this process's last sync pass; null in a process that runs no
+  sync loop, such as `npm run serve`), and `stale`; `build`
   (`commit`, the first 7 characters of the checkout's HEAD this process loaded, or `unknown`, and `startedAt` in
   milliseconds), read once at start, so a pull without a restart shows as a mismatch with the tree; and
   `checkpoint_floor`, the height below which this process does not unwind.

@@ -1180,10 +1180,10 @@ test("page helpers: own-key label lookups, escaped block-row attributes, exact b
         hash: row.getAttribute("data-hash"), extra: row.hasAttribute("data-x"),
         sum: fmtCSD(sumValues([{ value: 9007199254740991 }, { value: "9007199254740993" }])), neg: fmtCSD(-(2n ** 60n + 1n)),
       };
-    })()`) as Record<string, unknown>;
+    })()`) as Record<string, string | boolean | null>;
     assert.equal(got.domain, "constructor");
     assert.equal(got.label, null);
-    assert.match(got.amt, /base units/);
+    assert.match(String(got.amt), /base units/);
     assert.equal(got.hash, '0x" data-x="1');
     assert.equal(got.extra, false);
     assert.equal(got.sum, "180,143,985.09481984 CSD");

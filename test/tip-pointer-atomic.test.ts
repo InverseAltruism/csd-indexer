@@ -33,7 +33,7 @@ process.env.CSD_INDEX_DB = tmpDb("tipatomic");
 process.env.CSD_INDEX_PG_SCHEMA = "t_tipatomic";
 process.env.CSD_INDEX_FROM = "0";
 process.env.CSD_INDEX_CHECKPOINT_FLOOR = "0";
-const { syncOnce, indexedHeight } = await import("../src/indexer.js");
+const { syncOnce, indexedHeight, lastNodeTipHeight } = await import("../src/indexer.js");
 const { store, resetStoreForTests, closeDb } = await import("../src/db.js");
 const storedTop = async () => Number(((await store().get<{ h: number }>("SELECT MAX(height) AS h FROM blocks")) as { h: number }).h);
 const hashAt = async (h: number) => (await store().get<{ hash: string }>("SELECT hash FROM blocks WHERE height=?", h))?.hash;
@@ -44,6 +44,7 @@ test("honest: each written block moves the pointer with it", async () => {
   await syncOnce();
   assert.equal(await indexedHeight(), 5);
   assert.equal(await storedTop(), 5);
+  assert.equal(lastNodeTipHeight(), 5, "/health's node_tip_height: the node's tip at the last pass");
 });
 
 test("a failure at the pointer write leaves the block and the pointer together; a lighter block then holds", async () => {
