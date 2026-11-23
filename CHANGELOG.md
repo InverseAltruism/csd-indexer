@@ -27,9 +27,12 @@ API changes for readers: `/analytics/miners` entries lose `fees_collected` (alwa
   driver). A tip the index stores at the claimed height, with the chainwork stored for it, claims nothing new and
   stays eligible, so the index stays on a secondary it has caught up with while the primary rebuilds far below,
   comes back a block under, or a second secondary is stuck, as on 0.3.13. A secondary one block ahead costs the one
-  header fetch it cost before. A longer proof goes on across passes: per backend one record of what it proved,
-  which the next walk joins when the hash at its top is the same, so a pass costs at most `CSD_RPC_POW_TIMEOUT` and a
-  pass that ends short logs how many headers it proved and how many at least remain. The limit, where 0.3.13 selected
+  header fetch it cost before. A longer proof goes on across passes: a backend keeps at most two parts of what it
+  proved, which the next walk joins at a part's top height when the hash there is the same, so a pass costs at most
+  `CSD_RPC_POW_TIMEOUT`, a failed read (a timeout, a closed connection, a status other than 404) ends the pass and
+  keeps what was proved, and a pass that ends short logs how many headers it proved and how many at least remain.
+  When the primary's tip moves inside a kept part, the walk joins it if the stored tip is nearer under the part than
+  the primary's tip is under its top, else it walks the part again to meet the primary's tip. The limit, where 0.3.13 selected
   at once: n headers at r ms a read take about n times r divided by the 5,000 ms deadline passes; measured at 5 ms a
   read, 150 headers took 1 pass, 1,500 took 2 and 50,000 took 55 (at one pass per 15 s poll). A proof that long needs
   both the index and the primary that far under the secondary: a re-index from empty, or an index far behind, while
@@ -37,26 +40,36 @@ API changes for readers: `/analytics/miners` entries lose `fees_collected` (alwa
   blocks behind, the longest run, backend switches) every figure equals 0.3.13's. `CSD_RPC_ROUTE_PLAUSIBILITY=0`
   turns the proof off with the plausibility gate. The bodies of the blocks the active backend serves are still not
   checked against their headers (README "Honest limits", AGENTS.md ROUTE-1).
+  `test/rpc-route-link.test.ts` and `test/rpc-route-honest.test.ts` (with `test/fixtures/header-chain.ts`, 160
+  consecutive mainnet headers from 32796); the honest failover cases of `test/rpc-route-plausibility.test.ts` and
+  `test/route-guard-visibility.test.ts` serve that chain, and `test/rpc-failover.test.ts` and
+  `test/rpc-pow-route.test.ts`, whose mocks serve one header at every height, test the selection with the PoW check
+  alone (the switch off).
 - The chainwork a contender reports counts no more than its headers carry: it is ranked with at most the linked
   block's chainwork plus `workForBits` of each proved header (a lower claim stays as claimed), and a block a
   non-primary backend serves is stored with at most its stored parent's chainwork plus its header's work. On 160
   consecutive mainnet headers the node's chainwork at the top is exactly the figure below them plus their work, so
   honest figures are stored as served. Before, a secondary that presented a real header with an invented chainwork
   became active after the work-escape and stored that figure, and every honest node then had less work than the
-  index: each pass held. 0.3.13 did the same. `test/rpc-route-honest.test.ts`.
+  index: each pass held. 0.3.13 did the same. A stored chainwork that is no positive integer (absent, empty, zero,
+  negative) bounds nothing, as the regression guard reads it, so a secondary over such a row is ranked with its
+  claim and selected as on 0.3.13. A block a non-primary backend serves is written only when its header hashes to
+  the block's hash, meets its own bits and has bits plausible against the stored chain (the contender check: not
+  easier than 16 times the target the 45-block LWMA window gives the newest stored block; the steepest step among
+  the 160 mainnet headers is 1.32 times easier); a block that fails is not written, the pass ends with a logged line,
+  and the backend is left out of the selection while it answers that tip. A header claiming bits `0x03000001` would
+  otherwise have stored 2^128 more work than its parent and held the index against every honest backend. The
+  primary's blocks are written as served. `test/rpc-route-honest.test.ts`.
 - Postgres: a start as a role that is not a superuser read `pg_statistic_ext_data`, which only a superuser may read,
   and failed with "permission denied", so no route answered; it reads the `pg_stats_ext` view, which shows the owner
   its own rows. The CI Postgres job runs the suite as a non-superuser owner of its database
   (`test/pg-nonsuperuser.test.ts`).
 - Postgres: a session that ended while its client was checked out of the pool (a database restart,
   `pg_terminate_backend`) in the writer's transaction, a reader's snapshot or the start emitted an `error` event
-  with no listener and ended the process; the call fails and the next ones get new connections
-  (`test/pg-client-loss.test.ts`). The tip pointer is written in the block's transaction, so a restart in the
+  with no listener and ended the process; the call fails and the next ones get new connections. A client whose
+  ROLLBACK failed, or that saw such an error, goes back to the pool broken, so pg-pool closes it instead of handing
+  the next caller a session inside an aborted transaction (`test/pg-client-loss.test.ts`). The tip pointer is written in the block's transaction, so a restart in the
   middle of a block write leaves the block and the pointer both written or both not.
-  `test/rpc-route-link.test.ts` (with `test/fixtures/header-chain.ts`, 160 consecutive mainnet headers from 32796);
-  the honest failover cases of `test/rpc-route-plausibility.test.ts` and `test/route-guard-visibility.test.ts` serve
-  that chain, and `test/rpc-failover.test.ts` and `test/rpc-pow-route.test.ts`, whose mocks serve one header at
-  every height, test the selection with the PoW check alone (the switch off).
 - Statements the code contradicted, now true: the comments that said blocks deeper than `finalDepth` are never
   touched (a reorg is followed down to the checkpoint floor); ROUTE-1's "finality-gated" anchor (it is the newest
   stored block, at depth 0); the statement cache's "never hit" bound (IN lists and `/analytics/series` vary the SQL);
