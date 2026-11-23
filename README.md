@@ -40,7 +40,7 @@ docker run -p 8793:8793 -v csd-index:/data -e CSD_RPC=http://host.docker.interna
 | `CSD_INDEX_PG_POOL` | `10` | Postgres connection-pool size for the API's reads (the block writer has one more connection of its own) |
 | `CSD_INDEX_LISTEN` | `127.0.0.1:8793` | where the explorer + API listen |
 | `CSD_INDEX_FROM` | `0` | first block to index |
-| `CSD_CONFIRMATIONS_FINAL` | `6` | depth after which blocks are treated as final |
+| `CSD_CONFIRMATIONS_FINAL` | `6` | confirmations at which `/tx/:id/status` says `final` and an event says `confirmed` (a deeper reorg is still followed) |
 
 It tracks the chain continuously and handles reorgs safely: if the network reorganizes, the
 indexer rewinds the affected blocks and replays the correct ones, so the data always matches the
@@ -74,7 +74,8 @@ A path or query parameter that does not percent-decode, or that holds U+0000 (`%
 Standard explorer endpoints (the widely used Esplora shape, so existing tools work):
 - `GET /blocks/tip/height` (503 while the index is empty), `/blocks/tip/hash`, `/blocks/recent`
 - `GET /block/:hash[/txids|/txs]`, `/block-height/:h`
-- `GET /tx/:id[/status]`
+- `GET /tx/:id[/status]`: `final` is true at `CSD_CONFIRMATIONS_FINAL` (6) confirmations or more; the indexer still
+  follows a deeper reorg, so it is a depth, not a guarantee
 - `GET /address/:a` (its `chain_stats` also carry `utxo_count`, the number of unspent outputs; read from one row the
   block writer keeps per address, so its cost does not grow with the address's outputs), `/address/:a/txs`,
   `/address/:a/txs/chain/:last_seen_txid` (the next page), `/address/:a/utxo`: at most 1,000 unspent outputs in
@@ -144,7 +145,9 @@ The extras:
 Live updates:
 - Server-sent events: `GET /stream/all` (every event), `/stream/blocks`, `/stream/domain/:d`.
 - WebSocket `/ws`: send `{"track-all": true}`, or `{"track-domain": [...]}`, `{"track-address": [...]}`,
-  `{"track-proposal": id}`. Over the WebSocket, block events go only to track-all clients. Each subscribe is
+  `{"track-proposal": id}`. Over the WebSocket, block events go only to track-all clients; `track-domain` delivers that
+  domain's proposals, `track-proposal` the attestations on that proposal and `track-address` the attestations that
+  address made (not its payments); every client gets reorg events. Each subscribe is
   acknowledged with what the socket now tracks; a frame that is not a JSON object is ignored, a field that is not
   the documented array adds nothing, a key longer than any the chain carries (a domain over 128 UTF-8 bytes, an
   address over 42 characters, a proposal id over 66) adds nothing, and a frame over 64 KiB or one that is not valid
@@ -152,6 +155,10 @@ Live updates:
   once more than 4 MiB (the default) is queued for it. A WebSocket ping is answered with a pong carrying its payload
   when nothing is queued for that socket; a client still receiving a large ack can miss one, so a keepalive should
   tolerate a missed pong.
+- The streams are a hint, not a record: events carry no id, a reconnect replays nothing, a block written while no
+  one listened (or before a restart) sends nothing later, and a block written more than `CSD_CONFIRMATIONS_FINAL` + 5
+  below the node's tip (a catch-up) sends none. The complete read is the chain-order feeds (`/proposals`,
+  `/attestations`) from a cursor.
 
 ## The explorer
 
@@ -201,4 +208,6 @@ first block's height and position), so the merkle proof of any transaction folds
 outputs keep their first state: an output a later occurrence creates again is counted once in balances, the unspent
 list and the coinbase totals, and keeps its first spender. With `CSD_INDEX_FROM` above 0 the indexer holds nothing
 below that height, so first means first at or above it. SQLite serves tens of readers, not
-hundreds (see SQLite or Postgres above). MIT licensed.
+hundreds (see SQLite or Postgres above). `/analytics/miners` credits a block to the address its coinbase names (the
+signer of its first input, else its first output), which the miner chooses: the shares are a display figure, not
+proof of who mined. MIT licensed.

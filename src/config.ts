@@ -31,7 +31,8 @@ export const CFG = {
   listen: env("CSD_INDEX_LISTEN", "127.0.0.1:8793"),
   // First height to index. Genesis is 0; raise it to skip pre-CSD history if desired.
   scanFrom: num("CSD_INDEX_FROM", 0),
-  // Blocks deeper than this are treated as final and never unwound (reorg bound).
+  // The depth at which an event is "confirmed" and the tip window the reorg check reads first; a reorg deeper than
+  // this is still followed, down to the checkpoint floor.
   finalDepth: num("CSD_CONFIRMATIONS_FINAL", 6),
   // Blocks at/under this depth are "confirmed" for display; the tip stays tentative.
   // NOTE (audit dead-key): currently UNCONSULTED; the API derives finality from `finalDepth`
@@ -68,12 +69,12 @@ export const CFG = {
   rpcTimeoutMs: num("CSD_RPC_TIMEOUT", 10_000),
   // ROUTE-1 F6 plausibility gate (rpc.ts selectBackend). A backend claiming to out-work/out-height the
   // trust anchor must not only serve a self-referential PoW-valid tip header (ROUTE-1) but also be
-  // PLAUSIBLE against the indexer's OWN local finality-gated headers, so a co-located backend presenting a
+  // PLAUSIBLE against the indexer's OWN stored headers, so a co-located backend presenting a
   // real MIN-DIFFICULTY header (target = POW_LIMIT) while claiming huge chainwork/height cannot capture the
   // feed. Two anchored bounds, both derived ONLY from the local blocks table (never the live primary, so a
   // genuinely-ahead honest secondary still wins when the primary is stale):
   //   * DELTA CAP: reject a contender claiming height > localTip + maxAheadBlocks. A contender cannot
-  //     plausibly be arbitrarily far beyond the local finality-gated tip, and this bounds the LWMA drift
+  //     plausibly be arbitrarily far beyond the local stored tip, and this bounds the LWMA drift
   //     window below. 128 is generous for steady-state (the indexer polls every ~15s and stays at the tip).
   maxAheadBlocks: num("CSD_RPC_MAX_AHEAD", 128),
   //   * LWMA EASE FACTOR: reject a contender whose declared tip target (from its bits) is EASIER than the

@@ -15,7 +15,7 @@
 //
 // Reorg invariant: EVERY row carries `height`, so unwinding orphaned blocks is
 // `DELETE ... WHERE height > ancestor` + un-spending outputs whose spender was
-// orphaned. Nothing deeper than CONFIRMATIONS_FINAL is ever touched.
+// orphaned. A reorg is followed as deep as the checkpoint floor allows (indexer.ts).
 //
 // Number policy (both backends): 64-bit integer columns are read EXACTLY; values
 // within Number.MAX_SAFE_INTEGER come back as `number`, anything past 2^53 comes back
@@ -225,7 +225,7 @@ class SqliteStore implements Store {
   private stmt(sql: string) {
     let st = this.stmts.get(sql);
     if (!st) {
-      if (this.stmts.size > 256) this.stmts.clear(); // safety valve, never hit by current code
+      if (this.stmts.size > 256) this.stmts.clear(); // a bound: IN lists and /analytics/series vary the SQL text
       st = this.d.prepare(sql);
       st.setReadBigInts(true);
       this.stmts.set(sql, st);

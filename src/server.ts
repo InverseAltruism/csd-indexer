@@ -13,7 +13,7 @@ import { store, snapshot, PG_INTEGER_MAX } from "./db.js";
 import * as q from "./queries.js";
 import * as analytics from "./analytics.js";
 import { merkleProof } from "./merkle.js";
-import { indexedHeight } from "./indexer.js";
+import { indexedHeight, lastNodeTipHeight } from "./indexer.js";
 import { sseHandler, attachWs } from "./stream.js";
 
 const TXID = /^0x[0-9a-f]{64}$/;
@@ -141,6 +141,7 @@ export function buildApp() {
       backend: store().backend,                     // "sqlite" | "postgres"; makes a storage cutover observable
       indexed_height,
       tip_height: tipH,
+      node_tip_height: lastNodeTipHeight(),        // the node's tip at this process's last sync pass; null without one
       tip_hash: tip?.hash ?? null,
       chainwork: tip?.chainwork ?? null,           // decimal string; compare with BigInt across hosts
       seconds_since_tip,                            // wall-clock age of the tip block
@@ -334,7 +335,7 @@ export function buildApp() {
     const n = atts.length;
     const avgScore = n ? atts.reduce((s, a) => s + Number(a.score || 0), 0) / n : 0;
     const avgConf = n ? atts.reduce((s, a) => s + Number(a.confidence || 0), 0) / n : 0;
-    const feesPaid = atts.reduce((s, a) => s + Number(a.fee || 0), 0);
+    const feesPaid = q.amt(atts.reduce((s, a) => s + BigInt(a.fee ?? 0), 0n));   // exact past 2^53 (fees are base units)
     res.json({
       address: req.params.a!.toLowerCase(), attestations: n, avg_score: avgScore, avg_confidence: avgConf, fees_paid: feesPaid,
       truncated, ...(truncated ? { note: `newest ${q.REPUTATION_WINDOW} attestations only` } : {}),

@@ -47,7 +47,7 @@ if (!why) {
   catch (e) { why = `no Chromium for playwright-core (set PLAYWRIGHT_CHROMIUM): ${String((e as Error).message).split("\n")[0]}`; }
 }
 
-test("a browser is present when EXPLORER_BROWSER_REQUIRED=1", { skip: process.env.EXPLORER_BROWSER_REQUIRED !== "1" }, () => {
+test("a browser is present when EXPLORER_BROWSER_REQUIRED=1", { skip: process.env.EXPLORER_BROWSER_REQUIRED !== "1" && "runs when EXPLORER_BROWSER_REQUIRED=1, as CI's sqlite job sets it" }, () => {
   assert.equal(why, "", "the browser tests would skip");
 });
 
@@ -72,7 +72,8 @@ const MINERS = { ok: true, window: "1d", from_height: FROM, to_height: TIP, bloc
 const INDEXER: Record<string, unknown> = {
   "/health": { ok: true, version: "0.2.13", backend: "sqlite", indexed_height: TIP, tip_height: TIP, seconds_since_tip: 60, stale: false, final_depth: 6,
     blocks: TIP + 1, txs: 147_000, proposals: 2300, attestations: 350 },
-  "/analytics/supply": { ok: true, height: TIP, emitted_supply: "609005000000000", max_supply: "10511999988436800", pct_emitted: 5.79, block_reward: "5000000000",
+  "/analytics/supply": { ok: true, height: TIP, emitted_supply: "609005000000000", burned_supply: "5000000000", total_supply: "609000000000000",
+    circulating_supply: "609000000000000", max_supply: "10511999988436800", pct_emitted: 5.79, block_reward: "5000000000",
     halving: { era: 0, interval: 1051200, next_height: 1051200, blocks_remaining: 929400, est_seconds_remaining: 111528000, next_reward: "2500000000" } },
   "/analytics/miners": MINERS,
   "/analytics/richlist": { ok: true, height: TIP, holders: [{ rank: 1, addr: MINER, balance: "375062706850941", utxos: 9, pct_of_emitted: 61.5 }] },
@@ -228,7 +229,7 @@ const server = createServer(async (req, res) => {
       if (S.health === "limited") return json(res, 429, { ok: false, error: "rate limit exceeded" }, { "retry-after": "60" });
       if (S.health === "html") { res.writeHead(200, { "content-type": "text/html" }); return res.end("<!doctype html><title>Just a moment...</title>"); }
       const h = INDEXER["/health"] as Record<string, unknown>;
-      return json(res, 200, S.health === "old" ? { ...h, seconds_since_tip: 1260, stale: true } : { ...h, tip_height: TIP + 7 });
+      return json(res, 200, S.health === "old" ? { ...h, seconds_since_tip: 1260, stale: true } : { ...h, node_tip_height: TIP + 7 });
     }
     if (k === "/blocks/recent") return json(res, 200, recent(Number(url.searchParams.get("limit") || 12)));
     // the indexer's domains are those its proposals name, with their counts
@@ -1164,6 +1165,46 @@ for (const [health, stats] of [["live", null], ["old", { text: "Last block 21 mi
     } finally { await v.close(); S.health = "live"; }
   });
 }
+
+// Chain-sourced strings meet the page's own tables and attributes: a key such as "constructor" is not a label, a block
+// row's attributes hold its hash and height as text, and base-unit sums are exact when a value arrives as a string
+// past 2^53 (it was concatenated).
+test("page helpers: own-key label lookups, escaped block-row attributes, exact base-unit sums", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, health: "live" });
+  const v = await open("/explorer", 1280, () => !!document.querySelector("#livepill"));
+  try {
+    const got = await v.page.evaluate(`(() => {
+      const row = blockRow({ height: 5, hash: '0x" data-x="1', time: 1700000000, tx_count: 1 }, false);
+      return {
+        domain: domainLabel("constructor"), label: labelOf("constructor"), amt: amt("5", "toString"),
+        hash: row.getAttribute("data-hash"), extra: row.hasAttribute("data-x"),
+        sum: fmtCSD(sumValues([{ value: 9007199254740991 }, { value: "9007199254740993" }])), neg: fmtCSD(-(2n ** 60n)),
+      };
+    })()`) as Record<string, unknown>;
+    assert.equal(got.domain, "constructor");
+    assert.equal(got.label, null);
+    assert.match(got.amt, /base units/);
+    assert.equal(got.hash, '0x" data-x="1');
+    assert.equal(got.extra, false);
+    assert.equal(got.sum, "180,143,985.09481984 CSD");
+    assert.equal(got.neg, "\u221211,529,215,046.06846976 CSD");
+  } finally { await v.close(); }
+});
+
+// "Circulating" is the supply route's circulating figure (emitted less the burned genesis output), not emitted supply.
+test("home: the Circulating figures read circulating_supply, not emitted_supply", { skip: why || false }, async () => {
+  Object.assign(S, { market: "off", series: true, shell: true, health: "live" });
+  const v = await open("/explorer", 1280, () => [...document.querySelectorAll(".pu .l")].some((e) => e.textContent === "Circulating"));
+  try {
+    const shown = await v.page.evaluate(() => {
+      const tile = [...document.querySelectorAll(".pu")].find((e) => e.querySelector(".l")?.textContent === "Circulating");
+      const dd = [...document.querySelectorAll("dt")].find((e) => e.textContent === "Circulating")?.nextElementSibling;
+      return { tile: tile?.querySelector(".n")?.textContent ?? null, detail: dd?.textContent ?? null };
+    });
+    assert.match(String(shown.tile), /^6,090,000\b/, JSON.stringify(shown));
+    assert.match(String(shown.detail), /^6,090,000\b/, JSON.stringify(shown));
+  } finally { await v.close(); }
+});
 
 // The latest-blocks list: ages in the preview's form, and each hash with its leading zeros and eight digits after them.
 test("latest blocks: ages read \"now\" and \"1 min\"; a hash shows its zeros dimmed and eight digits, the whole hash in its link", { skip: why || false }, async () => {

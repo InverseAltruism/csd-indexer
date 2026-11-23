@@ -258,9 +258,9 @@ test("redteam F2: merkleProof returns the CONSENSUS header root, so a lying node
   assert.equal(await merkleProof(cbE.txid), null, "no stored header root, no proof");
 });
 
-test("GRX-WIRE-CLAMP-1: an over-2^53 consensus expires_epoch is stored as a NON-safe sentinel (fork-guard fires identically on Granus and SPV) AND never overflows the BIGINT bind (no indexer wedge)", async () => {
+test("GRX-WIRE-CLAMP-1: an over-2^53 consensus expires_epoch is stored as a NON-safe sentinel (fork-guard fires identically on the indexer-fed resolver and SPV) AND never overflows the BIGINT bind (no indexer wedge)", async () => {
   // Two failure modes safeEpoch() must avoid: (1) clampInt's old bug: saturating >2^53 to a SAFE int (2^53-1)
-  // made Granus ACCEPT what an SPV replayer reading the raw u64 REJECTS via Number.isSafeInteger → canonicalState
+  // made the indexer-fed resolver ACCEPT what an SPV replayer reading the raw u64 REJECTS via Number.isSafeInteger → canonicalState
   // fork (un-masked once V22 removes the cap); (2) preserving the raw bigint unbounded: a u64 >= 2^63 overflows
   // the signed-64-bit BIGINT bind, throws in writeBlock, and permanently wedges the indexer. safeEpoch clamps
   // anything > MAX_SAFE_INTEGER to a non-safe sentinel that the resolver rejects identically AND that fits int64.
@@ -277,7 +277,7 @@ test("GRX-WIRE-CLAMP-1: an over-2^53 consensus expires_epoch is stored as a NON-
   // stored value is > MAX_SAFE_INTEGER (so the fork-guard fires) but NOT the old saturated 2^53-1, and fits int64
   assert.ok(BigInt(row.expires_epoch) > BigInt(Number.MAX_SAFE_INTEGER), "stored value stays > MAX_SAFE_INTEGER (not saturated to a safe int)");
   assert.ok(BigInt(row.expires_epoch) <= (1n << 63n) - 1n, "stored value fits a signed-64-bit column (no overflow)");
-  assert.ok(!Number.isSafeInteger(Number(row.expires_epoch)), "Granus read path Number(expires_epoch) is NOT a safe integer → resolver rejects, matching an SPV replayer reading the raw u64 → no fork");
+  assert.ok(!Number.isSafeInteger(Number(row.expires_epoch)), "the indexer-fed read path Number(expires_epoch) is NOT a safe integer → resolver rejects, matching an SPV replayer reading the raw u64 → no fork");
 
   // V22-IDX-OVERFLOW-1: a raw u64 up to 2^64-1 must NOT overflow the BIGINT bind / throw / wedge the indexer
   const u64max = (1n << 64n) - 1n; // 18446744073709551615: would have thrown ERR_INVALID_ARG_VALUE if stored raw

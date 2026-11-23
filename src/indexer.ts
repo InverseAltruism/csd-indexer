@@ -6,7 +6,7 @@
 // re-checkable; if a new block's `prev` doesn't link our stored tip, we walk back to
 // the common ancestor, unwind every row above it (DELETE WHERE height > ancestor +
 // un-spend orphaned spends), and replay the canonical branch; the electrs/Subsquid
-// roll-back-then-replay pattern. Blocks deeper than finalDepth are never touched.
+// roll-back-then-replay pattern. A reorg deeper than finalDepth is followed too, down to the checkpoint floor.
 import * as rpc from "./rpc.js";
 import { store, getMeta, asWriter, tx as dbTx, COINBASE_OUTPUTS, TOTALS_LOCK, ADDRESS_TOTALS_COLS, addressTotalsSql, type Store } from "./db.js";
 import { deriveAddr, addrFromScriptPubkey, appType } from "./decode.js";
@@ -16,7 +16,7 @@ import { bus } from "./events.js";
 // App-payload integers are attacker-chosen JSON. Clamp to a non-negative safe integer
 // DETERMINISTICALLY (NaN/negative → 0, >2^53-1 → 2^53-1): sqlite would store junk as
 // REAL and pg would reject "1e+21" as an int8 param; wedging the sync loop on that
-// block forever. Consensus data (heights, values, time) is NOT clamped; only app JSON.
+// block forever. Consensus integers (values, header fields) go through safeValue, which clamps only past int64.
 // NOTE: clampInt is for app ints the resolver compares against SMALL EXACT ENUMS (score vs
 // SCORE_FILL, confidence vs CONF_TOKEN_FILL); saturating to 2^53-1 cannot change those branch
 // outcomes, so it cannot fork. A consensus-bound app int that feeds an arithmetic/range comparison
@@ -27,12 +27,12 @@ function clampInt(v: unknown): number {
   return n > Number.MAX_SAFE_INTEGER ? Number.MAX_SAFE_INTEGER : n;
 }
 
-// Output value parse; TYPE-HONEST (F20). CSD's max supply (~1e17 sats) exceeds 2^53, so a
+// Output value parse; TYPE-HONEST (F20). CSD's max supply (about 1.05e16 base units) exceeds 2^53, so a
 // single legitimate UTXO value can be past JS's safe-integer range. Going through Number()
 // would silently round it (corrupting the row AND every SUM it feeds). So parse exactly: prefer
 // the node's string/number as a BigInt, return a bigint when past 2^53 (the store binds bigint
 // to the BIGINT column and reads it back exact, both backends), a number when it fits. A
-// malformed (fractional / NaN / negative) value still degrades to 0n; never a lossy REAL.
+// non-integer string, a negative or a NaN value degrades to 0n and a fractional number is floored; never a lossy REAL.
 //
 // Upper clamp (parity with safeEpoch's clamp): the value column is signed-64-bit (sqlite int64 /
 // pg int8). A value >= 2^63 throws on bind inside writeBlock, the tx rolls back, the tip never
@@ -52,14 +52,14 @@ function safeValue(v: unknown): bigint {
 
 // expires_epoch parse for the proposals row. It is a CONSENSUS field (drives offer/bid expiry) AND an
 // attacker-chosen u64. Two failure modes to avoid: (1) clampInt's old bug; saturating >2^53 to a SAFE int
-// (2^53-1) made the indexer-fed resolver (Granus) ACCEPT what an SPV replayer reading the raw u64 REJECTS via
+// (2^53-1) made the indexer-fed resolver ACCEPT what an SPV replayer reading the raw u64 REJECTS via
 // Number.isSafeInteger → canonicalState fork (GRX-WIRE-CLAMP-1, un-masked once V22 removes the duration cap);
 // (2) preserving the raw bigint unbounded; a u64 >= 2^63 OVERFLOWS the signed-64-bit BIGINT bind (int64 in
 // sqlite, int8 in pg), throws inside writeBlock, never advances the tip, and re-poisons the block every poll
 // (permanent indexer wedge). The resolver rejects EVERY value > MAX_SAFE_INTEGER regardless of magnitude, so
 // exactness past 2^53 is pointless here: preserve the JS-safe range exactly, and clamp anything above it to a
 // fixed NON-safe sentinel (still > MAX_SAFE_INTEGER → Number() stays non-safe → the fork-guard fires IDENTICALLY
-// on Granus and SPV) that always fits the column. (Unlike safeValue for UTXO output values, which DO feed SUMs.)
+// on the indexer-fed resolver and SPV) that always fits the column. (Unlike safeValue for UTXO output values, which DO feed SUMs.)
 const EXPIRES_EPOCH_SENTINEL = BigInt(Number.MAX_SAFE_INTEGER) + 1n; // 2^53; smallest non-safe int, well within int64
 function safeEpoch(v: unknown): bigint {
   const n = safeValue(v);
@@ -67,6 +67,11 @@ function safeEpoch(v: unknown): bigint {
 }
 
 const TIP_KEY = "indexed_height";
+
+// The node's tip height as this process's last sync pass read it: null before the first pass, and in a process that
+// runs none (the API alone). /health serves it, so a reader can tell an index behind its node.
+let nodeTipHeight: number | null = null;
+export const lastNodeTipHeight = (): number | null => nodeTipHeight;
 
 export interface IndexResult { from: number; to: number; tip: number; blocks: number; reorgs: number; reorgDepth: number; }
 
@@ -245,9 +250,9 @@ export async function writeBlock(b: rpc.RpcBlock, advanceTip = false): Promise<R
         const o = outs[vout]!;
         const addr = addrFromScriptPubkey(o.script_pubkey);
         // Output values are integer base units, and a single legitimate CSD value can exceed 2^53
-        // (max supply ~1e17 sats). safeValue() parses it EXACTLY as a bigint (never via lossy
+        // (max supply about 1.05e16 base units). safeValue() parses it EXACTLY as a bigint (never via lossy
         // Number()), so neither the stored row nor any SUM it feeds is silently corrupted; a
-        // malformed (fractional / NaN / negative) value still degrades to 0n, never a lossy REAL.
+        // non-integer string, negative or NaN value degrades to 0n (a fractional number is floored), never a lossy REAL.
         const val = safeValue(o.value);
         sumOut += val;
         await d.run(SQL_OUT, t.txid, vout, addr, val, blk.height);
@@ -267,7 +272,7 @@ export async function writeBlock(b: rpc.RpcBlock, advanceTip = false): Promise<R
       if (kind === "Propose" && t.app) {
         // expires_epoch via safeEpoch() (see above): preserves the JS-safe range exactly, clamps anything
         // > MAX_SAFE_INTEGER to a non-safe sentinel that (a) the resolver's isSafeInteger guard rejects
-        // IDENTICALLY on Granus and SPV (no fork, GRX-WIRE-CLAMP-1) and (b) always fits the BIGINT column
+        // IDENTICALLY on the indexer-fed resolver and SPV (no fork, GRX-WIRE-CLAMP-1) and (b) always fits the BIGINT column
         // (no int64/int8 overflow → no writeBlock throw → no indexer wedge). Behavior-identical for every
         // real epoch (< 2^53). Must NOT be clampInt (would saturate to a SAFE int → fork) nor an unbounded
         // bigint (a u64 >= 2^63 would overflow the bind).
@@ -548,6 +553,7 @@ async function syncPass(): Promise<IndexResult> {
   if (!(await rpc.reachable())) throw new Error("node RPC unreachable");
   const nodeTip = await rpc.tip();
   const tip = nodeTip.height;
+  nodeTipHeight = tip;
   let blocks = 0, reorgs = 0, reorgDepth = 0;
 
   // REGRESSION GUARD (2026-07-05 incident). Never reconcile/unwind against a node presenting LESS

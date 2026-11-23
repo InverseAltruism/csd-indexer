@@ -10,7 +10,7 @@ export interface TxRow { txid: string; height: number; pos: number; app_type: st
 export interface OutRow { txid: string; vout: number; addr: string; value: number | string; height: number; spent_txid: string | null; spent_height: number | null; }
 
 // Serialize a sats amount: a JS number when it fits exactly, else a decimal string. CSD max supply
-// (~1e17 sats) exceeds 2^53; a high-value address must never 500 the API or corrupt silently.
+// (about 1.05e16 base units) exceeds 2^53; a high-value address must never 500 the API or corrupt silently.
 // THE one copy since B8c (analytics.ts imports it; was defined near-verbatim in both files:
 // this pass-through-number variant is canonical: it never throws on a weird store value where
 // the old big()-normalizing twin would RangeError on a non-integer number).

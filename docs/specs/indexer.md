@@ -23,7 +23,7 @@ or later).
   - ROUTE-1: a non-primary backend may win on work or height only if its tip header is PoW-valid and hash-bound
     (`tipHeaderPowOk`) and plausible (`contenderPlausible`); both checks are csd-light's. `contenderPlausible` in
     `src/rpc.ts` is the adapter that reads the local anchor and passes `CFG`: a delta cap (`CSD_RPC_MAX_AHEAD`, 128)
-    plus an LWMA ease factor (`CSD_RPC_MAX_EASE`, 16), anchored on the indexer's own local finality-gated headers
+    plus an LWMA ease factor (`CSD_RPC_MAX_EASE`, 16), anchored on the indexer's own stored headers (the newest stored block, at depth 0)
     (never the live primary), so a real min-difficulty header claiming huge chainwork cannot capture the feed while a
     genuinely-ahead honest secondary still wins.
   - The link proof (`contenderLinks`): from the contender's tip down, each header it serves at the next lower height

@@ -42,7 +42,7 @@ export { tipHeaderPowOk };
 // while the backend claims arbitrary chainwork/height in /tip; that would let a co-located miner/standby (or
 // a compromised CSD_RPC_BACKENDS entry) capture the whole projection feed. csd-light's `contenderPlausible`
 // decides (delta cap grown by the local tip's wall-clock age, then the LWMA ease test); this adapter supplies
-// the indexer's own anchor: its local finality-gated tip from the blocks table, never the live primary, so a
+// the indexer's own anchor: its newest stored block (depth 0) from the blocks table, never the live primary, so a
 // genuinely-ahead honest secondary still wins when the primary is stale. A store READ throw fails closed
 // (false); no local tip yet (cold start / mid-backfill) passes, so failover works before the index exists.
 // The kill switch CSD_RPC_ROUTE_PLAUSIBILITY=0 (CFG.routePlausibility) returns before the store read.
@@ -84,7 +84,7 @@ async function contenderPlausible(claimedHeight: number, header: unknown): Promi
 // would be a journal flood, and the flag must never gate behavior.
 let warnedLocalTargetThrow = false;
 
-// Honest expected bits AT the local tip, from the local LWMA window (finality-gated blocks table only).
+// Honest expected bits AT the local tip, from the local LWMA window (the blocks table only).
 // Returns null when it cannot be derived (fewer than 2 local headers, or a compute anomaly); csd-light then
 // skips the LWMA test and the delta cap still applies. Never touches the network or the live primary.
 async function expectedLocalBits(localHeight: number): Promise<number | null> {
@@ -222,7 +222,7 @@ async function tipOf(base: string): Promise<{ height: number; chainwork: bigint;
  * F6 (route-capture): the ROUTE-1 PoW check alone is insufficient because a REAL min-difficulty header
  * (bits at/near POW_LIMIT, trivial to grind) passes powOk against its OWN bits, so a contender can pair a
  * cheap valid header with a huge forged /tip chainwork/height and win. `contenderEligible` therefore also
- * runs `contenderPlausible`, which anchors on the indexer's OWN local finality-gated headers (delta cap +
+ * runs `contenderPlausible`, which anchors on the indexer's OWN stored headers (delta cap +
  * LWMA ease factor), never the live primary; so a min-diff forgery is excluded while a genuinely-ahead
  * honest secondary at the correct local difficulty is still selected when the primary is stale.
  */
