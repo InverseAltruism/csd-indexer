@@ -18,6 +18,10 @@
   the honest failover cases of `test/rpc-route-plausibility.test.ts` and `test/route-guard-visibility.test.ts` serve
   that chain, and `test/rpc-failover.test.ts` and `test/rpc-pow-route.test.ts`, whose mocks serve one header at
   every height, test the selection with the PoW check alone (the switch off).
+- A NUL byte (`%00`) in a path or query parameter answers 400 `{"error":"bad request"}` on both backends, in `h()`,
+  which every REST route passes. Postgres refused U+0000 in a text bind, so such a request answered 500 and logged
+  a stack there, and 404 or 200 on SQLite. No stored text holds U+0000 (`storableText` stores U+0001 for it).
+  Printable escapes such as `%20` answer as before. `test/error-body.test.ts`.
 - An `/address/:a/utxo` page costs the page. Neither planner had an index that answers "this address's unspent
   outputs in height order": SQLite read the unspent outputs of every address through `outputs(spent_txid)` and
   sorted them, and Postgres walked `outputs(height)` and filtered, reading the address's lifetime outputs. A new index

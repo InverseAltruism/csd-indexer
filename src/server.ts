@@ -69,6 +69,13 @@ export function finalErrorHandler(err: unknown, _req: Request, res: Response, ne
   fail(res, err);
 }
 
+// A string holding U+0000 anywhere in a parsed parameter value: a string, or qs's arrays and objects of them.
+function hasNul(v: unknown): boolean {
+  if (typeof v === "string") return v.includes("\u0000");
+  if (v != null && typeof v === "object") return Object.values(v).some(hasNul);
+  return false;
+}
+
 export function buildApp() {
   const app = express();
   app.set("etag", false);
@@ -86,8 +93,13 @@ export function buildApp() {
   // async handlers: express 4 doesn't catch a rejected promise, so wrap every handler.
   // Params are typed as plain strings (the routes below only read params they declare).
   type Req = Request<Record<string, string>, unknown, unknown, Record<string, string | undefined>>;
+  // A parameter holding U+0000 names nothing the store holds (storableText stores U+0001 for it) and Postgres refuses
+  // it in a text bind, so every route answers it 400 before it reads (test/error-body.test.ts).
   const h = (fn: (req: Req, res: Response) => Promise<unknown>) =>
-    (req: Req, res: Response) => { fn(req, res).catch((e) => fail(res, e)); };
+    (req: Req, res: Response) => {
+      if (hasNul(req.params) || hasNul(req.query)) { bad(res, "bad request"); return; }
+      fn(req, res).catch((e) => fail(res, e));
+    };
 
   // ── health / status ──
   // Freshness surface (added for multi-host failover): a load balancer or failover client

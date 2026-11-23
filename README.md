@@ -68,6 +68,9 @@ from-genesis reindex of mainnet matches row-for-row across backends.
 
 ## The API
 
+A path or query parameter that does not percent-decode, or that holds U+0000 (`%00`), answers 400
+`{"error":"bad request"}` on every route.
+
 Standard explorer endpoints (the widely used Esplora shape, so existing tools work):
 - `GET /blocks/tip/height` (503 while the index is empty), `/blocks/tip/hash`, `/blocks/recent`
 - `GET /block/:hash[/txids|/txs]`, `/block-height/:h`
