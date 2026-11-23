@@ -37,7 +37,7 @@ docker run -p 8793:8793 -v csd-index:/data -e CSD_RPC=http://host.docker.interna
 | `CSD_INDEX_DB` | `./csd-index.db` | the database file (SQLite; no native build needed) |
 | `CSD_INDEX_PG` | *(unset)* | a Postgres URL, set it to use Postgres instead of SQLite (see below) |
 | `CSD_INDEX_PG_SCHEMA` | `public` | Postgres schema (namespace) for the tables |
-| `CSD_INDEX_PG_POOL` | `10` | Postgres connection-pool size |
+| `CSD_INDEX_PG_POOL` | `10` | Postgres connection-pool size for the API's reads (the block writer has one more connection of its own) |
 | `CSD_INDEX_LISTEN` | `127.0.0.1:8793` | where the explorer + API listen |
 | `CSD_INDEX_FROM` | `0` | first block to index |
 | `CSD_CONFIRMATIONS_FINAL` | `6` | depth after which blocks are treated as final |

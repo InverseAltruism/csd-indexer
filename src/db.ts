@@ -23,6 +23,7 @@
 // use amt()-style helpers to keep JSON clean.
 import { DatabaseSync } from "node:sqlite";
 import { createRequire } from "node:module";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { CFG } from "./config.js";
 
 // CJS require shim for the lazy `pg` import (we run as ESM via tsx); keeps pg
@@ -45,6 +46,8 @@ export interface Store {
   all<T = Record<string, unknown>>(sql: string, ...params: unknown[]): Promise<T[]>;
   /** Serialized read-modify-write transaction. fn runs against the SAME connection. */
   tx<T>(fn: (s: Store) => Promise<T>): Promise<T>;
+  /** Reads in one snapshot of the database (see snapshot() below). */
+  snapshot<T>(fn: (s: Store) => Promise<T>): Promise<T>;
   /** Backend-specific maintenance (WAL checkpoint on sqlite; no-op on pg). */
   checkpoint(): Promise<void>;
   close(): Promise<void>;
@@ -244,6 +247,15 @@ class SqliteStore implements Store {
     try { const r = await fn(this); this.d.exec("COMMIT"); return r; }
     catch (e) { try { this.d.exec("ROLLBACK"); } catch { /* already rolled back */ } throw e; }
   }
+  // A deferred transaction reads one WAL snapshot from its first read, so another process's commit (a separate `index`
+  // run) cannot land between two reads. The callback awaits only store reads, as a dbTx callback does, so this
+  // process's writer cannot begin inside it; inside an open transaction the reads already share one view.
+  async snapshot<T>(fn: (s: Store) => Promise<T>): Promise<T> {
+    if (this.d.isTransaction) return await fn(this);
+    this.d.exec("BEGIN");
+    try { return await fn(this); }
+    finally { if (this.d.isTransaction) this.d.exec("COMMIT"); }
+  }
   async checkpoint(): Promise<void> { try { this.d.exec("PRAGMA wal_checkpoint(TRUNCATE);"); } catch { /* busy */ } }
   async close(): Promise<void> { this.d.close(); }
 }
@@ -278,6 +290,21 @@ function toPg(sql: string): string {
   return sql.replace(/\?/g, () => `$${++n}`);
 }
 
+// A Store over one pg client: a transaction's or a snapshot's statements all run on it.
+function clientStore(c: import("pg").PoolClient): Store {
+  return {
+    backend: "postgres",
+    exec: async (sql) => { await c.query(sql); },
+    run: async (sql, ...p) => { await c.query(toPg(sql), p as unknown[]); },
+    get: async (sql, ...p) => (await c.query(toPg(sql), p as unknown[])).rows[0],
+    all: async (sql, ...p) => (await c.query(toPg(sql), p as unknown[])).rows,
+    tx: () => { throw new Error("nested tx"); },
+    snapshot: (fn) => fn(clientStore(c)),
+    checkpoint: async () => { /* autovacuum's job, as on the pool */ },
+    close: async () => { /* the client goes back to the pool where it was taken */ },
+  };
+}
+
 class PgStore implements Store {
   readonly backend = "postgres" as const;
   private pool!: import("pg").Pool;
@@ -285,9 +312,11 @@ class PgStore implements Store {
   private _ready: Promise<void> | null = null;
   // CAIRN-IDX-POOL-1 / PG-7: hard cap on the pending-acquire queue (pg-pool has no native one).
   // Sized as the pool max + a modest burst buffer; beyond it we fast-fail rather than let a flood
-  // park thousands of waiters and balloon memory/latency.
-  private readonly maxWaiting = Math.max(64, CFG.pgPoolSize * 8);
-  constructor(url: string, schema: string) {
+  // park thousands of waiters and balloon memory/latency. The writer's store has no cap (writer() below).
+  private readonly maxWaiting: number;
+  private _writer: PgStore | null = null;
+  constructor(private readonly url: string, schema: string, private readonly opts: { max: number; guarded: boolean; boot?: PgStore }) {
+    this.maxWaiting = Math.max(64, opts.max * 8);
     const { Pool, types } = require("pg") as typeof import("pg");
     // Exact integer reads, same policy as the sqlite backend: int8 (OID 20) and the
     // NUMERIC (OID 1700) that SUM(bigint) yields come back as number within 2^53,
@@ -297,15 +326,16 @@ class PgStore implements Store {
       getTypeParser: (oid: number, format?: string) =>
         oid === 20 || oid === 1700 ? exactParser : (types.getTypeParser as (o: number, f?: string) => unknown)(oid, format),
     } as unknown as import("pg").CustomTypesConfig;
+    this.schemaSafe = schema.replace(/[^a-zA-Z0-9_]/g, "");
     this.pool = new Pool({
-      connectionString: url, max: CFG.pgPoolSize, types: perPool,
+      connectionString: url, max: opts.max, types: perPool,
       // CAIRN-IDX-POOL-1 / PG-7: per-acquire timeout; any single acquire fails after 10s rather
       // than hanging. NOTE: this bounds how long ONE waiter waits, not how MANY can wait; pg-pool
       // 3.x has no built-in maxWaitingClients, so the queue length is bounded explicitly below in
       // acquireGuard() (the prior comment claimed "never queue forever" but the queue was unbounded).
       connectionTimeoutMillis: 10_000,
       // server-side guards: statement_timeout (30s) caps any single query (a start's DDL and rebuild aside, bootTx) so no runaway read
-      // starves the block writer; idle_in_transaction_session_timeout (60s) keeps an abandoned
+      // holds a connection; idle_in_transaction_session_timeout (60s) keeps an abandoned
       // BEGIN from holding locks. Both exceed connectionTimeoutMillis by design; the acquire
       // timeout fails fast; these bound work that is already running on a connection.
       options: "-c statement_timeout=30000 -c idle_in_transaction_session_timeout=60000",
@@ -314,16 +344,23 @@ class PgStore implements Store {
     // restart, idle kill, network blip). With no listener that's an uncaught exception
     // that takes the whole process down; log and let the pool replace the client.
     this.pool.on("error", (e) => console.error(`[pg pool] idle client error: ${e.message}`));
-    this.schemaSafe = schema.replace(/[^a-zA-Z0-9_]/g, "");
     // every pooled connection joins the schema
     this.pool.on("connect", (client) => {
       client.query(`SET search_path TO ${this.schemaSafe}`).catch(() => { /* a broken connection fails the user query queued behind it */ });
     });
   }
+  /** The block writer's store: its own pool of one connection, without the readers' wait cap, so no read flood can
+   *  refuse or queue a block write (test/pg-writer-connection.test.ts). The readers keep their pool and their cap. */
+  writer(): Store {
+    if (this.opts.boot) return this;
+    this._writer ??= new PgStore(this.url, this.schemaSafe, { max: 1, guarded: false, boot: this });
+    return this._writer;
+  }
   // Lazily (re)established: if the first connect/DDL fails (pg still starting, network
   // blip), the failure must NOT be cached forever; the next call retries from scratch,
-  // so the indexer loop recovers as soon as Postgres does.
+  // so the indexer loop recovers as soon as Postgres does. A writer's store boots through its owner.
   private ready(): Promise<void> {
+    if (this.opts.boot) return this.opts.boot.ready();
     if (this._ready) return this._ready;
     const p = (async () => {
       const c = await this.pool.connect();
@@ -343,7 +380,7 @@ class PgStore implements Store {
   // can't get an idle client enters the same _pendingQueue, so checking waitingCount covers
   // query() and connect() alike.)
   private acquireGuard(): void {
-    if (this.pool.waitingCount >= this.maxWaiting)
+    if (this.opts.guarded && this.pool.waitingCount >= this.maxWaiting)
       throw new Error("indexer db pool saturated (too many concurrent requests)");
   }
   async exec(sql: string): Promise<void> { await this.ready(); this.acquireGuard(); await this.pool.query(sql); }
@@ -360,22 +397,12 @@ class PgStore implements Store {
     const r = await this.pool.query(toPg(sql), params as unknown[]);
     return r.rows as T[];
   }
-  async tx<T>(fn: (s: Store) => Promise<T>): Promise<T> {
+  private async onClient<T>(begin: string, fn: (s: Store) => Promise<T>): Promise<T> {
     await this.ready(); this.acquireGuard();
     const c = await this.pool.connect();
-    const cs: Store = {
-      backend: "postgres",
-      exec: async (sql) => { await c.query(sql); },
-      run: async (sql, ...p) => { await c.query(toPg(sql), p as unknown[]); },
-      get: async (sql, ...p) => (await c.query(toPg(sql), p as unknown[])).rows[0],
-      all: async (sql, ...p) => (await c.query(toPg(sql), p as unknown[])).rows,
-      tx: () => { throw new Error("nested tx"); },
-      checkpoint: async () => { /* autovacuum's job, as on the pool */ },
-      close: async () => { /* the client goes back to the pool in this method's finally */ },
-    };
     try {
-      await c.query("BEGIN");
-      const r = await fn(cs);
+      await c.query(begin);
+      const r = await fn(clientStore(c));
       await c.query("COMMIT");
       return r;
     } catch (e) {
@@ -383,16 +410,44 @@ class PgStore implements Store {
       throw e;
     } finally { c.release(); }
   }
+  async tx<T>(fn: (s: Store) => Promise<T>): Promise<T> { return await this.onClient("BEGIN", fn); }
+  // REPEATABLE READ takes one snapshot at the first statement and keeps it for the transaction.
+  async snapshot<T>(fn: (s: Store) => Promise<T>): Promise<T> {
+    return await this.onClient("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY", fn);
+  }
   async checkpoint(): Promise<void> { /* autovacuum's job */ }
-  async close(): Promise<void> { await this.pool.end(); }
+  async close(): Promise<void> {
+    if (this._writer) { await this._writer.close(); this._writer = null; }
+    await this.pool.end();
+  }
 }
 
 let _store: Store | null = null;
+// The store a call runs against when it is not the process's default: a route's snapshot or the sync loop's writer.
+const scope = new AsyncLocalStorage<Store>();
 
-export function store(): Store {
+function base(): Store {
   if (_store) return _store;
-  _store = CFG.pg ? new PgStore(CFG.pg, CFG.pgSchema) : new SqliteStore(CFG.db);
+  _store = CFG.pg ? new PgStore(CFG.pg, CFG.pgSchema, { max: CFG.pgPoolSize, guarded: true }) : new SqliteStore(CFG.db);
   return _store;
+}
+
+export function store(): Store { return scope.getStore() ?? base(); }
+
+/** Runs fn with every store() call on the block writer's connection: on Postgres its own pool of one, outside the
+ *  readers' pool and wait cap; on SQLite the one connection. */
+export function asWriter<T>(fn: () => Promise<T>): Promise<T> {
+  const b = base();
+  return scope.run(b instanceof PgStore ? b.writer() : b, fn);
+}
+
+/** Runs fn with every store() call reading one snapshot (REPEATABLE READ on Postgres, a deferred transaction on
+ *  SQLite), so an answer built from several statements is one view of the chain (test/snapshot-reads.test.ts). Inside
+ *  a snapshot or a transaction it runs fn in the one already open. The callback awaits only store reads. */
+export function snapshot<T>(fn: () => Promise<T>): Promise<T> {
+  const cur = scope.getStore();
+  if (cur) return cur.snapshot((s) => scope.run(s, fn));
+  return base().snapshot((s) => scope.run(s, fn));
 }
 
 /** Serialized read-modify-write transaction (see Store.tx). */

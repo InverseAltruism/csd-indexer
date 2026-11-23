@@ -8,7 +8,7 @@
 // un-spend orphaned spends), and replay the canonical branch; the electrs/Subsquid
 // roll-back-then-replay pattern. Blocks deeper than finalDepth are never touched.
 import * as rpc from "./rpc.js";
-import { store, getMeta, tx as dbTx, COINBASE_OUTPUTS, TOTALS_LOCK, ADDRESS_TOTALS_COLS, addressTotalsSql, type Store } from "./db.js";
+import { store, getMeta, asWriter, tx as dbTx, COINBASE_OUTPUTS, TOTALS_LOCK, ADDRESS_TOTALS_COLS, addressTotalsSql, type Store } from "./db.js";
 import { deriveAddr, addrFromScriptPubkey, appType } from "./decode.js";
 import { CFG } from "./config.js";
 import { bus } from "./events.js";
@@ -533,9 +533,14 @@ async function reconcileTipWindow(tip: number): Promise<number> {
 
 /**
  * Index forward from where we left off up to (tip - 0); reorgs handled inline.
- * Returns a summary. Idempotent: re-running with no new blocks is a no-op.
+ * Returns a summary. Idempotent: re-running with no new blocks is a no-op. Every store call of the pass runs on the
+ * writer's connection (db.ts asWriter), so readers cannot refuse or queue it.
  */
 export async function syncOnce(): Promise<IndexResult> {
+  return await asWriter(syncPass);
+}
+
+async function syncPass(): Promise<IndexResult> {
   // Pick the healthiest backend (node -> miner -> standby by chainwork) for this whole cycle, so a node
   // that fell behind does not stall the projection. Composes with the regression guard below.
   const sel = await rpc.selectBackend();

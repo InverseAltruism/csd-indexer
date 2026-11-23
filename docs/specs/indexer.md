@@ -46,8 +46,12 @@ or later).
     `/block` cannot wedge the loop.
 - `src/db.ts`: one async `Store` interface with two backends, selected only by `CFG.pg` (`store()`).
   - `SqliteStore` is node:sqlite's `DatabaseSync` in WAL mode. `PgStore` is a pg Pool with `?` to `$n` translation and
-    exact int8 and NUMERIC parsers. A store call fails fast with "indexer db pool saturated" once
+    exact int8 and NUMERIC parsers. A reader's store call fails fast with "indexer db pool saturated" once
     max(64, pool size x 8) calls already wait for a connection (`test/pg-acquire-guard.test.ts`).
+  - The block writer has its own pool of one connection, outside the readers' pool and their wait cap: `syncOnce`
+    runs every store call of a pass in `asWriter`, an AsyncLocalStorage scope that `store()` reads, so a read flood
+    can neither refuse nor queue a block write (`test/pg-writer-connection.test.ts`). The process holds at most
+    `CSD_INDEX_PG_POOL` + 1 connections. On SQLite the writer and the readers share the one connection.
   - Tables: `blocks`, `txs`, `outputs`, `address_history`, `proposals`, `attestations`, `tx_repeats`, `meta`. Every row
     carries `height` (the reorg invariant). `tx_repeats(height, pos, txid)` lists the block positions whose txid has
     its rows at an earlier place (section 5, First occurrence).

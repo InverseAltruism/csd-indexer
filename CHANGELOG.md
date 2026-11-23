@@ -18,6 +18,13 @@
   the honest failover cases of `test/rpc-route-plausibility.test.ts` and `test/route-guard-visibility.test.ts` serve
   that chain, and `test/rpc-failover.test.ts` and `test/rpc-pow-route.test.ts`, whose mocks serve one header at
   every height, test the selection with the PoW check alone (the switch off).
+- The block writer never waits behind readers on Postgres. It shared the readers' pool and its wait cap, so a read
+  flood refused its store calls with "indexer db pool saturated" (in a measured flood of slow `/address/:a/utxo`
+  reads, 69 of 79 block writes) and the tip froze while it lasted. `syncOnce` now runs on a pool of one connection of
+  its own (`asWriter` in `src/db.ts`), outside the readers' cap, which stays: past it a read is refused as before.
+  The process holds at most `CSD_INDEX_PG_POOL` + 1 connections. `test/pg-writer-connection.test.ts` (Postgres
+  only): ten passes during a flood that keeps the readers' queue full; before, passes failed with the saturation
+  error.
 - A backend that answers `/tip` and no block below some height costs a bounded number of reads per pass. Both reorg
   walks skipped a height the node did not answer and went on to the scan floor, one node read per indexed height
   (300 and 600 reads on a 300-block index in `test/absence-walk-bound.test.ts`; about 148,000 at the live height),
