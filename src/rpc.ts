@@ -217,18 +217,35 @@ async function logShortProof(base: string, claimedHeight: number, h: number, anc
     `at least ${Math.max(0, h - 1 - nearest)} to go; it goes on at the next pass`);
 }
 
-/** The chainwork syncOnce stores for a block a non-primary backend serves: at most its stored parent's plus its own
- *  header's work, as the selection ranks that backend's claim; the primary's figure is stored as it serves it. */
-export async function boundWork(b: RpcBlock): Promise<void> {
-  const primary = (CFG.rpcBackends && CFG.rpcBackends[0]) || CFG.rpc;
-  if (ACTIVE === primary) return;
+const primaryBackend = (): string => (CFG.rpcBackends && CFG.rpcBackends[0]) || CFG.rpc;
+// Backends that served a block whose header failed admitBlock, each with the /tip hash it answered then. One is left
+// out of the selection while it answers that tip; the primary is never left (its blocks are not checked).
+const left = new Map<string, string | null>();
+const lastTip = new Map<string, string | null>();
+/** Whether the active backend is one admitBlock left: syncOnce then reads nothing from it this pass. */
+export function activeLeft(): boolean { return left.has(ACTIVE); }
+
+/** Whether syncOnce may write a block the active backend serves, with the chainwork it may store. The primary's
+ *  blocks are written as served. A non-primary backend's block must carry a header that hashes to the block's hash
+ *  and meets its own bits (tipHeaderPowOk) and whose bits are plausible against the stored chain (contenderPlausible:
+ *  not easier than 16 times the target the stored LWMA window gives the newest stored block), the checks a
+ *  contender's tip header passes; its chainwork is then at most its stored parent's plus that header's work, as the
+ *  selection ranks that backend's claim. A block that fails is not written and its backend is left
+ *  (test/rpc-route-honest.test.ts). */
+export async function admitBlock(b: RpcBlock): Promise<boolean> {
+  if (ACTIVE === primaryBackend()) return true;
+  if (!tipHeaderPowOk(b.header, b.hash) || !(await contenderPlausible(b.height, b.header))) {
+    left.set(ACTIVE, lastTip.get(ACTIVE) ?? null);
+    return false;
+  }
   const reported = parseWork(b.chainwork);
-  if (reported == null) return;
+  if (reported == null) return true;
   const parent = await store().get<{ chainwork: string | null }>("SELECT chainwork FROM blocks WHERE height=? AND hash=?", b.height - 1, b.header.prev);
   const base = parseWork(parent?.chainwork);
-  if (base == null) return;
+  if (base == null) return true;
   const bound = base + headerWork(b.header);
   if (reported > bound) b.chainwork = String(bound);
+  return true;
 }
 
 // L9: bound every serial-poll read with a generous AbortSignal timeout. The sync loop reads /tip then
@@ -297,7 +314,11 @@ type Probe = { height: number; chainwork: bigint; tipHash: string | null };
 export async function selectBackend(): Promise<{ active: string; switched: boolean; height: number }> {
   const backends = CFG.rpcBackends && CFG.rpcBackends.length ? CFG.rpcBackends : [CFG.rpc];
   const probed = await Promise.all(backends.map(async (b) => ({ b, t: await tipOf(b) })));
-  const reachable = probed.filter((x): x is { b: string; t: Probe } => x.t != null);
+  for (const { b, t } of probed) {
+    if (t) lastTip.set(b, t.tipHash);
+    if (t && left.has(b) && left.get(b) !== t.tipHash) left.delete(b);   // a new tip: the backend is read again
+  }
+  const reachable = probed.filter((x): x is { b: string; t: Probe } => x.t != null && !left.has(x.b));
   const prev = ACTIVE;
   if (reachable.length === 0) return { active: ACTIVE, switched: false, height: 0 };
   const primary = backends[0];

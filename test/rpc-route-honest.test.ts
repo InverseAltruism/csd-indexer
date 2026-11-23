@@ -292,3 +292,34 @@ test("with the guard off, blocks over a stored chainwork \"0\" are stored with t
     for (const h of [101, 105]) assert.equal(await storedWork(h), CHAIN[h]!.chainwork, `height ${h}`);
   } finally { CFG.workGuard = true; }
 });
+
+test("every real header of the fixture served by a secondary is admitted, the steepest difficulty step included", async () => {
+  await start(0);
+  P.state = down; S1.state = up(160); S2.state = down;
+  const p = await pass();
+  assert.equal(p.active, "sec1");
+  assert.equal(await indexedHeight(), 160);
+  assert.ok(!warnings.some((w) => w.includes("REFUSING")), "no block refused");
+  assert.equal(await storedWork(160), CHAIN[160]!.chainwork);
+});
+
+// The only backend that answers serves block 101 with a header that claims bits 0x03000001 (a target of 1, no proof
+// of work can meet it) and a chainwork 2^128 above block 100's. Stored as "parent's work plus that header's work",
+// no honest backend would ever present as much, and the regression guard held against every one of them.
+test("a served block whose header fails proof of work is not written, and the index follows the honest nodes after", async () => {
+  await start(100);
+  const bad = CHAIN.slice(0, 101);
+  bad.push({ ...CHAIN[101]!, header: { ...CHAIN[101]!.header, bits: 0x03000001 }, chainwork: String(BigInt(CHAIN[100]!.chainwork) + 2n ** 128n) });
+  P.state = down; S2.state = down; S1.state = up(101, { chain: bad });
+  const one = await pass();
+  assert.equal(one.indexed, 100, "the block is not written");
+  assert.ok(warnings.some((w) => w.includes("REFUSING block 101")), "the pass ends with a logged line");
+  const two = await pass();
+  assert.equal(two.indexed, 100);
+  assert.deepEqual(two.reads[1], [], "the backend left is not read while it answers that tip");
+  P.state = up(110); S2.state = up(110);
+  const three = await pass();
+  assert.equal(three.hold, false);
+  assert.equal(await indexedHeight(), 110);
+  assert.equal(await storedWork(110), CHAIN[110]!.chainwork);
+});

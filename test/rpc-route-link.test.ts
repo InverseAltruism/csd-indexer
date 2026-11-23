@@ -154,8 +154,11 @@ test("end to end: the replaying backend is not selected and the index stays the 
     prev = hash;
   }
   const serve = (c: Blk[]): Node => ({ tip: () => { const t = c[c.length - 1]!; return { height: t.height, tip: t.hash, chainwork: t.chainwork }; }, block: (h) => c[h] });
-  A.set(serve(honest)); B.set(serve(honest));
+  // B behind, so the primary is the active backend that serves the honest chain (its synthetic headers carry no
+  // real proof of work, which a block from a non-primary backend must).
+  A.set(serve(honest)); B.set(serve(honest.slice(0, 1)));
   await syncOnce();
+  assert.equal(rpc.activeBackend(), A.url());
   assert.equal(await indexedHeight(), 10, "the honest chain is indexed");
   B.set(serve(forged));
   const r1 = await syncOnce(), r2 = await syncOnce();

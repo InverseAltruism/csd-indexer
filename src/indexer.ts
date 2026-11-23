@@ -549,6 +549,12 @@ async function syncPass(): Promise<IndexResult> {
   // that fell behind does not stall the projection. Composes with the regression guard below.
   const sel = await rpc.selectBackend();
   if (sel.switched) console.warn(`[indexer] RPC backend -> ${sel.active} (h=${sel.height}); prior backend fell behind or went unreachable`);
+  if (rpc.activeLeft()) {
+    // Every backend that answers is left: nothing is read, so nothing is written or unwound.
+    console.warn(`[indexer] HOLD: ${sel.active} served a block whose header failed the checks and no other backend answers; nothing is read this pass`);
+    const top = await indexedHeight();
+    return { from: top + 1, to: top, tip: top, blocks: 0, reorgs: 0, reorgDepth: 0 };
+  }
   if (!(await rpc.reachable())) throw new Error("node RPC unreachable");
   const nodeTip = await rpc.tip();
   const tip = nodeTip.height;
@@ -627,7 +633,10 @@ async function syncPass(): Promise<IndexResult> {
       h = ancestor; // resume scanning from ancestor+1
       continue;
     }
-    await rpc.boundWork(blk);
+    if (!(await rpc.admitBlock(blk))) {
+      console.warn(`[indexer] REFUSING block ${h} from ${rpc.activeBackend()}: its header fails the hash, PoW or bits checks; the backend is left until its tip changes, and this pass ends`);
+      break;
+    }
     const repeats = await writeBlock(blk, true);
     blocks++;
     emitBlockEvents(blk, tip, repeats);
