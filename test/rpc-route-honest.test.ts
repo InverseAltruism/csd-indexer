@@ -27,9 +27,9 @@ for (const [i, r] of REAL_CHAIN.entries()) {
   CHAIN.push({ hash: r.hash, height: i + 1, chainwork: String(BigInt(CHAIN[i]!.chainwork) + workForBits(r.header.bits)), header: r.header, txs: cb(String(i + 1)) });
 }
 
-// A node serves `chain` (default CHAIN) up to `tip`; null answers nothing. `lag` delays each block read. Each block
-// read is recorded by height.
-type State = { tip: number | null; chain?: Blk[]; lag?: number };
+// A node serves `chain` (default CHAIN) up to `tip`; null answers nothing. `lag` delays each block read; `failOnce`
+// fails the next read of one height, with a 503 or a closed connection. Each block read is recorded by height.
+type State = { tip: number | null; chain?: Blk[]; lag?: number; failOnce?: { h: number; mode: "status" | "reset" } };
 const nodes = await Promise.all([0, 1, 2].map(async () => {
   const n = { state: { tip: null } as State, reads: [] as number[], url: "" };
   const srv = createServer((req, res) => {
@@ -39,6 +39,12 @@ const nodes = await Promise.all([0, 1, 2].map(async () => {
     if (req.url === "/tip") { const t = c[s.tip]!; return res.end(JSON.stringify({ ok: true, tip: t.hash, height: t.height, chainwork: t.chainwork })); }
     const m = /^\/block\/height\/(\d+)$/.exec(req.url ?? ""), h = m ? Number(m[1]) : -1, b = h <= s.tip ? c[h] : undefined;
     n.reads.push(h);
+    if (s.failOnce?.h === h) {
+      const mode = s.failOnce.mode;
+      s.failOnce = undefined;
+      if (mode === "reset") { req.socket.destroy(); return; }
+      res.statusCode = 503; return res.end("{}");
+    }
     const send = () => { if (!b) { res.statusCode = 404; res.end("{}"); } else res.end(JSON.stringify({ ok: true, ...b })); };
     if (s.lag) setTimeout(send, s.lag); else send();
   });
@@ -83,6 +89,7 @@ const storedWork = async (h: number) => (await store().get<{ chainwork: string }
 // The index at `h` from the primary alone, so the primary is the active backend.
 async function start(h: number): Promise<void> {
   await resetStoreForTests();
+  rpc.resetProofsForTests();
   P.state = up(h); S1.state = down; S2.state = down;
   await pass();
   assert.equal(rpc.activeBackend(), P.url);
@@ -175,8 +182,6 @@ test("a proof longer than its deadline continues across passes and the secondary
 });
 
 // Heights 101 to 150 carry real headers from 40 heights lower: a tip at 150 with valid PoW whose chain does not link.
-// The proofs a backend made in the cases above stay with it (one record a backend), so this case and the next use tips
-// those did not prove.
 const SHIFTED: Blk[] = CHAIN.slice(0, 151).map((b, h) => (h <= 100 ? b : { ...CHAIN[h - 40]!, height: h }));
 
 test("a contender that changes its chain between passes gains nothing from the headers it proved before", async () => {
@@ -190,8 +195,7 @@ test("a contender that changes its chain between passes gains nothing from the h
     const reached = Math.min(...one.reads[1]!);
     assert.ok(reached > 13, `the first pass proved down to ${reached} only`);
     S1.state = up(150, { lag: 5, chain: SHIFTED });
-    const two = await pass();
-    assert.equal(two.active, "primary", "a tip on another chain does not join the headers proved for the first");
+    for (let i = 0; i < 4; i++) assert.equal((await pass()).active, "primary", "a tip on another chain does not join the headers proved for the first");
     assert.equal(await indexedHeight(), 12);
     S1.state = up(150, { lag: 5 });
     const three = await pass();
@@ -252,10 +256,12 @@ test("a contender is ranked with its proved work when it claims more and with it
   try {
     for (const claim of ["9".repeat(30), "1"]) {
       await start(100);
-      // The primary at 101 on its own branch with the real work there; the secondary serves the real 101.
+      // The secondary serves the real 101 a block above the primary, claiming `claim`; the primary's work is the real
+      // one at 100. Ranked with the proved work the secondary out-works the primary and the work-escape switches.
       const c = CHAIN.slice(0, 101);
       c.push({ ...CHAIN[101]!, chainwork: claim });
-      P.state = alienTip(101, CHAIN[101]!.chainwork); S1.state = up(101, { chain: c });
+      if (claim === "1") { P.state = up(100); S1.state = up(101, { chain: c }); }
+      else { P.state = alienTip(101, CHAIN[101]!.chainwork); S1.state = up(101, { chain: c }); }
       const actives: string[] = [];
       for (let i = 0; i < 5; i++) actives.push((await pass()).active);
       assert.deepEqual(actives, Array(5).fill("primary"), `claim ${claim.slice(0, 6)}: no more work than the primary's, no switch`);
@@ -322,4 +328,44 @@ test("a served block whose header fails proof of work is not written, and the in
   assert.equal(three.hold, false);
   assert.equal(await indexedHeight(), 110);
   assert.equal(await storedWork(110), CHAIN[110]!.chainwork);
+});
+
+// Once a block is read twice in a pass that selects the secondary: by its proof and by the sync that follows.
+const readOnce = (reads: number[], from: number, to: number) => {
+  for (let h = from; h <= to; h++) assert.equal(reads.filter((x) => x === h).length, 1, `height ${h} read once`);
+};
+
+for (const mode of ["status", "reset"] as const) {
+  test(`a long proof keeps what it proved over a failed read (${mode === "status" ? "a 503" : "a closed connection"}) while its tip advances`, async () => {
+    await start(12);
+    S1.state = up(150, { failOnce: { h: 100, mode } });                 // proves 150 down to 101, then a read fails
+    assert.equal((await pass()).active, "primary");
+    S1.state = up(151, { failOnce: { h: 150, mode } });                 // a block more; the read under it fails
+    assert.equal((await pass()).active, "primary");
+    S1.state = up(152);
+    const three = await pass();
+    assert.equal(three.active, "sec1");
+    readOnce(three.reads[1]!, 101, 149);                                 // the headers proved before are not read again
+    assert.equal(await indexedHeight(), 152);
+  });
+}
+
+test("the primary's tip moving inside a kept proof: a stored block under it still links it", async () => {
+  await start(12);
+  S1.state = up(158, { failOnce: { h: 60, mode: "status" } });         // kept: 158 down to 61
+  assert.equal((await pass()).active, "primary");
+  P.state = up(100);                                                    // the primary's tip moves to 100, inside
+  const two = await pass();
+  assert.equal(two.active, "sec1");
+  readOnce(two.reads[1]!, 61, 157);
+});
+
+test("the primary's tip moving inside a kept proof near its top: the walk meets it there", async () => {
+  await start(12);
+  S2.state = up(157, { failOnce: { h: 60, mode: "status" } });
+  assert.equal((await pass()).active, "primary");
+  P.state = up(147);                                                    // 10 heights under the top, 48 over the index
+  const two = await pass();
+  assert.equal(two.active, "sec2");
+  readOnce(two.reads[2]!, 13, 60);                                      // linked at the primary's tip, not at 12
 });
