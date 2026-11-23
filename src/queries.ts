@@ -151,7 +151,7 @@ export async function addressTxidHeight(addr: string, txid: string): Promise<num
 }
 // An address's unspent outputs, one page at a time in (height, txid, vout) order; `after` is the last row of the
 // previous page. A page shorter than UTXO_PAGE is the last. `COALESCE(spent_txid, '') = ''` is `spent_txid IS NULL`
-// (a spender's txid is never empty) in the form idx_out_addr_unspent (db.ts) indexes, so the page is an index seek on
+// (a spender's txid is the node's 0x txid, so not empty on an honest chain) in the form idx_out_addr_unspent (db.ts) indexes, so the page is an index seek on
 // the address that stops at the page; the `height >= ?` term starts a cursor page's seek at the cursor.
 export const UTXO_PAGE = 1000;
 export interface UtxoCursor { height: number; txid: string; vout: number }
