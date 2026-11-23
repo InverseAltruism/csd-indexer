@@ -32,7 +32,8 @@ or later).
     operator's own nodes (README "Honest limits"): a backend that serves a real header at a higher height than it
     holds, with an invented `/tip` chainwork, can win the selection; and once active, its bodies are not checked
     against their headers and its `/tip` chainwork is what the regression guard compares, so an invented figure is
-    stored with its blocks and holds the index against honest nodes until it is rewritten.
+    stored with its blocks and the guard holds every later pass against the honest nodes, which present less work,
+    until the operator re-indexes.
   - A `/tip` whose height is not a non-negative integer leaves that backend out of the selection, and from the active
     backend it fails the pass (`test/rpc-tip-height.test.ts`).
   - The route delta cap grows with the local tip's age at `CSD_RPC_BLOCK_SECS` (120) per block; the tip-header fetch
