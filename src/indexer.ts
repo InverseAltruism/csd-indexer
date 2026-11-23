@@ -628,6 +628,7 @@ async function syncPass(): Promise<IndexResult> {
       h = ancestor; // resume scanning from ancestor+1
       continue;
     }
+    await rpc.boundWork(blk);
     const repeats = await writeBlock(blk, true);
     blocks++;
     emitBlockEvents(blk, tip, repeats);

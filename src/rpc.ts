@@ -8,7 +8,7 @@
 //   GET /tx/:txid          -> { ... } (or { tx: {...} })
 //   tx  = { txid, version, locktime, app?, inputs:[{prev_txid,vout,script_sig}], outputs:[{script_pubkey,value}] }
 import { CFG } from "./config.js";
-import { LWMA_WINDOW, type BlockHeader } from "@inversealtruism/csd-codec";
+import { LWMA_WINDOW, workForBits, type BlockHeader } from "@inversealtruism/csd-codec";
 import { type ContenderPlausibleOpts, contenderPlausible as routeContenderPlausible, expectedBitsFromWindow, tipHeaderPowOk } from "@inversealtruism/csd-light";
 import { store } from "./db.js";
 import { storableText } from "./decode.js";
@@ -111,23 +111,25 @@ async function expectedLocalBits(localHeight: number): Promise<number | null> {
 
 // Fetch a backend's tip header (at its claimed tip height) and apply the ROUTE-1 rules: (a) the self-referential PoW +
 // hash-binding verdict (tipHeaderPowOk), then, unless CSD_RPC_ROUTE_PLAUSIBILITY=0, (b) the F6 local-anchored
-// plausibility gate (contenderPlausible) and (c) the link proof (contenderLinks). FAIL SOFT: any fetch/shape error →
-// false (the backend simply cannot win; no throw, no read added to the healthy path; this runs only for a backend
-// that CLAIMS to out-work the trust anchor). One deadline of CFG.powVerifyTimeoutMs covers every fetch of one proof.
-async function contenderEligible(base: string, claimedHeight: number, claimedTipHash: string | null, anchor: Probe): Promise<boolean> {
-  if (!claimedTipHash) return false;
+// plausibility gate (contenderPlausible) and (c) the link proof (contenderLinks). Returns the chainwork the contender
+// is ranked with (its claim, or less under the proof), or null when it cannot win this pass. FAIL SOFT: any
+// fetch/shape error → null (no throw, no read added to the healthy path; this runs only for a backend that CLAIMS to
+// out-work the trust anchor). One deadline of CFG.powVerifyTimeoutMs covers every fetch of one pass's proof.
+async function contenderEligible(base: string, claimedHeight: number, claimedTipHash: string | null, claimedWork: bigint, anchor: Probe): Promise<bigint | null> {
+  if (!claimedTipHash) return null;
   try {
     const signal = AbortSignal.timeout(CFG.powVerifyTimeoutMs);
     const header = await headerAt(base, claimedHeight, signal);
-    if (!header) return false;
-    if (!tipHeaderPowOk(header, claimedTipHash)) return false;        // ROUTE-1: self-referential PoW + hash-bind
-    if (!CFG.routePlausibility) return true;
-    if (!(await contenderPlausible(claimedHeight, header))) return false; // F6: local-anchored plausibility
-    return await contenderLinks(base, claimedHeight, claimedTipHash.toLowerCase(), header, anchor, signal);
-  } catch { return false; }
+    if (!header) return null;
+    if (!tipHeaderPowOk(header, claimedTipHash)) return null;         // ROUTE-1: self-referential PoW + hash-bind
+    if (!CFG.routePlausibility) return claimedWork;
+    if (!(await contenderPlausible(claimedHeight, header))) return null; // F6: local-anchored plausibility
+    return await contenderLinks(base, claimedHeight, claimedTipHash.toLowerCase(), header, claimedWork, anchor, signal);
+  } catch { return null; }
 }
 
-async function headerAt(base: string, height: number, signal: AbortSignal): Promise<{ prev?: unknown } | null> {
+type ProofHeader = { prev?: unknown; bits?: unknown };
+async function headerAt(base: string, height: number, signal: AbortSignal): Promise<ProofHeader | null> {
   const res = await fetch(base + `/block/height/${height}`, { signal });
   if (!res.ok) return null;
   const j: any = await res.json();
@@ -135,34 +137,93 @@ async function headerAt(base: string, height: number, signal: AbortSignal): Prom
   return b && b.header && typeof b.header === "object" ? b.header : null;
 }
 
-// The height a hash holds on the trusted view: the anchor's tip, else the indexer's own blocks table; undefined when
-// neither holds it.
-async function knownHeight(hash: string, anchor: Probe): Promise<number | undefined> {
-  if (anchor.tipHash != null && hash === anchor.tipHash.toLowerCase()) return anchor.height;
-  const r = await store().get<{ height: number | bigint }>("SELECT height FROM blocks WHERE hash=?", hash);
-  return r ? Number(r.height) : undefined;
+// The height and chainwork a hash holds on the trusted view: the anchor's tip with the anchor's chainwork, else the
+// indexer's own blocks table; undefined when neither holds it. A stored chainwork that does not parse is null.
+async function known(hash: string, anchor: Probe): Promise<{ height: number; work: bigint | null } | undefined> {
+  if (anchor.tipHash != null && hash === anchor.tipHash.toLowerCase()) return { height: anchor.height, work: anchor.chainwork };
+  const r = await store().get<{ height: number | bigint; chainwork: string | null }>("SELECT height, chainwork FROM blocks WHERE hash=?", hash);
+  return r ? { height: Number(r.height), work: parseWork(r.chainwork) } : undefined;
 }
+function parseWork(v: unknown): bigint | null {
+  if (v == null) return null;
+  try { return BigInt(String(v).trim()); } catch { return null; }
+}
+// A header's work by its bits; bits that are no integer count none.
+const headerWork = (h: ProofHeader): bigint => (Number.isSafeInteger(h.bits) ? workForBits(h.bits as number) : 0n);
+
+// A link proof that did not finish in one pass's deadline: the tip it was proved from, the lowest header proved
+// (its height and prev) and the work of the proved headers under the tip. One per backend, so the memory is bounded
+// by the backends list whatever a backend serves; the next pass starts from its tip, joins this at the top's height
+// when the hash there is the same, and reads on below the bottom, so a pass costs at most its deadline and a proof of
+// n headers ends in about n times the read time divided by the deadline passes (test/rpc-route-honest.test.ts).
+type ProofSoFar = { topHash: string; topHeight: number; bottomHeight: number; bottomPrev: string; below: bigint };
+const proofs = new Map<string, ProofSoFar>();
 
 // A contender's claim (its tip at claimedHeight) is backed only by headers above a block the trusted view already
 // holds: from the tip down, each header PoW-valid and hashing to the prev of the one above, served at consecutive
 // heights, until a prev is the anchor's tip or a stored block, at the height it holds there. At least one header is
-// new, so a replayed header (the anchor's tip or a stored block claimed at another height) proves nothing. A store
-// read throw fails closed, as in contenderPlausible (test/rpc-route-link.test.ts).
-async function contenderLinks(base: string, claimedHeight: number, tipHash: string, tipHeader: { prev?: unknown },
-  anchor: Probe, signal: AbortSignal): Promise<boolean> {
+// new, so a replayed header (the anchor's tip or a stored block claimed at another height) proves nothing; a tip the
+// index stores at the claimed height, with the chainwork stored for it, claims nothing the index does not hold and
+// stays eligible. The chainwork returned is the claim, at most the linked block's plus each proved header's work. A
+// store read throw fails closed, as in contenderPlausible (test/rpc-route-link.test.ts, test/rpc-route-honest.test.ts).
+async function contenderLinks(base: string, claimedHeight: number, tipHash: string, tipHeader: ProofHeader,
+  claimedWork: bigint, anchor: Probe, signal: AbortSignal): Promise<bigint | null> {
   try {
-    if ((await knownHeight(tipHash, anchor)) !== undefined) return false;
-    let header = tipHeader;
-    for (let h = claimedHeight; h > CFG.scanFrom; h--) {
+    const held = await known(tipHash, anchor);
+    if (held) return held.height === claimedHeight && held.work === claimedWork ? claimedWork : null;
+    let saved = proofs.get(base);
+    if (saved && saved.topHeight > claimedHeight) { proofs.delete(base); saved = undefined; }
+    // The headers from the tip down to height h are proved; `hash` is the one at h and `work` their sum.
+    let header = tipHeader, h = claimedHeight, hash = tipHash, work = headerWork(tipHeader);
+    for (;;) {
+      if (saved && h === saved.topHeight) {
+        if (hash === saved.topHash) { work += saved.below; h = saved.bottomHeight; header = { prev: saved.bottomPrev }; }
+        else proofs.delete(base);                                     // the tip moved to another branch
+        saved = undefined;
+      }
+      if (h <= CFG.scanFrom) break;
       const prev = typeof header.prev === "string" ? header.prev.toLowerCase() : "";
-      const at = await knownHeight(prev, anchor);
-      if (at !== undefined) return at === h - 1;
-      const below = await headerAt(base, h - 1, signal);
-      if (!below || !tipHeaderPowOk(below, prev)) return false;
-      header = below;
+      const at = await known(prev, anchor);
+      if (at) {
+        proofs.delete(base);
+        if (at.height !== h - 1 || at.work == null) return null;
+        const proved = at.work + work;
+        return claimedWork < proved ? claimedWork : proved;
+      }
+      let below: ProofHeader | null;
+      try { below = await headerAt(base, h - 1, signal); } catch {
+        // The deadline (or a failed read) ends this pass's proof; what is proved stays for the next pass.
+        proofs.set(base, { topHash: tipHash, topHeight: claimedHeight, bottomHeight: h, bottomPrev: prev, below: work - headerWork(tipHeader) });
+        await logShortProof(base, claimedHeight, h, anchor);
+        return null;
+      }
+      if (!below || !tipHeaderPowOk(below, prev)) break;
+      header = below; hash = prev; h--; work += headerWork(below);
     }
-    return false;
-  } catch { return false; }
+    proofs.delete(base);
+    return null;
+  } catch { return null; }
+}
+
+async function logShortProof(base: string, claimedHeight: number, h: number, anchor: Probe): Promise<void> {
+  const top = await store().get<{ h: number | bigint | null }>("SELECT MAX(height) AS h FROM blocks");
+  const nearest = Math.max(anchor.height, top?.h == null ? -1 : Number(top.h));
+  console.warn(`[rpc] link proof for ${base} (tip ${claimedHeight}): ${claimedHeight - h + 1} headers proved, down to ${h}, ` +
+    `at least ${Math.max(0, h - 1 - nearest)} to go; it goes on at the next pass`);
+}
+
+/** The chainwork syncOnce stores for a block a non-primary backend serves: at most its stored parent's plus its own
+ *  header's work, as the selection ranks that backend's claim; the primary's figure is stored as it serves it. */
+export async function boundWork(b: RpcBlock): Promise<void> {
+  const primary = (CFG.rpcBackends && CFG.rpcBackends[0]) || CFG.rpc;
+  if (ACTIVE === primary) return;
+  const reported = parseWork(b.chainwork);
+  if (reported == null) return;
+  const parent = await store().get<{ chainwork: string | null }>("SELECT chainwork FROM blocks WHERE height=? AND hash=?", b.height - 1, b.header.prev);
+  const base = parseWork(parent?.chainwork);
+  if (base == null) return;
+  const bound = base + headerWork(b.header);
+  if (reported > bound) b.chainwork = String(bound);
 }
 
 // L9: bound every serial-poll read with a generous AbortSignal timeout. The sync loop reads /tip then
@@ -199,9 +260,10 @@ async function tipOf(base: string): Promise<{ height: number; chainwork: bigint;
 
 /**
  * Choose which backend to read THIS cycle: the reachable one with the most cumulative chainwork, with
- * HYSTERESIS so it does not flap and does NOT auto-fail-back. Keep ACTIVE while it is reachable and within
- * HYSTERESIS_BLOCKS of the best height (so same-chain backends racing block propagation do not flap, and
- * once we move off the primary we stay until a human restarts). Only when ACTIVE falls meaningfully behind
+ * HYSTERESIS so it does not flap. Keep ACTIVE while it is reachable, eligible and within HYSTERESIS_BLOCKS of the best
+ * height and not out-worked for CFG.workEscapeCycles cycles, so same-chain backends racing block propagation do not
+ * flap and a primary that returns does not take the feed back until ACTIVE falls behind it (a secondary at the tip
+ * the index stores stays eligible: test/rpc-route-honest.test.ts). Only when ACTIVE falls meaningfully behind
  * (or is gone) do we switch to the highest-chainwork backend, preferring the primary among ties. A node
  * that falls behind (resync / lag) has less work, so selection moves to the miner/standby and the
  * projection keeps advancing on fresh data. If NOTHING is reachable, keep ACTIVE (reads then fail and the
@@ -244,10 +306,15 @@ export async function selectBackend(): Promise<{ active: string; switched: boole
   const authority = primaryEntry ?? reachable.reduce((a, b) => (b.t.chainwork < a.t.chainwork ? b : a));
   const contenders = reachable.filter((r) => r !== authority && r.b !== primary && (r.t.height > authority.t.height || r.t.chainwork > authority.t.chainwork));
   if (contenders.length) {
-    const verdicts = await Promise.all(contenders.map(async (r) => ({ b: r.b, ok: await contenderEligible(r.b, r.t.height, r.t.tipHash, authority.t) })));
-    const rejected = new Set(verdicts.filter((v) => !v.ok).map((v) => v.b));
-    if (rejected.size) eligible = reachable.filter((r) => !rejected.has(r.b));
+    const work = new Map(await Promise.all(contenders.map(async (r) => [r.b, await contenderEligible(r.b, r.t.height, r.t.tipHash, r.t.chainwork, authority.t)] as const)));
+    eligible = reachable.flatMap((r) => {
+      if (!work.has(r.b)) return [r];
+      const w = work.get(r.b);
+      return w == null ? [] : [{ b: r.b, t: { ...r.t, chainwork: w } }];
+    });
   }
+  // A backend that answers and claims no more than the anchor has no proof in progress.
+  for (const r of reachable) if (!contenders.includes(r)) proofs.delete(r.b);
   let maxWork = eligible[0]!.t.chainwork;
   for (const r of eligible) if (r.t.chainwork > maxWork) maxWork = r.t.chainwork;
   const best = eligible.filter((r) => r.t.chainwork === maxWork);

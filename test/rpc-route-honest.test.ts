@@ -1,0 +1,223 @@
+// Honest failover through syncOnce with three backends (a primary and two secondaries) serving one chain of real
+// headers with the chainwork the node computes for them: height 0 stands for mainnet block 32795, heights 1 to 160
+// carry the 160 mainnet headers of test/fixtures/header-chain.ts. The operator's nodes rebuild their state after each
+// restart, and meanwhile the index follows the chain through a secondary: a failover the previous release made has
+// to be made here too, and as soon.
+// The link proof refused a secondary whose tip the index had already stored, so once the index caught up with it the
+// selection fell back to a primary that was rebuilding or stuck below (and held there each idle pass, or unwound to it
+// with the chainwork guard off). A proof longer than its deadline restarted from the tip at every pass and never
+// finished. The chainwork a contender reported counted in full, and the stored figure after a switch was the
+// reported one, so an invented figure held the index against every honest node afterwards.
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { createServer } from "node:http";
+import { createHash } from "node:crypto";
+import { workForBits } from "@inversealtruism/csd-codec";
+import { REAL_CHAIN, WORK_AT_LAST, WORK_BEFORE_FIRST } from "./fixtures/header-chain.js";
+import { tmpDb } from "./_tmpdb.js";
+
+const id = (tag: string) => "0x" + createHash("sha256").update(tag).digest("hex");
+type Blk = { hash: string; height: number; chainwork: string; header: Record<string, unknown>; txs: unknown[] };
+const MINER = "0x" + "a1".repeat(20), ATTACKER = "0x" + "ee".repeat(20);
+const cb = (tag: string, to = MINER) => [{ txid: id(`cb-${tag}`), inputs: [], outputs: [{ script_pubkey: to, value: 50 }] }];
+const first = REAL_CHAIN[0]!;
+const CHAIN: Blk[] = [{ hash: first.header.prev, height: 0, chainwork: String(WORK_BEFORE_FIRST),
+  header: { version: 1, prev: "0x" + "00".repeat(32), merkle: id("g"), time: first.header.time - 120, bits: first.header.bits, nonce: 0 }, txs: cb("0") }];
+for (const [i, r] of REAL_CHAIN.entries()) {
+  CHAIN.push({ hash: r.hash, height: i + 1, chainwork: String(BigInt(CHAIN[i]!.chainwork) + workForBits(r.header.bits)), header: r.header, txs: cb(String(i + 1)) });
+}
+
+// A node serves `chain` (default CHAIN) up to `tip`; null answers nothing. `lag` delays each block read. Each block
+// read is recorded by height.
+type State = { tip: number | null; chain?: Blk[]; lag?: number };
+const nodes = await Promise.all([0, 1, 2].map(async () => {
+  const n = { state: { tip: null } as State, reads: [] as number[], url: "" };
+  const srv = createServer((req, res) => {
+    const s = n.state, c = s.chain ?? CHAIN;
+    if (s.tip == null) { req.socket.destroy(); return; }
+    res.setHeader("content-type", "application/json"); res.setHeader("connection", "close");
+    if (req.url === "/tip") { const t = c[s.tip]!; return res.end(JSON.stringify({ ok: true, tip: t.hash, height: t.height, chainwork: t.chainwork })); }
+    const m = /^\/block\/height\/(\d+)$/.exec(req.url ?? ""), h = m ? Number(m[1]) : -1, b = h <= s.tip ? c[h] : undefined;
+    n.reads.push(h);
+    const send = () => { if (!b) { res.statusCode = 404; res.end("{}"); } else res.end(JSON.stringify({ ok: true, ...b })); };
+    if (s.lag) setTimeout(send, s.lag); else send();
+  });
+  await new Promise<void>((r) => srv.listen(0, "127.0.0.1", () => r()));
+  n.url = `http://127.0.0.1:${(srv.address() as { port: number }).port}`;
+  return Object.assign(n, { srv });
+}));
+const [P, S1, S2] = nodes as [typeof nodes[0], typeof nodes[0], typeof nodes[0]];
+const up = (tip: number, extra: Omit<State, "tip"> = {}): State => ({ tip, ...extra });
+const down: State = { tip: null };
+
+process.env.CSD_RPC = P.url;
+process.env.CSD_RPC_BACKENDS = `${P.url},${S1.url},${S2.url}`;
+process.env.CSD_INDEX_DB = tmpDb("routehonest");
+process.env.CSD_INDEX_PG_SCHEMA = "t_routehonest";
+process.env.CSD_INDEX_FROM = "0";
+process.env.CSD_INDEX_CHECKPOINT_FLOOR = "1";
+const rpc = await import("../src/rpc.js");
+const { CFG } = await import("../src/config.js");
+const { syncOnce, indexedHeight } = await import("../src/indexer.js");
+const { store, resetStoreForTests, closeDb } = await import("../src/db.js");
+const q = await import("../src/queries.js");
+
+const warnings: string[] = [];
+const realWarn = console.warn;
+console.warn = (...a: unknown[]) => { warnings.push(String(a[0])); };
+test.after(async () => {
+  console.warn = realWarn;
+  for (const n of nodes) { n.srv.closeAllConnections(); n.srv.close(); }
+  await closeDb();
+});
+
+const name = (u: string) => (u === P.url ? "primary" : u === S1.url ? "sec1" : "sec2");
+type Pass = { active: string; indexed: number; hold: boolean; reads: number[][] };
+async function pass(): Promise<Pass> {
+  for (const n of nodes) n.reads = [];
+  warnings.length = 0;
+  await syncOnce();
+  return { active: name(rpc.activeBackend()), indexed: await indexedHeight(), hold: warnings.some((w) => w.includes("HOLD")), reads: nodes.map((n) => n.reads) };
+}
+const storedWork = async (h: number) => (await store().get<{ chainwork: string }>("SELECT chainwork FROM blocks WHERE height=?", h))?.chainwork;
+// The index at `h` from the primary alone, so the primary is the active backend.
+async function start(h: number): Promise<void> {
+  await resetStoreForTests();
+  P.state = up(h); S1.state = down; S2.state = down;
+  await pass();
+  assert.equal(rpc.activeBackend(), P.url);
+  assert.equal(await indexedHeight(), h);
+}
+
+test("the fixture's real work: the node's chainwork at 32955 is its chainwork at 32795 plus every header's work", () => {
+  assert.equal(BigInt(CHAIN[160]!.chainwork), WORK_AT_LAST);
+});
+
+test("the primary rebuilding far below: the index stays on the secondary and follows it, without a hold", async () => {
+  await start(100);
+  P.state = down; S1.state = up(101); S2.state = up(101);
+  const failover = await pass();
+  assert.deepEqual([failover.active, failover.indexed], ["sec1", 101]);
+  P.state = up(20);
+  for (let i = 0; i < 3; i++) {
+    const p = await pass();
+    assert.equal(p.active, "sec1", `idle pass ${i + 1}: the secondary the index caught up with stays active`);
+    assert.equal(p.indexed, 101);
+    assert.equal(p.hold, false, "no HOLD against the rebuilding primary");
+  }
+  S1.state = up(102); S2.state = up(102);
+  assert.equal((await pass()).indexed, 102, "a new block on the secondaries is indexed in the pass it appears");
+  assert.equal(rpc.activeBackend(), S1.url);
+  assert.equal(await storedWork(102), CHAIN[102]!.chainwork, "the stored chainwork is the node's");
+});
+
+test("the same with CSD_INDEX_WORK_GUARD=0: the index does not unwind to the rebuilding primary", async () => {
+  CFG.workGuard = false;
+  try {
+    await start(100);
+    P.state = down; S1.state = up(101); S2.state = up(101);
+    await pass();
+    P.state = up(20);
+    for (let i = 0; i < 2; i++) {
+      const p = await pass();
+      assert.equal(p.active, "sec1");
+      assert.equal(p.indexed, 101, `idle pass ${i + 1}`);
+    }
+  } finally { CFG.workGuard = true; }
+});
+
+test("the primary back one block under the secondaries: each new block is indexed in the pass it appears", async () => {
+  await start(100);
+  P.state = down; S1.state = up(101); S2.state = up(101);
+  await pass();
+  P.state = up(100);
+  assert.equal((await pass()).active, "sec1");
+  for (let h = 102; h <= 104; h++) {
+    S1.state = up(h); S2.state = up(h);
+    const p = await pass();
+    assert.equal(p.indexed, h, `block ${h}`);
+    assert.equal(p.active, "sec1");
+    assert.equal(p.hold, false);
+  }
+});
+
+test("the primary down, one secondary stuck: the index follows the other", async () => {
+  await start(100);
+  P.state = down; S1.state = up(101); S2.state = up(100);
+  assert.equal((await pass()).active, "sec1");
+  S1.state = up(103); S2.state = up(102);
+  assert.equal((await pass()).indexed, 103);
+  for (let i = 0; i < 2; i++) assert.deepEqual([(await pass()).active, await indexedHeight()], ["sec1", 103]);
+  S1.state = up(104);
+  assert.equal((await pass()).indexed, 104);
+  assert.equal(rpc.activeBackend(), S1.url);
+});
+
+test("a proof longer than its deadline continues across passes and the secondary is selected", async () => {
+  const deadline = CFG.powVerifyTimeoutMs;
+  CFG.powVerifyTimeoutMs = 400;
+  try {
+    await start(10);
+    // The index and the primary at 12 (a first sync while the primary rebuilds), the secondary at 160, 5 ms a read:
+    // the proof is 148 headers, more than one deadline holds.
+    P.state = up(12); S1.state = up(160, { lag: 5 });
+    let proving = 0, proofReads = 0, p: Pass | undefined;
+    for (let i = 0; i < 8 && (p = await pass()).active !== "sec1"; i++) {
+      proving++; proofReads += p.reads[1]!.length;
+      assert.ok(warnings.some((w) => /link proof .* to go/.test(w)), "a short proof is logged with what remains");
+    }
+    assert.equal(p?.active, "sec1", `selected after ${proving} passes that ended at the deadline`);
+    assert.ok(proving >= 1, "the proof did not fit one deadline");
+    assert.ok(proofReads <= 148 + 2 * proving, `no header read twice: ${proofReads} reads in ${proving} passes`);
+    assert.equal(await indexedHeight(), 160);
+    assert.equal(await storedWork(160), CHAIN[160]!.chainwork);
+  } finally { CFG.powVerifyTimeoutMs = deadline; }
+});
+
+// Heights 101 to 160 carry real headers from 40 heights lower: a tip at 160 with valid PoW whose chain does not link.
+const SHIFTED: Blk[] = CHAIN.map((b, h) => (h <= 100 ? b : { ...CHAIN[h - 40]!, height: h }));
+
+test("a contender that changes its chain between passes gains nothing from the headers it proved before", async () => {
+  const deadline = CFG.powVerifyTimeoutMs;
+  CFG.powVerifyTimeoutMs = 400;
+  try {
+    await start(10);
+    P.state = up(12); S1.state = up(160, { lag: 5 });
+    const one = await pass();
+    assert.equal(one.active, "primary");
+    const reached = Math.min(...one.reads[1]!);
+    assert.ok(reached > 13, `the first pass proved down to ${reached} only`);
+    S1.state = up(160, { lag: 5, chain: SHIFTED });
+    const two = await pass();
+    assert.equal(two.active, "primary", "a tip on another chain does not join the headers proved for the first");
+    assert.equal(await indexedHeight(), 12);
+    S1.state = up(160, { lag: 5 });
+    const three = await pass();
+    assert.ok(three.reads[1]!.includes(159), "back on the first chain, the proof starts again from its tip");
+  } finally { CFG.powVerifyTimeoutMs = deadline; }
+});
+
+test("an invented chainwork counts no more than the headers carry, and the index follows the honest nodes after", async () => {
+  const escape = CFG.workEscapeCycles;
+  CFG.workEscapeCycles = 3;
+  try {
+    await start(100);
+    S2.state = up(100);
+    // Block 101's real header, not yet on the primary, with an invented chainwork and a body of its own.
+    const forged = CHAIN.slice(0, 101);
+    forged.push({ ...CHAIN[101]!, chainwork: "9".repeat(30), txs: cb("f101", ATTACKER) });
+    S1.state = up(101, { chain: forged });
+    const actives: string[] = [];
+    for (let i = 0; i < 5; i++) actives.push((await pass()).active);
+    assert.ok(actives.includes("sec1"), `the work-escape selects it: ${actives.join(" ")}`);
+    // Its body was written (block bodies are not checked against their headers, README "Honest limits"), and its
+    // chainwork is the real one, not the invented one.
+    assert.equal((await q.addressStats(ATTACKER)).utxo_count, 1);
+    assert.equal(await storedWork(101), CHAIN[101]!.chainwork);
+    S1.state = down; P.state = up(110); S2.state = up(110);
+    const after = await pass();
+    assert.equal(after.hold, false);
+    assert.equal(await indexedHeight(), 110, "the honest nodes' heavier chain is followed");
+    assert.equal(await storedWork(110), CHAIN[110]!.chainwork);
+  } finally { CFG.workEscapeCycles = escape; }
+});

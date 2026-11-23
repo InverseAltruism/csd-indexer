@@ -168,6 +168,12 @@ const ROWS: [string, number, number, number][] = [
   ["17aab6739df8c049d52bbc7a119df464960baa125d5e1d71323a9bb0b5eedcc6", 1781495187, 453069704, 1379197942],
 ];
 
+// The node's chainwork at 32795 (the block FIRST_PREV names) and at 32955 (the last header here), as the mainnet
+// indexer served them on 2026-11-23 (GET /block/<hash>). The second is the first plus the work of every header here
+// (test/rpc-route-honest.test.ts).
+export const WORK_BEFORE_FIRST = 730672519835981229n;
+export const WORK_AT_LAST = 764854680381253744n;
+
 export interface ChainHeader { height: number; hash: string; header: { version: number; prev: string; merkle: string; time: number; bits: number; nonce: number } }
 export const REAL_CHAIN: ChainHeader[] = (() => {
   const out: ChainHeader[] = [];
