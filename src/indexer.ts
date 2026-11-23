@@ -415,7 +415,8 @@ async function storedHash(height: number): Promise<string | null> {
  * which wedged syncOnce on every poll for any deep reorg at/above the tip (finding D-I1).
  */
 // findReorgAncestor sentinel: the node WITHHELD the blocks needed to locate the ancestor, so we have no
-// evidence of how deep the divergence runs. Distinct from -1 (no reorg). syncOnce must ABORT+retry, never
+// evidence of how deep the divergence runs. Distinct from NO_REORG and from scanFrom - 1 (diverged below the
+// floor), as scanFrom is at least 0. syncOnce must ABORT+retry, never
 // unwind, on this; wiping on absence of evidence is CAIRN-IDXREORG-1/2.
 const REORG_ABORT = -2;
 // findReorgAncestor's "no reorg": below any ancestor it returns, scanFrom - 1 (-1 at the default scan floor) included
@@ -428,12 +429,10 @@ async function findReorgAncestor(newBlock: rpc.RpcBlock): Promise<number> {
   if (storedPrev == null) return NO_REORG;                 // nothing to link against (fresh / gap)
   if (storedPrev === (newBlock.header.prev ?? "")) return NO_REORG; // links cleanly; no reorg
   // diverged: walk back until node's hash matches what we stored (bounded by the scan floor)
-  // I2 (O-2 / P74-35): this walk SKIPS heights the node did not answer, so a transient absence below a
-  // confirmed mismatch would otherwise let the ancestor fall past heights the node never contradicted, and
-  // unwindAbove would DELETE them (un-spending their outputs back to live UTXOs). Track the LOWEST height
-  // the node actually CONTRADICTED and clamp the ancestor to lowestMismatch-1: absence is not evidence
-  // (CAIRN-IDXREORG-1/2), so it may never widen an unwind. The link mismatch above is itself a confirmed
-  // contradiction at prevH, so that is where the bound starts.
+  // I2 (O-2 / P74-35): the ancestor is clamped to lowestMismatch-1, the LOWEST height the node actually
+  // CONTRADICTED, so it never falls past a height the node did not contradict: absence is not evidence
+  // (CAIRN-IDXREORG-1/2), and the walk ends at the first height the node does not answer. The link mismatch
+  // above is itself a confirmed contradiction at prevH, so that is where the bound starts.
   let lowestMismatch = prevH;
   const clampAncestor = (a: number) => (a < lowestMismatch - 1 ? lowestMismatch - 1 : a);
   for (let h = prevH - 1; h >= CFG.scanFrom; h--) {

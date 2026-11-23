@@ -12,9 +12,10 @@ export const CFG = {
   // RPC failover backends: read the healthiest (reachable, highest cumulative chainwork) of these each
   // sync cycle, so a node that falls behind (db-loss resync / lag) does not stall the projection; it
   // reads the on-host miner (:8790) or standby (:8795) instead. Primary is rpcBackends[0]. Override with
-  // a comma list in CSD_RPC_BACKENDS. max-chainwork selection with stickiness (no auto-failback) is in
-  // rpc.ts, and it composes with the reorg chainwork guard: this picks the most-caught-up source, the
-  // guard HOLDS only when EVERY source is behind our indexed tip.
+  // a comma list in CSD_RPC_BACKENDS. max-chainwork selection with stickiness (a returning primary takes the
+  // feed back only once the active backend falls behind it) is in rpc.ts, and it composes with the reorg
+  // chainwork guard: this picks the most-caught-up source, the guard HOLDS only when EVERY source is behind
+  // our indexed tip.
   rpcBackends: backendList(),
   // sqlite file. node:sqlite (built into Node 22); no native dep, no build step.
   db: env("CSD_INDEX_DB", "./csd-index.db"),
@@ -25,7 +26,7 @@ export const CFG = {
   pg: env("CSD_INDEX_PG", ""),
   // Postgres schema (namespace) for all tables; lets several indexers share one database.
   pgSchema: env("CSD_INDEX_PG_SCHEMA", "public"),
-  // Postgres pool size (readers + the single writer).
+  // Postgres pool size for the readers; the block writer has one more connection of its own (db.ts writer()).
   pgPoolSize: num("CSD_INDEX_PG_POOL", 10),
   // HTTP bind for the REST + streaming API (8789 node, 8790 miner, 7777 cairn).
   listen: env("CSD_INDEX_LISTEN", "127.0.0.1:8793"),
@@ -86,11 +87,12 @@ export const CFG = {
   //     honest expected target is already at/near POW_LIMIT, the threshold saturates at POW_LIMIT so a
   //     min-diff contender passes the LWMA test (min-diff IS honest there) and only the delta cap applies.
   maxEaseFactor: num("CSD_RPC_MAX_EASE", 16),
-  // ROUTE-1 F6 kill switch: CSD_RPC_ROUTE_PLAUSIBILITY=0 turns the plausibility gate off. Default on.
+  // ROUTE-1 F6 kill switch: CSD_RPC_ROUTE_PLAUSIBILITY=0 turns the plausibility gate and the link proof off. Default on.
   routePlausibility: (process.env.CSD_RPC_ROUTE_PLAUSIBILITY ?? "1") !== "0",
   // Cycles ACTIVE may stay below the best chainwork before rpc.ts forces a switch (work-escape).
   workEscapeCycles: num("CSD_RPC_WORK_ESCAPE", 20),
-  // Timeout (ms) on the one tip-header fetch for a backend that claims to out-work the trust anchor.
+  // Deadline (ms) per pass on the header fetches of a backend that claims to out-work the trust anchor (its tip
+  // header and its link proof; a proof the deadline ends goes on at the next pass).
   powVerifyTimeoutMs: num("CSD_RPC_POW_TIMEOUT", 5000),
   // Chain target block spacing (s) for the wall-clock-aware route delta cap; never used for consensus.
   routeBlockSecs: Math.max(1, num("CSD_RPC_BLOCK_SECS", 120)),

@@ -139,10 +139,14 @@ is a narrative in `docs/incidents/README.md`.
   (`tipHeaderPowOk`), plausible (`contenderPlausible`) against the indexer's own stored headers, never the live
   primary, and linked: PoW-valid, hash-linked headers at consecutive heights from its tip down to the primary's tip or
   a stored block, at the height that block holds, with at least one new header (`contenderLinks`), so a replayed
-  header proves nothing. A backend whose `/tip` height is not a non-negative integer is left out, and such a tip from
-  the active backend fails the pass. ROUTE-1 decides which backend is read; the blocks the active backend serves are
-  not checked against their headers. `test/rpc-pow-*.test.ts`, `test/rpc-route-plausibility.test.ts`,
-  `test/rpc-route-link.test.ts`, `test/rpc-failover.test.ts`, `test/rpc-tip-height.test.ts`.
+  header proves nothing; a tip the index stores at the claimed height with its stored chainwork stays eligible. A
+  proof longer than `CSD_RPC_POW_TIMEOUT` goes on at the next pass (one record per backend). A contender is ranked
+  with at most the linked block's chainwork plus its proved headers' work, and a block a non-primary backend serves
+  is stored with at most its parent's plus its header's (`boundWork`). A backend whose `/tip` height is not a
+  non-negative integer is left out, and such a tip from the active backend fails the pass. ROUTE-1 decides which
+  backend is read; the bodies of the blocks the active backend serves are not checked against their headers.
+  `test/rpc-pow-*.test.ts`, `test/rpc-route-plausibility.test.ts`, `test/rpc-route-link.test.ts`,
+  `test/rpc-route-honest.test.ts`, `test/rpc-failover.test.ts`, `test/rpc-tip-height.test.ts`.
 - Never point anything at :8790 as the default RPC: that is the miner's RPC; :8789 is primary, :8790 fallback only.
 - Every serial-poll read of the node is bounded by a timeout, so a backend that stalls `/block` cannot wedge the
   loop. `test/rpc-timeout.test.ts`.
