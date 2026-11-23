@@ -86,3 +86,63 @@ test("Postgres: a session ended while the start waits fails that start, and the 
   assert.equal(r.code, 0, `the process lives: ${r.err.split("\n").find((l) => /error/i.test(l)) ?? ""}`);
   assert.deepEqual(r.res, served);
 });
+
+// A ROLLBACK that fails on a connection that still answers (here injected once into pg's client) left the client in
+// its aborted transaction, and the pool handed it to the next caller, whose statements then failed with "current
+// transaction is aborted". The writer's pool holds one connection, so the next transaction gets that client back.
+test("Postgres: a client whose ROLLBACK failed is not handed to the next caller", { skip: SKIP }, async () => {
+  await resetStoreForTests();
+  const { asWriter, tx } = await import("../src/db.js");
+  const pid = async () => (await asWriter(() => store().get<{ p: number }>("SELECT pg_backend_pid() AS p")))!.p;
+  const before = await pid();
+  const proto = pg.Client.prototype as unknown as { query: (...a: unknown[]) => unknown };
+  const real = proto.query;
+  let failed = false;
+  proto.query = function (this: unknown, ...a: unknown[]) {
+    if (!failed && a[0] === "ROLLBACK") { failed = true; return Promise.reject(new Error("injected ROLLBACK failure")); }
+    return real.apply(this, a);
+  };
+  try {
+    await assert.rejects(asWriter(() => tx(async (d) => { await d.run("SELECT 1 / 0"); })), /division by zero/);
+  } finally { proto.query = real; }
+  assert.equal(failed, true, "the ROLLBACK failure was injected");
+  const r = await asWriter(() => tx(async (d) => await d.get<{ p: number }>("SELECT pg_backend_pid() AS p")));
+  assert.notEqual(r!.p, before, "the next transaction runs on a new connection");
+});
+
+// The same at a start: a start whose transaction fails and whose ROLLBACK fails left its client inside the aborted
+// transaction; with a pool of one the next start got it back and failed again, at every store call. Here the start
+// fails because `outputs` is a view, so the schema's CREATE INDEX on it fails.
+test("Postgres: a start whose ROLLBACK failed does not leave its client to the next start", { skip: SKIP }, async () => {
+  const { CFG } = await import("../src/config.js");
+  await closeDb();
+  const size = CFG.pgPoolSize;
+  CFG.pgPoolSize = 1;
+  const admin = new pg.Client({ connectionString: process.env.CSD_INDEX_PG });
+  await admin.connect();
+  const proto = pg.Client.prototype as unknown as { query: (...a: unknown[]) => unknown };
+  const real = proto.query;
+  let view = true;
+  try {
+    await admin.query("CREATE SCHEMA IF NOT EXISTS t_clientloss");
+    await admin.query("DROP TABLE IF EXISTS t_clientloss.outputs CASCADE");
+    await admin.query("CREATE VIEW t_clientloss.outputs AS SELECT 1 AS x");
+    let failed = false;
+    proto.query = function (this: unknown, ...a: unknown[]) {
+      if (!failed && a[0] === "ROLLBACK") { failed = true; return Promise.reject(new Error("injected ROLLBACK failure")); }
+      return real.apply(this, a);
+    };
+    await assert.rejects(store().get("SELECT 1"), /cannot create index on relation "outputs"/);
+    proto.query = real;
+    assert.equal(failed, true, "the ROLLBACK failure was injected");
+    await admin.query("DROP VIEW t_clientloss.outputs");
+    view = false;
+    assert.equal((await store().get<{ n: number }>("SELECT 1 AS n"))?.n, 1, "the next start completes");
+  } finally {
+    proto.query = real;
+    if (view) await admin.query("DROP VIEW IF EXISTS t_clientloss.outputs");
+    await admin.end();
+    await closeDb();
+    CFG.pgPoolSize = size;
+  }
+});

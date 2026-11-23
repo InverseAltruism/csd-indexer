@@ -288,7 +288,7 @@ class SqliteStore implements Store {
 // lock; past that the transaction fails (SQLSTATE 55P03) and rolls back, and the next store call starts again
 // (test/boot-rebuild-timeout.test.ts).
 export const BOOT_LOCK_TIMEOUT_MS = 5000;
-async function bootTx(c: import("pg").PoolClient, statements: readonly string[]): Promise<void> {
+async function bootTx(c: import("pg").PoolClient, statements: readonly string[], broken: (e: Error) => void): Promise<void> {
   await c.query("BEGIN");
   try {
     await c.query("SET LOCAL statement_timeout = 0");
@@ -296,7 +296,7 @@ async function bootTx(c: import("pg").PoolClient, statements: readonly string[])
     for (const q of statements) await c.query(q);
     await c.query("COMMIT");
   } catch (e) {
-    try { await c.query("ROLLBACK"); } catch { /* connection gone */ }
+    try { await c.query("ROLLBACK"); } catch (re) { broken(re as Error); }
     if ((e as { code?: string }).code === "55P03") {
       throw new Error(`the start waited ${BOOT_LOCK_TIMEOUT_MS} ms for a lock another session holds; the next store call starts again (${(e as Error).message})`, { cause: e });
     }
@@ -306,13 +306,16 @@ async function bootTx(c: import("pg").PoolClient, statements: readonly string[])
 
 // A client checked out of the pool has no 'error' listener (pg-pool removes its own at checkout and adds it back at
 // release), and a session that ends while the client is out (a server restart, pg_terminate_backend) emits 'error' on
-// it: with no listener that ended the process. withClient listens while the client is out. At release pg-pool closes a
-// client whose connection failed (it is not queryable) instead of handing it out again (test/pg-client-loss.test.ts).
-async function withClient<T>(pool: import("pg").Pool, fn: (c: import("pg").PoolClient) => Promise<T>): Promise<T> {
+// it: with no listener that ended the process. withClient listens while the client is out, and a client that saw such
+// an error or whose ROLLBACK failed (fn reports it through `broken`) goes back with the error, so the pool closes it:
+// a session still answering inside its aborted transaction, or about to end, is not handed to the next caller
+// (test/pg-client-loss.test.ts).
+async function withClient<T>(pool: import("pg").Pool, fn: (c: import("pg").PoolClient, broken: (e: Error) => void) => Promise<T>): Promise<T> {
   const c = await pool.connect();
-  const onError = () => { /* the statement in flight, or the next one, fails with the connection, and fn with it */ };
-  c.on("error", onError);
-  try { return await fn(c); } finally { c.removeListener("error", onError); c.release(); }
+  let failed: Error | undefined;
+  const broken = (e: Error) => { failed ??= e; };
+  c.on("error", broken);
+  try { return await fn(c, broken); } finally { c.removeListener("error", broken); c.release(failed); }
 }
 
 // `?` placeholders are translated to $1..$n so call sites stay dialect-free.
@@ -393,12 +396,12 @@ class PgStore implements Store {
   private ready(): Promise<void> {
     if (this.opts.boot) return this.opts.boot.ready();
     if (this._ready) return this._ready;
-    const p = withClient(this.pool, async (c) => {
+    const p = withClient(this.pool, async (c, broken) => {
       await c.query(`CREATE SCHEMA IF NOT EXISTS ${this.schemaSafe}`);
       await c.query(`SET search_path TO ${this.schemaSafe}`);
-      await bootTx(c, schemaSql(this.backend));
-      if ((await c.query(UTXO_STATS_EMPTY)).rowCount) await bootTx(c, ["ANALYZE outputs"]);
-      await bootTx(c, totalsRebuildSql(this.backend));
+      await bootTx(c, schemaSql(this.backend), broken);
+      if ((await c.query(UTXO_STATS_EMPTY)).rowCount) await bootTx(c, ["ANALYZE outputs"], broken);
+      await bootTx(c, totalsRebuildSql(this.backend), broken);
     });
     this._ready = p;
     p.catch(() => { if (this._ready === p) this._ready = null; });
@@ -428,14 +431,14 @@ class PgStore implements Store {
   }
   private async onClient<T>(begin: string, fn: (s: Store) => Promise<T>): Promise<T> {
     await this.ready(); this.acquireGuard();
-    return await withClient(this.pool, async (c) => {
+    return await withClient(this.pool, async (c, broken) => {
       try {
         await c.query(begin);
         const r = await fn(clientStore(c));
         await c.query("COMMIT");
         return r;
       } catch (e) {
-        try { await c.query("ROLLBACK"); } catch { /* connection gone: pg-pool closes it at release */ }
+        try { await c.query("ROLLBACK"); } catch (re) { broken(re as Error); }
         throw e;
       }
     });
