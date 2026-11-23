@@ -6,11 +6,12 @@ Operator: the deploy is a pull, then a restart of `csd-indexer`; no dependency c
 moves to 0.3.14 with `package.json`, so no `npm ci` is needed), and no setting changes. Postgres 14 or later. The role
 in `CSD_INDEX_PG` need not be a superuser: one that owns the database is enough, as a start creates the schema, the
 tables, indexes and statistics object and analyzes `outputs`. The first start builds `idx_out_addr_unspent` in its
-DDL transaction and, on Postgres, creates `st_out_addr_unspent` and then analyzes `outputs` once in a transaction of
-its own; every store call, `/health` included, waits for the start. On a scratch Postgres 16 with 300,000 outputs
-and 300,000 history rows, as a non-superuser owner, the DDL with the index build took 1.9 s and the ANALYZE 1.1 s:
-the first start took 6.85 s, where 0.3.13 took 3.86 s on the same database and the next start 3.89 s. On SQLite the
-first start took 1.05 s (0.3.13: 0.71 s; the next start: 0.63 s). The time grows with the outputs table. The block
+DDL transaction and, on Postgres, creates `st_out_addr_unspent` with a statistics target of 250 and then analyzes
+`outputs` once in a transaction of its own; every store call, `/health` included, waits for the start. On a scratch
+Postgres 16 with 300,000 outputs and 300,000 history rows, as a non-superuser owner, the DDL with the index build
+took 1.8 s and the ANALYZE 2.8 s: the first start took 8.38 s, where 0.3.13 took 3.83 s on the same database and the
+next start 3.75 s. On SQLite the first start took 1.02 s (0.3.13: 0.69 s; the next start: 0.63 s). Autovacuum's
+later ANALYZE of `outputs` takes as long as the start's (the default target took 1.1 s on that table). The time grows with the outputs table. The block
 writer opens one more Postgres connection (`CSD_INDEX_PG_POOL` + 1 in all). Rollback: check out 0.3.13 and restart;
 it opens a database 0.3.14 started, writes and reads it, and leaves the index and the statistics object in place
 (checked on both backends, on Postgres as a non-superuser owner).
@@ -114,7 +115,11 @@ API changes for readers: `/analytics/miners` entries lose `fees_collected` (alwa
   sorted them, and Postgres walked `outputs(height)` and filtered, reading the address's lifetime outputs. A new index
   on `outputs(addr, COALESCE(spent_txid, ''), height, txid, vout)`, with the page's unspent test written as that
   equality, and on Postgres the statistics object `st_out_addr_unspent` on the pair, make the page a seek that stops
-  at the page. On 300,000 outputs (a miner's address with 90,000 outputs, 286 unspent; 1,000 small addresses; one with
+  at the page. The object's target is 250: at the default its most-common list held 100 pairs of a 30,000-row
+  sample, and a miner's few unspent outputs fell out of it in 2 of 60 ANALYZE runs on the plan test's table, which
+  then planned the height walk; at 250, 0 of 200 runs did. A partial index on the unspent rows, without the object,
+  planned the height walk after all 200 runs, so it was not taken. With no statistics yet, both seek the index on both
+  columns and sort what they find. On 300,000 outputs (a miner's address with 90,000 outputs, 286 unspent; 1,000 small addresses; one with
   60,000 unspent), median of 30 pages, before and after: SQLite 35.76 to 1.19 ms, 36.42 to 0.43 ms and 45.36 to 3.82
   ms; Postgres 97.78 to 1.22 ms, 0.93 to 0.67 ms and 2.77 to 2.16 ms. `test/address-utxo.test.ts` pins the plan on both
   backends with a miner's shape.

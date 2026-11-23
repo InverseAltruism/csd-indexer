@@ -35,16 +35,29 @@ or later).
     holds, claimed higher with a huge chainwork, passed the PoW and plausibility checks before this and made the
     replaying backend the active one (`test/rpc-route-link.test.ts`). One `CSD_RPC_POW_TIMEOUT` deadline covers the
     fetches of one pass's proof; an honest contender one block ahead costs the one tip-header fetch as before.
-  - A proof the deadline ends goes on at the next pass: per backend one record (the tip it was proved from, the
-    lowest proved header, the work under the tip) that the next walk joins at the top's height when the hash there
-    is the same, so it reads on below the bottom; a proof that linked is kept the same way. A tip on another branch
-    does not join, and a refused walk leaves no record. Memory: one record per configured backend. Cost: at most the
-    deadline per pass and contender. A proof of n headers at r ms a read ends after about n times r divided by the
+  - A proof the deadline or a failed read ends goes on at the next pass: per backend at most two proved parts (each
+    the tip it was proved from, the lowest proved header, their work and the anchor tip they were compared with),
+    which the next walk joins at a part's top height when the hash there is the same, so it reads on below the
+    part's bottom; a short walk keeps its own part merged with the older ones that continue it, and the highest one
+    under it; a proof that linked is kept the same way. A 404 for a height is a refusal; a timeout, a closed
+    connection or another status ends the pass. When the anchor's tip moved inside a part since it was compared, the
+    walk joins if the stored tip is nearer under the part than the anchor is under its top (a stored block at or under
+    the bottom links it: the stored chain is linked), else reads the part again to meet the anchor; a joined walk
+    that is refused walks again without the kept parts. A tip on another branch does not join, and a refused walk
+    leaves no record. Memory: two parts per configured backend. Cost: at most the deadline per pass and contender. A proof of n headers at r ms a read ends after about n times r divided by the
     deadline passes, and each pass it is short logs how many headers it proved and how many at least remain.
   - The chainwork a contender is ranked with is its claim, at most the linked block's chainwork (the primary's
     report for its tip, the stored figure for a stored block) plus `workForBits` of each proved header; a claim below
     that stays as claimed. A block a non-primary backend serves is stored with at most its stored parent's chainwork
-    plus its header's work (`boundWork`); the primary's figures are stored as served. On 160 mainnet headers the
+    plus its header's work (`admitBlock`); the primary's figures are stored as served. A stored chainwork that is no
+    positive integer bounds nothing, as the regression guard reads it.
+  - `admitBlock` writes a non-primary backend's block only when its header hashes to the block's hash and meets its
+    own bits (`tipHeaderPowOk`) and its bits are plausible (`contenderPlausible` at the block's height: not easier
+    than `CSD_RPC_MAX_EASE` (16) times the target the stored LWMA window of 45 blocks gives the newest stored block;
+    honest difficulty moves far less: the steepest step among the fixture's 160 mainnet headers is 1.32 times
+    easier). A block that fails is not written, the pass ends with a logged line, and the backend is left out of
+    the selection while it answers that /tip hash; when it is the only backend answering, the pass reads nothing,
+    so nothing is written or unwound. The primary's blocks are written as served. On 160 mainnet headers the
     node's figure is that sum exactly (`test/fixtures/header-chain.ts`), so honest figures are unchanged.
   - Kill switch `CSD_RPC_ROUTE_PLAUSIBILITY=0`, read once at start: it turns off the plausibility gate and the link
     proof; the PoW check stays.
@@ -80,10 +93,14 @@ or later).
     seeks with `COALESCE(spent_txid, '') = ''`, an equality both planners use for the page order, so a page reads the
     page (`test/address-utxo.test.ts` pins the plan on both backends). On Postgres the statistics object
     `st_out_addr_unspent` on the same pair keeps the planner from estimating a miner's few unspent outputs as
-    thousands and walking `outputs(height)` instead; a start that creates it runs `ANALYZE outputs` once, and
-    autovacuum keeps it current. A start on a database without them builds both inside the DDL transaction (300,000
-    outputs on a scratch Postgres 16: the index 2.2 s and the first ANALYZE 1.6 s; SQLite: the index 0.6 s), while
-    every store call waits for the start. 0.3.13 opens such a database and leaves both in place.
+    thousands and walking `outputs(height)` instead. Its statistics target is 250 (75,000 sampled rows, 250 pairs): at
+    the default a miner's pair fell out of the list in 2 of 60 ANALYZE runs on the plan test's table, at 250 in none
+    of 200. A start on a database without them builds the index and the object in the DDL transaction, and when the
+    object holds no data yet (`pg_stats_ext`, which the table owner can read) runs `ANALYZE outputs` in a transaction
+    of its own; autovacuum keeps it current. On a scratch Postgres 16 with 300,000 outputs, as a non-superuser owner:
+    the DDL with the index 1.8 s, the ANALYZE 2.8 s, the whole first start 8.38 s (0.3.13: 3.83 s); SQLite's first
+    start 1.02 s (0.3.13: 0.69 s). Every store call waits for the start. 0.3.13 opens such a database and leaves both in
+    place.
   - Three feed indexes, `FEED_INDEX_DDL` in the same DDL: `proposals(domain, height)`, `proposals(height)` and
     `attestations(height)`, which the chain-order feeds walk from the cursor (section 4). A start on a database that
     lacks them builds them (`test/feed-page-plan.test.ts`). The boot DDL is one multi-statement string, which
@@ -199,7 +216,7 @@ Read by tests and gates only: `CSD_INDEX_API` (the base the live gate reads, def
 
 Block ingest (`syncOnce`): select the backend, run the chainwork regression guard, `reconcileTipWindow()`, then scan
 forward from `indexedHeight()+1`, one `writeBlock` per height. `writeBlock` runs in a single db transaction: clear any
-prior contents of that height, insert the block row (the node-reported chainwork as TEXT, bounded by `boundWork` when a non-primary backend serves it), resolve inputs against the
+prior contents of that height, insert the block row (the node-reported chainwork as TEXT, bounded by `admitBlock` when a non-primary backend serves it), resolve inputs against the
 indexer's own `outputs` table (the electrs model, zero extra RPC), write outputs, spends, `address_history` and the
 Propose and Attest app rows; a txid `txs` already holds gets one `tx_repeats` row and nothing else. Events emit only
 near the tip, once per block when it is written, with the status of the block's depth at that moment: confirmed at
