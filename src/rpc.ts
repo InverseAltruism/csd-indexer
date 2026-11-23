@@ -216,7 +216,7 @@ async function linkWalk(base: string, claimedHeight: number, tipHash: string, ti
     const part = pending.find((p) => p.topHeight === h);
     if (part && part.topHash === hash && (await joins(part, anchor, anchorTip))) {
       if (moved(part, anchor, anchorTip)) skipped = true;
-      pending = pending.filter((p) => p.topHeight < part.bottomHeight);
+      pending = pending.filter((p) => p.topHeight < part.bottomHeight);   // a one-header part's top is its bottom
       work += part.work - headerWork(header); h = part.bottomHeight; header = { prev: part.bottomPrev };
       continue;
     }
