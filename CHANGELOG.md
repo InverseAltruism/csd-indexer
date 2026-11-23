@@ -2,6 +2,16 @@
 
 ## 0.3.14
 
+Operator: the deploy is a pull, then a restart of `csd-indexer`; the lockfile is unchanged (no `npm ci`), and no
+setting changes. The first start builds `idx_out_addr_unspent` and, on Postgres, creates `st_out_addr_unspent` and
+analyzes `outputs` once, inside the start's DDL transaction while every store call waits: on a scratch Postgres 16
+with 300,000 outputs the index took 2.2 s and the analyze 1.6 s (SQLite: 0.6 s for the index); the time grows with
+the outputs table. The block writer opens one more Postgres connection (`CSD_INDEX_PG_POOL` + 1 in all). Rollback:
+check out 0.3.13 and restart; it opens a database 0.3.14 started, writes and reads it, and leaves the index and the
+statistics object in place (checked on both backends).
+API changes for readers: `/analytics/miners` entries lose `fees_collected` (always 0); `/health` adds
+`node_tip_height`; `%00` in a parameter is 400; a merkle proof for a block without a header root is 404.
+
 - A non-primary backend wins the backend selection only with a proof of the chain it claims (`contenderLinks` in
   `src/rpc.ts`): from its claimed tip down, PoW-valid headers that hash-link at consecutive heights to the primary's
   tip or to a block the index stores, at the height that block holds, with at least one new header. Before, the
