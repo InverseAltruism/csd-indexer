@@ -18,6 +18,15 @@
   the honest failover cases of `test/rpc-route-plausibility.test.ts` and `test/route-guard-visibility.test.ts` serve
   that chain, and `test/rpc-failover.test.ts` and `test/rpc-pow-route.test.ts`, whose mocks serve one header at
   every height, test the selection with the PoW check alone (the switch off).
+- An `/address/:a/utxo` page costs the page. Neither planner had an index that answers "this address's unspent
+  outputs in height order": SQLite read the unspent outputs of every address through `outputs(spent_txid)` and
+  sorted them, and Postgres walked `outputs(height)` and filtered, reading the address's lifetime outputs. A new index
+  on `outputs(addr, COALESCE(spent_txid, ''), height, txid, vout)`, with the page's unspent test written as that
+  equality, and on Postgres the statistics object `st_out_addr_unspent` on the pair, make the page a seek that stops
+  at the page. On 300,000 outputs (a miner's address with 90,000 outputs, 286 unspent; 1,000 small addresses; one with
+  60,000 unspent), median of 30 pages, before and after: SQLite 35.76 to 1.19 ms, 36.42 to 0.43 ms and 45.36 to 3.82
+  ms; Postgres 97.78 to 1.22 ms, 0.93 to 0.67 ms and 2.77 to 2.16 ms. `test/address-utxo.test.ts` pins the plan on both
+  backends with a miner's shape.
 - One answer, one view. `/tx/:id`, `/address/:a/txs`, `/address/:a/txs/chain/:last`, `/block/:hash/txids` and
   `/block/:hash/txs` read in two or three statements, so on Postgres a reorg's commit between them answered 200 with
   `outputs: []` for a tx with outputs, or `[]` for a block holding transactions (175 of 20,148 answers in

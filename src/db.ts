@@ -63,6 +63,18 @@ export const FEED_INDEX_DDL = [
   "CREATE INDEX IF NOT EXISTS idx_prop_height ON proposals(height)",
   "CREATE INDEX IF NOT EXISTS idx_att_height ON attestations(height)",
 ] as const;
+// Exported for the UTXO bench, which times its build.
+export const UTXO_INDEX_DDL = "CREATE INDEX IF NOT EXISTS idx_out_addr_unspent ON outputs(addr, (COALESCE(spent_txid, '')), height, txid, vout)";
+// Postgres estimates `addr = ? AND COALESCE(spent_txid, '') = ''` as if the two were independent: for a miner's
+// address with thousands of spent outputs and a few unspent ones it expects thousands of rows and walks outputs by
+// height instead of the index above. The statistics object gives it the pair's frequencies (Postgres 14 or later);
+// ANALYZE fills it, at the first start that creates it and then as autovacuum analyzes the table.
+const UTXO_STATS = "st_out_addr_unspent";
+const UTXO_STATS_DDL = `CREATE STATISTICS IF NOT EXISTS ${UTXO_STATS} (mcv, dependencies) ON addr, (COALESCE(spent_txid, '')) FROM outputs`;
+/** The schema statements a start applies on `backend`. */
+const schemaSql = (backend: Store["backend"]): string[] => (backend === "postgres" ? [DDL, UTXO_STATS_DDL] : [DDL]);
+const UTXO_STATS_EMPTY = "SELECT 1 FROM pg_statistic_ext s LEFT JOIN pg_statistic_ext_data d ON d.stxoid = s.oid " +
+  `WHERE s.stxname = '${UTXO_STATS}' AND s.stxnamespace = current_schema()::regnamespace AND d.stxoid IS NULL`;
 // An INTEGER column (txs.pos, outputs.vout) is 4 bytes on Postgres, where a larger bind fails the statement; SQLite's
 // INTEGER is 8 bytes. A route refuses a cursor value above this instead of answering 500 on one backend only.
 export const PG_INTEGER_MAX = 2 ** 31 - 1;
@@ -135,6 +147,11 @@ const DDL = `
   CREATE INDEX IF NOT EXISTS idx_out_height       ON outputs(height);
   CREATE INDEX IF NOT EXISTS idx_out_spent_height ON outputs(spent_height);
   CREATE INDEX IF NOT EXISTS idx_addrhist_height  ON address_history(height);
+  -- /address/:a/utxo (queries.ts addressUtxos) seeks an address's unspent outputs in (height, txid, vout) order and
+  -- stops at the page. The unspent test is an equality on this expression, which both planners use for the order;
+  -- \`spent_txid IS NULL\` is no equality to either, and the page read every output of the address (Postgres) or of
+  -- the unspent set (SQLite). test/address-utxo.test.ts pins the plan.
+  ${UTXO_INDEX_DDL};
 ${FEED_INDEX_DDL.map((s) => `  ${s};`).join("\n")}
 `;
 
@@ -367,7 +384,8 @@ class PgStore implements Store {
       try {
         await c.query(`CREATE SCHEMA IF NOT EXISTS ${this.schemaSafe}`);
         await c.query(`SET search_path TO ${this.schemaSafe}`);
-        await bootTx(c, [DDL]);
+        await bootTx(c, schemaSql(this.backend));
+        if ((await c.query(UTXO_STATS_EMPTY)).rowCount) await bootTx(c, ["ANALYZE outputs"]);
         await bootTx(c, totalsRebuildSql(this.backend));
       } finally { c.release(); }
     })();
@@ -462,7 +480,7 @@ export async function resetStoreForTests(): Promise<void> {
   for (const t of ["address_history", "attestations", "proposals", "outputs", "txs", "tx_repeats", "blocks", "meta", "coinbase_totals", "address_totals"]) {
     await s.exec(`DROP TABLE IF EXISTS ${t}`);
   }
-  await s.exec(DDL);
+  for (const q of schemaSql(s.backend)) await s.exec(q);
   await s.tx(async (d) => { for (const q of totalsRebuildSql(d.backend)) await d.run(q); });
 }
 

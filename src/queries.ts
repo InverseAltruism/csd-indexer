@@ -150,16 +150,19 @@ export async function addressTxidHeight(addr: string, txid: string): Promise<num
   return r ? Number(r.height) : null;
 }
 // An address's unspent outputs, one page at a time in (height, txid, vout) order; `after` is the last row of the
-// previous page. A page shorter than UTXO_PAGE is the last. The `height >= ?` term repeats what the keyset implies so
-// a planner walking idx_out_height starts at the cursor instead of below it.
+// previous page. A page shorter than UTXO_PAGE is the last. `COALESCE(spent_txid, '') = ''` is `spent_txid IS NULL`
+// (a spender's txid is never empty) in the form idx_out_addr_unspent (db.ts) indexes, so the page is an index seek on
+// the address that stops at the page; the `height >= ?` term starts a cursor page's seek at the cursor.
 export const UTXO_PAGE = 1000;
 export interface UtxoCursor { height: number; txid: string; vout: number }
+const UNSPENT_OF = "addr=? AND COALESCE(spent_txid, '') = ''";
+export const UTXO_PAGE_SQL = `SELECT * FROM outputs WHERE ${UNSPENT_OF} ORDER BY height, txid, vout LIMIT ?`;
 export async function addressUtxos(addr: string, after: UtxoCursor | null): Promise<OutRow[]> {
   const a = addr.toLowerCase();
   const rows = after == null
-    ? await store().all<OutRow>("SELECT * FROM outputs WHERE addr=? AND spent_txid IS NULL ORDER BY height, txid, vout LIMIT ?", a, UTXO_PAGE)
+    ? await store().all<OutRow>(UTXO_PAGE_SQL, a, UTXO_PAGE)
     : await store().all<OutRow>(
-      "SELECT * FROM outputs WHERE addr=? AND spent_txid IS NULL AND height >= ? AND (height > ? OR (height = ? AND (txid > ? OR (txid = ? AND vout > ?)))) " +
+      `SELECT * FROM outputs WHERE ${UNSPENT_OF} AND height >= ? AND (height > ? OR (height = ? AND (txid > ? OR (txid = ? AND vout > ?)))) ` +
       "ORDER BY height, txid, vout LIMIT ?", a, after.height, after.height, after.height, after.txid, after.txid, after.vout, UTXO_PAGE);
   return rows.map((r) => ({ ...r, value: amt(r.value as never) }));
 }

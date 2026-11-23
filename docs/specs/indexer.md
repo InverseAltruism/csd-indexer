@@ -63,6 +63,14 @@ or later).
     backends like every other index: `blocks(hash)` for the header-batch lookups, and `outputs(height)`,
     `outputs(spent_height)` and `address_history(height)` for the write and unwind paths
     (`test/schema-indexes.test.ts`).
+  - `idx_out_addr_unspent` on `outputs(addr, COALESCE(spent_txid, ''), height, txid, vout)`, which `/address/:a/utxo`
+    seeks with `COALESCE(spent_txid, '') = ''`, an equality both planners use for the page order, so a page reads the
+    page (`test/address-utxo.test.ts` pins the plan on both backends). On Postgres the statistics object
+    `st_out_addr_unspent` on the same pair keeps the planner from estimating a miner's few unspent outputs as
+    thousands and walking `outputs(height)` instead; a start that creates it runs `ANALYZE outputs` once, and
+    autovacuum keeps it current. A start on a database without them builds both inside the DDL transaction (300,000
+    outputs on a scratch Postgres 16: the index 2.2 s and the first ANALYZE 1.6 s; SQLite: the index 0.6 s), while
+    every store call waits for the start. 0.3.13 opens such a database and leaves both in place.
   - Three feed indexes, `FEED_INDEX_DDL` in the same DDL: `proposals(domain, height)`, `proposals(height)` and
     `attestations(height)`, which the chain-order feeds walk from the cursor (section 4). A start on a database that
     lacks them builds them (`test/feed-page-plan.test.ts`). The boot DDL is one multi-statement string, which
