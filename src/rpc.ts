@@ -157,13 +157,14 @@ function parseWork(v: unknown): bigint | null {
 const headerWork = (h: ProofHeader): bigint => (Number.isSafeInteger(h.bits) ? workForBits(h.bits as number) : 0n);
 
 // A part of a backend's chain that its link proof proved: the headers from topHeight (hash topHash) down to
-// bottomHeight (whose prev is bottomPrev), each hash-bound, meeting its own bits and linked to the one above; `below`
-// is the work of those under the top, and anchorTip the anchor's tip every prev in the part was compared with (null
-// when the part was joined past an anchor tip it was not compared with). A backend keeps at most two: what its last
-// walk proved from its tip down, and the highest older part under where that walk stopped. So the memory is bounded
-// by the backends list whatever a backend serves; a pass costs at most its deadline; a proof of n headers ends after
-// about n times the read time divided by the deadline; a failed read keeps what was proved; and a proved contender
-// the selection does not choose yet is not walked again (test/rpc-route-honest.test.ts).
+// bottomHeight (whose prev is bottomPrev), each hash-bound, meeting its own bits and linked to the one above; `work`
+// is their summed work, and anchorTip the anchor's tip every prev in the part was compared with (null when the part
+// was joined past an anchor tip that moved inside it). A backend keeps at most two parts: what its last walk proved
+// from its tip down, with every older part it reaches by hash merged in, and the highest older part under where that
+// walk stopped. So the memory is bounded by the backends list whatever a backend serves; a pass costs at most its
+// deadline; a proof of n headers ends after about n times the read time divided by the deadline; a failed read keeps
+// what was proved; and a proved contender the selection does not choose yet is not walked again
+// (test/rpc-route-honest.test.ts).
 //
 // A walk joins a part when it reaches the part's top height with the part's top hash: the part is then the walk's own
 // chain (a hash binds its ancestors), so its headers are not read again, and nothing it skips may hide a link. A block
@@ -173,7 +174,7 @@ const headerWork = (h: ProofHeader): bigint => (Number.isSafeInteger(h.bits) ? w
 // joins if the stored tip is fewer heights under the part than the anchor is under its top (a stored ancestor then
 // links it sooner), else walks the part again to meet the anchor; a joined walk that is refused walks again without
 // the kept parts. A tip on another branch has another hash at the part's top height and does not join.
-type Proved = { topHash: string; topHeight: number; bottomHeight: number; bottomPrev: string; below: bigint; anchorTip: string | null };
+type Proved = { topHash: string; topHeight: number; bottomHeight: number; bottomPrev: string; work: bigint; anchorTip: string | null };
 const proofs = new Map<string, Proved[]>();
 /** TEST ONLY: forget every backend's kept proof and every left backend, so a case starts from none. */
 export function resetProofsForTests(): void { proofs.clear(); left.clear(); }
@@ -207,21 +208,17 @@ type WalkEnd = { end: "linked"; work: bigint | null; kept: Proved[] } | { end: "
 async function linkWalk(base: string, claimedHeight: number, tipHash: string, tipHeader: ProofHeader, anchor: Probe,
   signal: AbortSignal, saved: Proved[]): Promise<WalkEnd> {
   const anchorTip = anchor.tipHash?.toLowerCase() ?? null;
-  const pending = [...saved].sort((x, y) => y.topHeight - x.topHeight);
-  // The headers from the tip down to height h are proved; `hash` is the one at h and `work` their sum.
-  let header = tipHeader, h = claimedHeight, hash = tipHash, work = headerWork(tipHeader);
-  let compared = anchorTip, skipped = false;
-  const own = (prev: string): Proved => ({ topHash: tipHash, topHeight: claimedHeight, bottomHeight: h, bottomPrev: prev, below: work - headerWork(tipHeader), anchorTip: compared });
+  let pending = saved;
+  // The headers from the tip down to height h are proved; `header` and `hash` are the one at h, `work` their sum.
+  let header = tipHeader, h = claimedHeight, hash = tipHash, work = headerWork(tipHeader), skipped = false;
+  const own = (prev: string): Proved => ({ topHash: tipHash, topHeight: claimedHeight, bottomHeight: h, bottomPrev: prev, work, anchorTip: skipped ? null : anchorTip });
   for (;;) {
-    while (pending[0] && pending[0].topHeight > h) pending.shift();     // passed with another hash: another branch
-    const part = pending[0];
-    if (part && part.topHeight === h) {
-      pending.shift();
-      if (part.topHash === hash && (await joins(part, anchor, anchorTip))) {
-        if (part.anchorTip !== anchorTip && anchor.height >= part.bottomHeight && anchor.height < part.topHeight) { skipped = true; compared = null; }
-        work += part.below; h = part.bottomHeight; header = { prev: part.bottomPrev };
-        continue;
-      }
+    const part = pending.find((p) => p.topHeight === h);
+    if (part && part.topHash === hash && (await joins(part, anchor, anchorTip))) {
+      if (moved(part, anchor, anchorTip)) skipped = true;
+      pending = pending.filter((p) => p.topHeight < part.bottomHeight);
+      work += part.work - headerWork(header); h = part.bottomHeight; header = { prev: part.bottomPrev };
+      continue;
     }
     if (h <= CFG.scanFrom) return { end: "refused", skipped };
     const prev = typeof header.prev === "string" ? header.prev.toLowerCase() : "";
@@ -233,17 +230,32 @@ async function linkWalk(base: string, claimedHeight: number, tipHash: string, ti
     let below: ProofHeader | null;
     try { below = await headerAt(base, h - 1, signal); } catch {
       // The deadline or a failed read ends this pass's walk; what is proved stays for the next pass.
-      return { end: "short", kept: [own(prev), ...pending.slice(0, 1)] };
+      return { end: "short", kept: keepParts(own(prev), pending) };
     }
     if (!below || !tipHeaderPowOk(below, prev)) return { end: "refused", skipped };
     header = below; hash = prev; h--; work += headerWork(below);
   }
 }
 
-// Whether a walk at a kept part's top joins it: always, unless the anchor's tip moved inside the part since it was
-// compared and is nearer the part's top than the stored tip is under the part's bottom.
+// The parts a short walk keeps: its own, merged with each older part that continues it (the part's top is the height
+// under its bottom, with its bottomPrev as hash), and the highest older part under that.
+function keepParts(own: Proved, pending: readonly Proved[]): Proved[] {
+  let top = own;
+  for (const p of [...pending].filter((x) => x.topHeight < own.bottomHeight).sort((x, y) => y.topHeight - x.topHeight)) {
+    if (p.topHeight !== top.bottomHeight - 1 || p.topHash !== top.bottomPrev) return [top, p];
+    top = { ...top, bottomHeight: p.bottomHeight, bottomPrev: p.bottomPrev, work: top.work + p.work, anchorTip: top.anchorTip === p.anchorTip ? top.anchorTip : null };
+  }
+  return [top];
+}
+
+// The anchor's tip moved inside a kept part since the part was compared with it.
+const moved = (part: Proved, anchor: Probe, anchorTip: string | null): boolean =>
+  part.anchorTip !== anchorTip && anchor.height >= part.bottomHeight && anchor.height < part.topHeight;
+
+// Whether a walk at a kept part's top joins it: always, unless the anchor's tip moved inside the part and is nearer
+// the part's top than the stored tip is under the part's bottom.
 async function joins(part: Proved, anchor: Probe, anchorTip: string | null): Promise<boolean> {
-  if (part.anchorTip === anchorTip || anchor.height < part.bottomHeight || anchor.height >= part.topHeight) return true;
+  if (!moved(part, anchor, anchorTip)) return true;
   const top = await store().get<{ h: number | bigint | null }>("SELECT MAX(height) AS h FROM blocks");
   const stored = top?.h == null ? CFG.scanFrom - 1 : Number(top.h);
   return part.bottomHeight - 1 - stored < part.topHeight - anchor.height;

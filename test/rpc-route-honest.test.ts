@@ -393,3 +393,40 @@ test("a secondary's first block, with nothing stored under it, is stored with th
     assert.equal(await storedWork(5), CHAIN[5]!.chainwork);
   } finally { CFG.scanFrom = from; }
 });
+
+// A header on block 100 that meets its own bits at the proof-of-work limit (nonce ground once), bits far easier than
+// the chain's: cheap to make, and a backend serving such blocks could write a chain of its own at no cost.
+const EASY_101 = { version: 1, prev: CHAIN[100]!.hash, merkle: "0xfa751eeb3c31f6208a7180a44b748ed18e240500c0388d03ae24dce208dedd60",
+  time: 1781488021, bits: 0x1e00ffff, nonce: 1727327 };
+const EASY_101_HASH = "0x0000001e0083f7a5aa282ffa6d9635a71268d7fb10d198cd04ca07693d5960fd";
+
+test("a served block that meets its own bits at the proof-of-work limit, far under the chain's, is not written", async () => {
+  await start(100);
+  const easy = CHAIN.slice(0, 101);
+  easy.push({ hash: EASY_101_HASH, height: 101, chainwork: String(BigInt(CHAIN[100]!.chainwork) + workForBits(EASY_101.bits)), header: EASY_101, txs: cb("e101") });
+  P.state = down; S2.state = down; S1.state = up(101, { chain: easy });
+  assert.equal((await pass()).indexed, 100);
+  assert.ok(warnings.some((w) => w.includes("REFUSING block 101")));
+  S1.state = up(111);                                                   // a new tip on the real chain: read again
+  assert.equal((await pass()).indexed, 111);
+});
+
+test("the primary's tip just under a kept proof links it with no header read again", async () => {
+  await start(12);
+  S1.state = up(158, { failOnce: { h: 89, mode: "status" } });          // kept: 158 down to 90
+  assert.equal((await pass()).active, "primary");
+  P.state = up(89);
+  const two = await pass();
+  assert.equal(two.active, "sec1");
+  readOnce(two.reads[1]!, 90, 157);
+});
+
+test("the primary's tip moving above a kept proof's top: the walk joins the proof", async () => {
+  await start(12);
+  S2.state = up(158, { failOnce: { h: 60, mode: "status" } });          // kept: 158 down to 61
+  assert.equal((await pass()).active, "primary");
+  // The primary claims 159 on a branch of its own, with less work than the secondary's tip at 160.
+  P.state = alienTip(159, CHAIN[158]!.chainwork); S2.state = up(160);
+  const two = await pass();
+  assert.ok(!two.reads[2]!.some((h) => h >= 61 && h <= 157), "the kept headers are not read again");
+});
