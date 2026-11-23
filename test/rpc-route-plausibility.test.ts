@@ -21,7 +21,6 @@ import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import { bitsToTarget, targetToBigInt, bigIntToTarget, targetToBits } from "@inversealtruism/csd-codec";
 import { realHeader, realTipHash } from "./fixtures/header-32803.js";
-import { REAL_CHAIN } from "./fixtures/header-chain.js";
 import { tmpDb } from "./_tmpdb.js";
 
 const REAL_BITS = realHeader.bits;
@@ -30,24 +29,17 @@ const realTarget = targetToBigInt(bitsToTarget(REAL_BITS));
 // A local difficulty 256x HARDER than realHeader (so realHeader is >16x too easy vs this anchor).
 const HARDER_BITS = targetToBits(bigIntToTarget(realTarget / 256n));
 
-// With `base` set the node serves REAL_CHAIN[h - base] at height h, so an honest contender's headers link to the
-// primary's tip; without it, `header` at every height under `tipHash`.
-type Cfg = { height: number; work: bigint; up: boolean; header: any; tipHash: string; base?: number };
+type Cfg = { height: number; work: bigint; up: boolean; header: any; tipHash: string };
 function mockNode(init: Partial<Cfg> = {}) {
   const c: Cfg = { height: 0, work: 0n, up: true, header: realHeader, tipHash: realTipHash, ...init };
   const srv: Server = createServer((req, res) => {
     res.setHeader("content-type", "application/json"); res.setHeader("connection", "close");
     if (!c.up) { res.statusCode = 503; return res.end("{}"); }
-    const real = (h: number) => (c.base === undefined ? undefined : REAL_CHAIN[h - c.base]);
-    if (req.url === "/tip") return res.end(JSON.stringify({ ok: true, height: c.height, chainwork: String(c.work), tip: real(c.height)?.hash ?? c.tipHash }));
-    if (req.url?.startsWith("/block/height/")) {
-      const h = Number(req.url.slice("/block/height/".length)), r = real(h);
-      if (c.base !== undefined && !r) { res.statusCode = 404; return res.end("{}"); }
-      return res.end(JSON.stringify({ ok: true, hash: r?.hash ?? c.tipHash, height: r ? h : c.height, chainwork: String(c.work), header: r?.header ?? c.header, txs: [] }));
-    }
+    if (req.url === "/tip") return res.end(JSON.stringify({ ok: true, height: c.height, chainwork: String(c.work), tip: c.tipHash }));
+    if (req.url?.startsWith("/block/height/")) return res.end(JSON.stringify({ ok: true, hash: c.tipHash, height: c.height, chainwork: String(c.work), header: c.header, txs: [] }));
     res.statusCode = 404; res.end("{}");
   });
-  return { srv, set(p: Partial<Cfg>) { c.base = undefined; Object.assign(c, p); }, url: () => `http://127.0.0.1:${(srv.address() as any).port}` };
+  return { srv, set(p: Partial<Cfg>) { Object.assign(c, p); }, url: () => `http://127.0.0.1:${(srv.address() as any).port}` };
 }
 
 const A = mockNode(), B = mockNode();
@@ -103,8 +95,8 @@ test("FORGED (LWMA): a valid but TOO-EASY tip header within the delta cap is EXC
 
 test("HONEST FAILOVER intact: a genuinely-ahead secondary at the CORRECT local difficulty (primary stale) WINS", async () => {
   await populateLocal(REAL_BITS);                       // local anchor = realHeader difficulty
-  A.set({ height: LOCAL_TIP - 10, work: 100n, up: true, base: 40 });                     // primary stale/behind
-  B.set({ height: LOCAL_TIP + 5, work: 9_000_000_000n, up: true, base: 40, header: realHeader, tipHash: realTipHash }); // ahead, correct difficulty
+  A.set({ height: LOCAL_TIP - 10, work: 100n, up: true });                     // primary stale/behind
+  B.set({ height: LOCAL_TIP + 5, work: 9_000_000_000n, up: true, header: realHeader, tipHash: realTipHash }); // ahead, correct difficulty
   const s = await rpc.selectBackend();
   assert.equal(s.active, B.url(), "honest ahead-secondary at the correct local difficulty is STILL selected");
   assert.equal(rpc.activeBackend(), B.url());
@@ -113,8 +105,8 @@ test("HONEST FAILOVER intact: a genuinely-ahead secondary at the CORRECT local d
 // The local anchor read is the adapter's own I/O (csd-light's check is pure), so its failure mode is pinned here.
 test("FAIL CLOSED: a local store read error excludes the honest secondary; once the read works it wins again", async () => {
   await populateLocal(REAL_BITS);
-  A.set({ height: LOCAL_TIP - 10, work: 100n, up: true, base: 40 });
-  B.set({ height: LOCAL_TIP + 5, work: 9_000_000_000n, up: true, base: 40, header: realHeader, tipHash: realTipHash });
+  A.set({ height: LOCAL_TIP - 10, work: 100n, up: true });
+  B.set({ height: LOCAL_TIP + 5, work: 9_000_000_000n, up: true, header: realHeader, tipHash: realTipHash });
   await store().exec("DROP TABLE blocks");              // the anchor read now throws on both backends
   const broken = await rpc.selectBackend();
   assert.equal(broken.active, A.url(), "an unreadable local anchor cannot let a contender win");
@@ -154,8 +146,8 @@ test("MUTATION (LWMA): disabling the gate lets the TOO-EASY tip WIN (LWMA bound 
 // a min-diff forgery is still caught by the (relative) LWMA-ease test.
 test("WEDGE (M1): a genuinely-ahead honest secondary during a >maxAhead primary wedge is STILL selected", async () => {
   await populateLocal(REAL_BITS, 200 * 120);            // local anchor FROZEN ~200 blocks-worth ago (~6.7h wedge)
-  A.set({ height: LOCAL_TIP, work: 1_000n, up: true, base: 50 }); // primary frozen at the stale local tip
-  B.set({ height: LOCAL_TIP + 150, work: 9_000_000_000n, up: true, base: 50, header: realHeader, tipHash: realTipHash }); // honest, 150 > maxAhead=128, correct difficulty
+  A.set({ height: LOCAL_TIP, work: 1_000n, up: true }); // primary frozen at the stale local tip
+  B.set({ height: LOCAL_TIP + 150, work: 9_000_000_000n, up: true, header: realHeader, tipHash: realTipHash }); // honest, 150 > maxAhead=128, correct difficulty
   const s = await rpc.selectBackend();
   assert.equal(s.active, B.url(), "honest secondary 150 ahead of a wedge-frozen anchor is SELECTED (the wall-clock cap grew with staleness) - the M1 fix");
 });

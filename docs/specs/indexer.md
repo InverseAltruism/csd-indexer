@@ -23,52 +23,20 @@ or later).
   - ROUTE-1: a non-primary backend may win on work or height only if its tip header is PoW-valid and hash-bound
     (`tipHeaderPowOk`) and plausible (`contenderPlausible`); both checks are csd-light's. `contenderPlausible` in
     `src/rpc.ts` is the adapter that reads the local anchor and passes `CFG`: a delta cap (`CSD_RPC_MAX_AHEAD`, 128)
-    plus an LWMA ease factor (`CSD_RPC_MAX_EASE`, 16), anchored on the indexer's own stored headers (the newest stored block, at depth 0)
-    (never the live primary), so a real min-difficulty header claiming huge chainwork cannot capture the feed while a
-    genuinely-ahead honest secondary still wins.
-  - The link proof (`contenderLinks`): from the contender's tip down, each header it serves at the next lower height
-    must meet its bits and hash to the prev of the one above, until a prev is the primary's tip (the trust anchor's,
-    in a primary outage) or a block the index stores, and the height it holds there must be the height the walk
-    reached. The tip itself is new, so at least one header is, or it is a block the index stores at the claimed
-    height with the chainwork stored for it (a secondary the index has caught up with claims nothing the index does
-    not hold, and stays eligible: `test/rpc-route-honest.test.ts`). A header that the index or the primary already
-    holds, claimed higher with a huge chainwork, passed the PoW and plausibility checks before this and made the
-    replaying backend the active one (`test/rpc-route-link.test.ts`). One `CSD_RPC_POW_TIMEOUT` deadline covers the
-    fetches of one pass's proof; an honest contender one block ahead costs the one tip-header fetch as before.
-  - A proof the deadline or a failed read ends goes on at the next pass: per backend at most two proved parts (each
-    the tip it was proved from, the lowest proved header, their work and the anchor's tip when they were kept),
-    which the next walk joins at a part's top height when the hash there is the same, so it reads on below the
-    part's bottom; a short walk keeps its own part merged with the older ones that continue it, and the highest one
-    under it; a proof that linked is kept the same way. A 404 for a height is a refusal; a timeout, a closed
-    connection or another status ends the pass. When the anchor's tip moved inside a part since it was kept, the
-    walk joins if the stored tip is nearer under the part than the anchor is under its top (a stored block at or under
-    the bottom links it: the stored chain is linked), else reads the part again to meet the anchor; a joined walk
-    that is refused walks again without the kept parts. A tip on another branch does not join, and a refused walk
-    leaves no record. Memory: two parts per configured backend. Cost: at most the deadline per pass and contender. A
-    proof of n headers at r ms a read ends after about n times r divided by the deadline passes, and each pass it is
-    short logs how many headers it proved and how many at least remain.
-  - The chainwork a contender is ranked with is its claim, at most the linked block's chainwork (the primary's
-    report for its tip, the stored figure for a stored block) plus `workForBits` of each proved header; a claim below
-    that stays as claimed. A block a non-primary backend serves is stored with at most its stored parent's chainwork
-    plus its header's work (`admitBlock`); the primary's figures are stored as served. A stored chainwork that is no
-    positive integer bounds nothing, as the regression guard reads it.
-  - `admitBlock` writes a non-primary backend's block only when its header hashes to the block's hash and meets its
-    own bits (`tipHeaderPowOk`) and its bits are plausible (`contenderPlausible` at the block's height: not easier
-    than `CSD_RPC_MAX_EASE` (16) times the target the stored LWMA window of 45 blocks gives the newest stored block;
-    honest difficulty moves far less: the steepest step among the fixture's 160 mainnet headers is 1.32 times
-    easier). A block that fails is not written, the pass ends with a logged line, and the backend is left out of
-    the selection while it answers that /tip hash; when it is the only backend answering, the pass reads nothing,
-    so nothing is written or unwound. The primary's blocks are written as served. On 160 mainnet headers the
-    node's figure is that sum exactly (`test/fixtures/header-chain.ts`), so honest figures are unchanged.
-  - Kill switch `CSD_RPC_ROUTE_PLAUSIBILITY=0`, read once at start: it turns off the plausibility gate and the link
-    proof; the PoW check stays.
-  - ROUTE-1 decides which backend is read. The bodies of the blocks the active backend serves are not checked
-    against their headers: a backend that becomes active with real headers is trusted for the bodies as the primary
-    is. Its `/tip` chainwork is what the regression guard compares while it is active.
+    plus an LWMA ease factor (`CSD_RPC_MAX_EASE`, 16), anchored on the indexer's own stored headers (the newest
+    stored block, at depth 0; never the live primary), so a real min-difficulty header claiming huge chainwork cannot
+    capture the feed while a genuinely-ahead honest secondary still wins. Kill switch `CSD_RPC_ROUTE_PLAUSIBILITY=0`,
+    read once at start.
+  - ROUTE-1 decides which backend is read and checks only the contender's tip header. Two cases stay open to a
+    configured backend that answers falsely, and are accepted because every configured backend is one of the
+    operator's own nodes (README "Honest limits"): a backend that serves a real header at a higher height than it
+    holds, with an invented `/tip` chainwork, can win the selection; and once active, its bodies are not checked
+    against their headers and its `/tip` chainwork is what the regression guard compares, so an invented figure is
+    stored with its blocks and holds the index against honest nodes until it is rewritten.
   - A `/tip` whose height is not a non-negative integer leaves that backend out of the selection, and from the active
     backend it fails the pass (`test/rpc-tip-height.test.ts`).
   - The route delta cap grows with the local tip's age at `CSD_RPC_BLOCK_SECS` (120) per block; the tip-header fetch
-    for a contender and its link proof share `CSD_RPC_POW_TIMEOUT` (5000 ms) per pass.
+    for a contender times out after `CSD_RPC_POW_TIMEOUT` (5000 ms).
   - Every serial-poll read is bounded by an AbortSignal timeout (`CSD_RPC_TIMEOUT`, 10 s), so a backend that stalls
     `/block` cannot wedge the loop.
 - `src/db.ts`: one async `Store` interface with two backends, selected only by `CFG.pg` (`store()`).
@@ -108,8 +76,9 @@ or later).
     Postgres runs in one transaction, where `CREATE INDEX CONCURRENTLY` is refused: each build holds a SHARE lock on
     its table, so reads go on and writes wait until the DDL commits. The writer is the indexer process itself, and it
     writes only after the DDL.
-  - A start on Postgres runs two transactions, the DDL and the totals rebuild (`bootTx`), each with
-    `SET LOCAL statement_timeout = 0`, since an index build and the rebuild grow with the rows, and
+  - A start on Postgres runs the DDL, `ANALYZE outputs` when the statistics object holds no data yet, and the totals
+    rebuild, each in its own transaction (`bootTx`) with `SET LOCAL statement_timeout = 0`, since an index build,
+    the ANALYZE and the rebuild grow with the rows, and
     `SET LOCAL lock_timeout` of `BOOT_LOCK_TIMEOUT_MS` (5 s), so a lock another session holds (an open write
     transaction, a `VACUUM FULL`, a hand-run `LOCK`) fails the start with "the start waited 5000 ms for a lock
     another session holds" after at most 5 s per lock, and the next store call starts again; ordinary statements keep
@@ -197,9 +166,9 @@ reads:
 | `CSD_RPC_WORK_ESCAPE` | 20 | cycles the active backend may stay below the best chainwork before a forced switch |
 | `CSD_RPC_MAX_AHEAD` | 128 | ROUTE-1 delta cap: blocks a contender may claim beyond the local tip |
 | `CSD_RPC_MAX_EASE` | 16 | ROUTE-1 ease factor: how much easier than the local target a contender's tip may be |
-| `CSD_RPC_ROUTE_PLAUSIBILITY` | on | `0` turns the plausibility gate and the link proof off |
+| `CSD_RPC_ROUTE_PLAUSIBILITY` | on | `0` turns the plausibility gate off |
 | `CSD_RPC_BLOCK_SECS` | 120 | target block spacing for the wall-clock-aware delta cap; never used for consensus |
-| `CSD_RPC_POW_TIMEOUT` | 5000 | milliseconds per pass for a contender's header fetches (tip and link proof); a proof it ends goes on at the next pass |
+| `CSD_RPC_POW_TIMEOUT` | 5000 | milliseconds before a contender's tip-header fetch is aborted |
 | `CSD_INDEX_MAX_SSE` | 500 | SSE connection cap |
 | `CSD_INDEX_MAX_WS` | 500 | WS client cap |
 | `CSD_INDEX_MAX_SUB` | 1000 | subscription keys per WS client and category |
@@ -217,7 +186,7 @@ Read by tests and gates only: `CSD_INDEX_API` (the base the live gate reads, def
 
 Block ingest (`syncOnce`): select the backend, run the chainwork regression guard, `reconcileTipWindow()`, then scan
 forward from `indexedHeight()+1`, one `writeBlock` per height. `writeBlock` runs in a single db transaction: clear any
-prior contents of that height, insert the block row (the node-reported chainwork as TEXT, bounded by `admitBlock` when a non-primary backend serves it), resolve inputs against the
+prior contents of that height, insert the block row (the node-reported chainwork as TEXT), resolve inputs against the
 indexer's own `outputs` table (the electrs model, zero extra RPC), write outputs, spends, `address_history` and the
 Propose and Attest app rows; a txid `txs` already holds gets one `tx_repeats` row and nothing else. Events emit only
 near the tip, once per block when it is written, with the status of the block's depth at that moment: confirmed at

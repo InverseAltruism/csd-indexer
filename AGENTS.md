@@ -136,18 +136,13 @@ is a narrative in `docs/incidents/README.md`.
   move `version`, so one version string never denotes two determinism-dep sets. `test/ci-workflow.test.ts`,
   `test/analytics-lockstep.test.ts`.
 - ROUTE-1: a non-primary backend may win on work or height only if its tip header is PoW-valid and hash-bound
-  (`tipHeaderPowOk`), plausible (`contenderPlausible`) against the indexer's own stored headers, never the live
-  primary, and linked: PoW-valid, hash-linked headers at consecutive heights from its tip down to the primary's tip or
-  a stored block, at the height that block holds, with at least one new header (`contenderLinks`), so a replayed
-  header proves nothing; a tip the index stores at the claimed height with its stored chainwork stays eligible. A
-  proof longer than `CSD_RPC_POW_TIMEOUT` goes on at the next pass (two proved parts per backend). A contender is
-  ranked with at most the linked block's chainwork plus its proved headers' work, and a block a non-primary backend
-  serves is written only with a header that proves itself (hash, PoW, plausible bits) and stored with at most its
-  parent's chainwork plus its header's (`admitBlock`). A backend whose `/tip` height is not a
-  non-negative integer is left out, and such a tip from the active backend fails the pass. ROUTE-1 decides which
-  backend is read; the bodies of the blocks the active backend serves are not checked against their headers.
-  `test/rpc-pow-*.test.ts`, `test/rpc-route-plausibility.test.ts`, `test/rpc-route-link.test.ts`,
-  `test/rpc-route-honest.test.ts`, `test/rpc-failover.test.ts`, `test/rpc-tip-height.test.ts`.
+  (`tipHeaderPowOk`) and plausible (`contenderPlausible`) against the indexer's own stored headers, never the live
+  primary. A backend whose `/tip` height is not a non-negative integer is left out, and such a tip from the active
+  backend fails the pass. ROUTE-1 checks the contender's tip header only: where that header sits in its chain, the
+  chainwork it claims and the bodies the active backend serves are trusted, an accepted limit because every
+  configured backend is one of the operator's own nodes (README "Honest limits"). `test/rpc-pow-*.test.ts`,
+  `test/rpc-route-plausibility.test.ts`, `test/rpc-failover.test.ts`, `test/rpc-route-honest.test.ts`,
+  `test/rpc-tip-height.test.ts`.
 - Never point anything at :8790 as the default RPC: that is the miner's RPC; :8789 is primary, :8790 fallback only.
 - Every serial-poll read of the node is bounded by a timeout, so a backend that stalls `/block` cannot wedge the
   loop. `test/rpc-timeout.test.ts`.

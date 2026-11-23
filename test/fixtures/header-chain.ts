@@ -1,5 +1,5 @@
 // 160 consecutive mainnet headers, heights 32796 to 32955 (version 1): each meets the target of its
-// bits and its prev is the hash of the one before (test/rpc-route-link.test.ts checks both). A row is
+// bits and its prev is the hash of the one before (test/rpc-route-honest.test.ts checks both). A row is
 // [merkle, time, bits, nonce]; the hashes are computed with csd-codec, as the node computes them.
 import { headerHash } from "@inversealtruism/csd-codec";
 

@@ -83,16 +83,17 @@ export const CFG = {
   //     factor. Conservatively generous, erring toward ALLOWING honest contenders: honest LWMA difficulty
   //     drifts only a small factor over <= maxAheadBlocks in normal operation, while a POW_LIMIT forgery is
   //     ~1.25e7x easier than mainnet difficulty (measured), so 16x catches the forgery with ~6 orders of
-  //     magnitude of margin yet never touches honest drift. Degrades gracefully at min difficulty: when the
-  //     honest expected target is already at/near POW_LIMIT, the threshold saturates at POW_LIMIT so a
+  //     magnitude of margin. Honest drift reaches 16x only after a long run of blocks at LWMA's solve-time
+  //     clamp, and a contender's tip that much easier is then refused as a forgery would be (the selection
+  //     compares the tip with the stored window, across every block between them). Degrades gracefully at min
+  //     difficulty: when the honest expected target is already at/near POW_LIMIT, the threshold saturates at POW_LIMIT so a
   //     min-diff contender passes the LWMA test (min-diff IS honest there) and only the delta cap applies.
   maxEaseFactor: num("CSD_RPC_MAX_EASE", 16),
-  // ROUTE-1 F6 kill switch: CSD_RPC_ROUTE_PLAUSIBILITY=0 turns the plausibility gate and the link proof off. Default on.
+  // ROUTE-1 F6 kill switch: CSD_RPC_ROUTE_PLAUSIBILITY=0 turns the plausibility gate off. Default on.
   routePlausibility: (process.env.CSD_RPC_ROUTE_PLAUSIBILITY ?? "1") !== "0",
   // Cycles ACTIVE may stay below the best chainwork before rpc.ts forces a switch (work-escape).
   workEscapeCycles: num("CSD_RPC_WORK_ESCAPE", 20),
-  // Deadline (ms) per pass on the header fetches of a backend that claims to out-work the trust anchor (its tip
-  // header and its link proof; a proof the deadline ends goes on at the next pass).
+  // Timeout (ms) on the one tip-header fetch for a backend that claims to out-work the trust anchor.
   powVerifyTimeoutMs: num("CSD_RPC_POW_TIMEOUT", 5000),
   // Chain target block spacing (s) for the wall-clock-aware route delta cap; never used for consensus.
   routeBlockSecs: Math.max(1, num("CSD_RPC_BLOCK_SECS", 120)),

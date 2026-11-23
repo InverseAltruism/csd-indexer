@@ -199,12 +199,25 @@ The indexer is a convenient view of the chain, not an authority. Inclusion proof
 when a light client checks them against proof-of-work headers it verified itself; the explorer only
 checks them against the indexer's own headers. The derived data (per-attester
 breakdowns, rankings, address history) is reproducible rather than signed: the way you audit it
-is to run your own indexer and confirm you get the same numbers. The indexer reads blocks from one node at a time
-and does not check a block's transactions against its header: with several backends configured, another backend
-replaces the first only with proof-of-work headers above a block the first, or the index, already holds, and is then
-trusted as the first was. A proposal's `domain` and `uri` are the
-node's text with one change, on both backends: each U+0000 is stored and served as U+0001. JSON refuses both
-characters unescaped, so a uri is JSON here exactly when it is JSON on the chain; a consumer that compares a row with
+is to run your own indexer and confirm you get the same numbers.
+
+The indexer reads blocks from one node at a time, and trusts the nodes it is configured with (`CSD_RPC`,
+`CSD_RPC_BACKENDS`). Before it switches to another backend it checks that backend's tip header (its proof of work,
+and that its difficulty is plausible against the stored chain), and nothing more. Two things a configured node could
+do by answering falsely are therefore open, and accepted, because each backend is meant to be one of the operator's
+own nodes on the same host, where whoever controls one node's process can also stop or rewrite the primary:
+
+- A backend can win the switch by serving a real header at a higher height than it holds and claiming a large
+  chainwork for it. It then becomes the node the index reads from.
+- The blocks the active backend serves are not checked against their headers, and the chainwork it reports is
+  stored. An invented figure makes every honest node look lighter than the index, so the regression guard holds
+  each later pass until the operator re-indexes from empty, which also replaces the bodies that backend served.
+
+Run only nodes you control as backends.
+
+A proposal's `domain` and `uri` are the node's text with one change, on both backends: each U+0000 is stored and
+served as U+0001. JSON refuses both characters unescaped, so a uri is JSON here exactly when it is JSON on the chain;
+a consumer that compares a row with
 the node's bytes applies the same replacement first, and a `domain` or `uri` that holds U+0001 here may hold U+0000
 on the chain, so a hash over the text is checked against the node's bytes. A transaction id that two blocks hold is
 one transaction here, placed at its first occurrence (the lower height and its position in that block) in every

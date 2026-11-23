@@ -35,10 +35,8 @@ await new Promise<void>((r) => B.srv.listen(0, "127.0.0.1", () => r()));
 process.env.CSD_RPC = A.url();
 process.env.CSD_RPC_BACKENDS = `${A.url()},${B.url()}`;
 process.env.CSD_RPC_WORK_ESCAPE = "3";   // small so the work-escape test does not need 20 cycles
-// The mocks serve one real header at every height, a replay the link proof refuses, so the plausibility arms are off
-// here and this file tests the selection with the PoW arm alone; test/rpc-route-link.test.ts selects honest
-// contenders that serve real linked headers with every arm on.
-process.env.CSD_RPC_ROUTE_PLAUSIBILITY = "0";
+// Isolate an EMPTY local index so the F6 route-plausibility gate has no anchor and stays inactive here:
+// these honest-failover assertions must hold on their own (the gate is exercised in rpc-route-plausibility).
 process.env.CSD_INDEX_DB = tmpDb("rpcfo");
 process.env.CSD_INDEX_PG_SCHEMA = "t_rpcfo";   // own schema: the route gate reads `blocks`, which peer files seed
 const rpc = await import("../src/rpc.js");

@@ -11,30 +11,22 @@ import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import { bitsToTarget, targetToBigInt, bigIntToTarget, targetToBits } from "@inversealtruism/csd-codec";
 import { realHeader, realTipHash } from "./fixtures/header-32803.js";
-import { REAL_CHAIN } from "./fixtures/header-chain.js";
 import { tmpDb } from "./_tmpdb.js";
 
 const REAL_BITS = realHeader.bits;
 const HARDER_BITS = targetToBits(bigIntToTarget(targetToBigInt(bitsToTarget(REAL_BITS)) / 256n));
 
-// With `base` set the node serves REAL_CHAIN[h - base] at height h, so an honest contender's headers link to the
-// primary's tip; without it, `header` at every height under `tipHash`.
-type Cfg = { height: number; work: bigint; up: boolean; header: any; tipHash: string; base?: number };
+type Cfg = { height: number; work: bigint; up: boolean; header: any; tipHash: string };
 function mockNode(init: Partial<Cfg> = {}) {
   const c: Cfg = { height: 0, work: 0n, up: true, header: realHeader, tipHash: realTipHash, ...init };
   const srv: Server = createServer((req, res) => {
     res.setHeader("content-type", "application/json"); res.setHeader("connection", "close");
     if (!c.up) { res.statusCode = 503; return res.end("{}"); }
-    const real = (h: number) => (c.base === undefined ? undefined : REAL_CHAIN[h - c.base]);
-    if (req.url === "/tip") return res.end(JSON.stringify({ ok: true, height: c.height, chainwork: String(c.work), tip: real(c.height)?.hash ?? c.tipHash }));
-    if (req.url?.startsWith("/block/height/")) {
-      const h = Number(req.url.slice("/block/height/".length)), r = real(h);
-      if (c.base !== undefined && !r) { res.statusCode = 404; return res.end("{}"); }
-      return res.end(JSON.stringify({ ok: true, hash: r?.hash ?? c.tipHash, height: r ? h : c.height, chainwork: String(c.work), header: r?.header ?? c.header, txs: [] }));
-    }
+    if (req.url === "/tip") return res.end(JSON.stringify({ ok: true, height: c.height, chainwork: String(c.work), tip: c.tipHash }));
+    if (req.url?.startsWith("/block/height/")) return res.end(JSON.stringify({ ok: true, hash: c.tipHash, height: c.height, chainwork: String(c.work), header: c.header, txs: [] }));
     res.statusCode = 404; res.end("{}");
   });
-  return { srv, set(p: Partial<Cfg>) { c.base = undefined; Object.assign(c, p); }, url: () => `http://127.0.0.1:${(srv.address() as any).port}` };
+  return { srv, set(p: Partial<Cfg>) { Object.assign(c, p); }, url: () => `http://127.0.0.1:${(srv.address() as any).port}` };
 }
 
 const A = mockNode(), B = mockNode();
@@ -88,8 +80,8 @@ test("HAPPY PATH: a healthy local anchor logs nothing and the LWMA arm still exc
 
 test("HAPPY PATH: an honest ahead-secondary at the correct difficulty is still selected, silently", async () => {
   await populateLocal(REAL_BITS);
-  A.set({ height: LOCAL_TIP - 10, work: 100n, up: true, base: 40 });
-  B.set({ height: LOCAL_TIP + 5, work: 9_000_000_000n, up: true, base: 40, header: realHeader, tipHash: realTipHash });
+  A.set({ height: LOCAL_TIP - 10, work: 100n, up: true });
+  B.set({ height: LOCAL_TIP + 5, work: 9_000_000_000n, up: true, header: realHeader, tipHash: realTipHash });
   const cap = captureWarn();
   let s;
   try { s = await rpc.selectBackend(); } finally { cap.restore(); }
@@ -100,8 +92,8 @@ test("HAPPY PATH: an honest ahead-secondary at the correct difficulty is still s
 // ── I9 RED-FIRST: a malformed local window row disarms the arm, and that must be VISIBLE exactly once ──
 test("I9: a malformed local window row prints exactly ONE line, and the verdict path is unchanged", async () => {
   await populateLocal(0);                                // bits=0 is invalid compact bits: expectedBitsFromWindow throws
-  A.set({ height: LOCAL_TIP, work: 1_000n, up: true, base: 40 });
-  B.set({ height: LOCAL_TIP + 5, work: 9_000_000_000n, up: true, base: 40, header: realHeader, tipHash: realTipHash });
+  A.set({ height: LOCAL_TIP, work: 1_000n, up: true });
+  B.set({ height: LOCAL_TIP + 5, work: 9_000_000_000n, up: true, header: realHeader, tipHash: realTipHash });
   const cap = captureWarn();
   let s;
   try { s = await rpc.selectBackend(); } finally { cap.restore(); }

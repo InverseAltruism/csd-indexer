@@ -286,8 +286,9 @@ class SqliteStore implements Store {
 }
 
 // ── postgres backend ──
-// A start's two transactions, the schema DDL and the totals rebuild, grow with the rows: an index the DDL adds is built
-// over every row of its table, and the rebuild reads every outputs and address_history row, which anyone can add. The
+// A start's transactions, the schema DDL, `ANALYZE outputs` (only while the statistics object holds no data) and the
+// totals rebuild, grow with the rows: an index the DDL adds is built over every row of its table, ANALYZE samples
+// outputs, and the rebuild reads every outputs and address_history row, which anyone can add. The
 // pool's 30 s statement timeout would fail every start past that, so each runs without it, and every other statement
 // on the connection keeps it (SET LOCAL). A lock another session holds is waited for at most BOOT_LOCK_TIMEOUT_MS per
 // lock; past that the transaction fails (SQLSTATE 55P03) and rolls back, and the next store call starts again

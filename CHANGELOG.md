@@ -18,49 +18,14 @@ it opens a database 0.3.14 started, writes and reads it, and leaves the index an
 API changes for readers: `/analytics/miners` entries lose `fees_collected` (always 0); `/health` adds
 `node_tip_height`; `%00` in a parameter is 400; a merkle proof for a block without a header root is 404.
 
-- A non-primary backend wins the backend selection only with a proof of the chain it claims (`contenderLinks` in
-  `src/rpc.ts`): from its claimed tip down, PoW-valid headers that hash-link at consecutive heights to the primary's
-  tip or to a block the index stores, at the height that block holds, with at least one new header. Before, the
-  check verified the claimed tip header's PoW and hash, and its plausibility against the local difficulty, but not
-  where the header sits: a backend that answered `/tip` with a height 4 above the primary's, the primary's own tip
-  hash and a huge chainwork, and served that header at the claimed height, became the active backend and rewrote the
-  index above the fork with its own blocks (an attacker address ended with 11 outputs on a 10-block index in the
-  driver). A tip the index stores at the claimed height, with the chainwork stored for it, claims nothing new and
-  stays eligible, so the index stays on a secondary it has caught up with while the primary rebuilds far below,
-  comes back a block under, or a second secondary is stuck, as on 0.3.13. A secondary one block ahead costs the one
-  header fetch it cost before. A longer proof goes on across passes: a backend keeps at most two parts of what it
-  proved, which the next walk joins at a part's top height when the hash there is the same, so a pass costs at most
-  `CSD_RPC_POW_TIMEOUT`, a failed read (a timeout, a closed connection, a status other than 404) ends the pass and
-  keeps what was proved, and a pass that ends short logs how many headers it proved and how many at least remain.
-  When the primary's tip moves inside a kept part, the walk joins it if the stored tip is nearer under the part than
-  the primary's tip is under its top, else it walks the part again to meet the primary's tip. The limit, where 0.3.13 selected
-  at once: n headers at r ms a read take about n times r divided by the 5,000 ms deadline passes; measured at 5 ms a
-  read, 150 headers took 1 pass, 1,500 took 2 and 50,000 took 55 (at one pass per 15 s poll). A proof that long needs
-  both the index and the primary that far under the secondary: a re-index from empty, or an index far behind, while
-  the primary rebuilds. In the randomized comparison of honest backends (five seeds; passes behind the best node,
-  blocks behind, the longest run, backend switches) every figure equals 0.3.13's. `CSD_RPC_ROUTE_PLAUSIBILITY=0`
-  turns the proof off with the plausibility gate. The bodies of the blocks the active backend serves are still not
-  checked against their headers (README "Honest limits", AGENTS.md ROUTE-1).
-  `test/rpc-route-link.test.ts` and `test/rpc-route-honest.test.ts` (with `test/fixtures/header-chain.ts`, 160
-  consecutive mainnet headers from 32796); the honest failover cases of `test/rpc-route-plausibility.test.ts` and
-  `test/route-guard-visibility.test.ts` serve that chain, and `test/rpc-failover.test.ts` and
-  `test/rpc-pow-route.test.ts`, whose mocks serve one header at every height, test the selection with the PoW check
-  alone (the switch off).
-- The chainwork a contender reports counts no more than its headers carry: it is ranked with at most the linked
-  block's chainwork plus `workForBits` of each proved header (a lower claim stays as claimed), and a block a
-  non-primary backend serves is stored with at most its stored parent's chainwork plus its header's work. On 160
-  consecutive mainnet headers the node's chainwork at the top is exactly the figure below them plus their work, so
-  honest figures are stored as served. Before, a secondary that presented a real header with an invented chainwork
-  became active after the work-escape and stored that figure, and every honest node then had less work than the
-  index: each pass held. 0.3.13 did the same. A stored chainwork that is no positive integer (absent, empty, zero,
-  negative) bounds nothing, as the regression guard reads it, so a secondary over such a row is ranked with its
-  claim and selected as on 0.3.13. A block a non-primary backend serves is written only when its header hashes to
-  the block's hash, meets its own bits and has bits plausible against the stored chain (the contender check: not
-  easier than 16 times the target the 45-block LWMA window gives the newest stored block; the steepest step among
-  the 160 mainnet headers is 1.32 times easier); a block that fails is not written, the pass ends with a logged line,
-  and the backend is left out of the selection while it answers that tip. A header claiming bits `0x03000001` would
-  otherwise have stored 2^128 more work than its parent and held the index against every honest backend. The
-  primary's blocks are written as served. `test/rpc-route-honest.test.ts`.
+- README "Honest limits" names what the backend selection does not check: a contender's tip header is checked for
+  proof of work and a plausible difficulty, not for where it sits in the contender's chain, nor for the chainwork
+  claimed for it, and the bodies and chainwork the active backend serves are trusted. A configured node that answers
+  falsely can win the selection that way, and an invented chainwork it reports then holds the index against honest
+  nodes. Both are accepted: every configured backend is meant to be one of the operator's own nodes. Which backend
+  is selected, and when, is as on 0.3.13 apart from the `/tip` height check below; `test/rpc-route-honest.test.ts`
+  runs the honest failovers through `syncOnce` on 160 consecutive mainnet headers from 32796
+  (`test/fixtures/header-chain.ts`).
 - Postgres: a start as a role that is not a superuser read `pg_statistic_ext_data`, which only a superuser may read,
   and failed with "permission denied", so no route answered; it reads the `pg_stats_ext` view, which shows the owner
   its own rows. The CI Postgres job runs the suite as a non-superuser owner of its database
@@ -76,7 +41,9 @@ API changes for readers: `/analytics/miners` entries lose `fees_collected` (alwa
   stored block, at depth 0); the statement cache's "never hit" bound (IN lists and `/analytics/series` vary the SQL);
   the max supply in comments (about 1.05e16 base units, csd-codec's `maxSupplyBase`, not 1e17); "fractional
   degrades to 0" (a fractional number is floored; a non-integer string is 0); "consensus data is not clamped"
-  (values and header fields go through `safeValue`). README: what `track-address` delivers (the attestations the
+  (values and header fields go through `safeValue`); the ease factor's "never touches honest drift" (a long run of
+  blocks at LWMA's solve-time clamp reaches it); the Postgres start's "two transactions" (three while the statistics
+  object holds no data). README: what `track-address` delivers (the attestations the
   address made), that the streams carry no id or replay and the feeds are the complete read, what `final` in
   `/tx/:id/status` means (a depth; deeper reorgs are followed), and that the miners analytics credit the address a
   coinbase names, which its miner chooses. The hosted resolver's internal name is gone from comments and test names.

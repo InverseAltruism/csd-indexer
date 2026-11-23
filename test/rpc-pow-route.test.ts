@@ -48,10 +48,8 @@ process.env.CSD_RPC = A.url();
 process.env.CSD_RPC_BACKENDS = `${A.url()},${B.url()}`;
 process.env.CSD_RPC_WORK_ESCAPE = "1000";   // high: the forged/hung cases must NOT be rescued by a work-escape
 process.env.CSD_RPC_POW_TIMEOUT = "300";     // short: the hung-header case fails soft fast
-// The mocks serve one real header at every height, a replay the link proof refuses, so the plausibility arms are off
-// here and this file tests the selection with the PoW arm alone; test/rpc-route-link.test.ts selects honest
-// contenders that serve real linked headers with every arm on.
-process.env.CSD_RPC_ROUTE_PLAUSIBILITY = "0";
+// Empty, isolated local index -> the F6 plausibility gate has no anchor and stays inactive here, so these
+// ROUTE-1 badpow/hung assertions are proven independently (the plausibility gate is tested separately).
 process.env.CSD_INDEX_DB = tmpDb("rpcpow");
 process.env.CSD_INDEX_PG_SCHEMA = "t_rpcpow";   // same isolation on the Postgres job (the default `public` is shared)
 const rpc = await import("../src/rpc.js");
