@@ -34,7 +34,7 @@ async function run(app: string, body: string, delay: number, before?: () => Prom
     await closeDb();
   `;
   const dsn = `${process.env.CSD_INDEX_PG}${process.env.CSD_INDEX_PG!.includes("?") ? "&" : "?"}application_name=${app}`;
-  const release = before ? await before() : async () => {};
+  const release = before ? await before() : async () => { /* nothing held */ };
   const child = spawn("./node_modules/.bin/tsx", ["--input-type=module", "-e", CHILD],
     { cwd: repo, env: { ...process.env, CSD_INDEX_PG: dsn, CSD_INDEX_PG_POOL: "2" } });
   let out = "", err = "";
