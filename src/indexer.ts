@@ -280,16 +280,14 @@ export async function writeBlock(b: rpc.RpcBlock, advanceTip = false): Promise<R
     }
     const addrAfter = await d.all<AddressTotalsRow>(addressTotalsSql(ADDRESS_AT.height, false), ...atHeight);
     for (const [sql, ...p] of addressTotalsWrites(addrBefore, addrAfter)) await d.run(sql, ...p);
-    if (advanceTip) await setTip(d, blk.height);
+    if (advanceTip) await d.run(SET_TIP, TIP_KEY, String(blk.height));
     return repeats;
   });
 }
 
-// The tip pointer, written inside the transaction that stores or removes the rows it points at (test/tip-pointer-atomic
-// and the unwind tests), so the stored top and the pointer cannot part.
-async function setTip(d: Store, height: number): Promise<void> {
-  await d.run("INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", TIP_KEY, String(height));
-}
+// The tip pointer's write, run inside the transaction that stores or removes the rows it points at
+// (test/tip-pointer-atomic.test.ts and the unwind tests), so the stored top and the pointer cannot part.
+const SET_TIP = "INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value";
 
 // The coinbase output rows a write is about to remove or has just added (`where` over COINBASE_OUTPUTS), each with
 // its address's current coinbase_totals row. An output and its txs row share a height (writeBlock writes them in one
@@ -390,7 +388,7 @@ export async function unwindAbove(ancestor: number, newTip: number = ancestor): 
     await d.run(`DELETE FROM txs WHERE height>?`, h);
     await d.run(`DELETE FROM tx_repeats WHERE height>?`, h);
     await d.run(`DELETE FROM blocks WHERE height>?`, h);
-    await setTip(d, newTip);
+    await d.run(SET_TIP, TIP_KEY, String(newTip));
   });
 }
 
