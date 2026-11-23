@@ -242,8 +242,9 @@ M4).
   writing heights in ascending order without a gap, writing no height below the stored tip while the `meta` tip
   pointer (`indexed_height`) is at most one below the highest stored block, and starting at `CSD_INDEX_FROM` (default
   0; above 0 a txid's place is its first occurrence at or above it).
-- Nothing in `src/` sets the pointer lower (`unwindAbove` and `syncOnce` write it, the second one height at a time
-  after each block; `resetStoreForTests` drops it with every table). A pointer deleted or set back by hand over stored
+- Nothing in `src/` sets the pointer lower (`unwindAbove` writes it, and `writeBlock` when `syncOnce`
+  writes a block forward, each inside its own transaction, so the pointer and the stored top cannot part
+  (`test/tip-pointer-atomic.test.ts`); `resetStoreForTests` drops it with every table). A pointer deleted or set back by hand over stored
   blocks makes `syncOnce` rewrite stored heights in place, which does not end in a fresh index's tables: re-index
   from empty instead.
 - An output a later occurrence creates again stays one row in its first state, so balances, the UTXO list and

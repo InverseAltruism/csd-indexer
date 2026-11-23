@@ -8,7 +8,7 @@
 // un-spend orphaned spends), and replay the canonical branch; the electrs/Subsquid
 // roll-back-then-replay pattern. Blocks deeper than finalDepth are never touched.
 import * as rpc from "./rpc.js";
-import { store, getMeta, setMeta, tx as dbTx, COINBASE_OUTPUTS, TOTALS_LOCK, ADDRESS_TOTALS_COLS, addressTotalsSql, type Store } from "./db.js";
+import { store, getMeta, tx as dbTx, COINBASE_OUTPUTS, TOTALS_LOCK, ADDRESS_TOTALS_COLS, addressTotalsSql, type Store } from "./db.js";
 import { deriveAddr, addrFromScriptPubkey, appType } from "./decode.js";
 import { CFG } from "./config.js";
 import { bus } from "./events.js";
@@ -153,9 +153,10 @@ export async function indexedChainwork(): Promise<bigint | null> {
  * below the stored tip while the meta tip pointer is at most one below the highest stored block (nothing in src/
  * sets it lower; a pointer deleted or set back by hand over stored blocks makes syncOnce rewrite stored heights in
  * place), and starts at CFG.scanFrom, below which no occurrence is known (test/first-occurrence.test.ts). Returns
- * the block positions listed in tx_repeats.
+ * the block positions listed in tx_repeats. `advanceTip` (syncOnce's forward write) sets the tip pointer to this
+ * height in the same transaction.
  */
-export async function writeBlock(b: rpc.RpcBlock): Promise<ReadonlySet<number>> {
+export async function writeBlock(b: rpc.RpcBlock, advanceTip = false): Promise<ReadonlySet<number>> {
   return await dbTx(async (d: Store) => {
     const blk = b;
     // I3 (O-6 / P74-44): header integers are attacker-shaped JSON from the backend, and they bind straight
@@ -279,8 +280,15 @@ export async function writeBlock(b: rpc.RpcBlock): Promise<ReadonlySet<number>> 
     }
     const addrAfter = await d.all<AddressTotalsRow>(addressTotalsSql(ADDRESS_AT.height, false), ...atHeight);
     for (const [sql, ...p] of addressTotalsWrites(addrBefore, addrAfter)) await d.run(sql, ...p);
+    if (advanceTip) await setTip(d, blk.height);
     return repeats;
   });
+}
+
+// The tip pointer, written inside the transaction that stores or removes the rows it points at (test/tip-pointer-atomic
+// and the unwind tests), so the stored top and the pointer cannot part.
+async function setTip(d: Store, height: number): Promise<void> {
+  await d.run("INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", TIP_KEY, String(height));
 }
 
 // The coinbase output rows a write is about to remove or has just added (`where` over COINBASE_OUTPUTS), each with
@@ -382,7 +390,7 @@ export async function unwindAbove(ancestor: number, newTip: number = ancestor): 
     await d.run(`DELETE FROM txs WHERE height>?`, h);
     await d.run(`DELETE FROM tx_repeats WHERE height>?`, h);
     await d.run(`DELETE FROM blocks WHERE height>?`, h);
-    await d.run("INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", TIP_KEY, String(newTip));
+    await setTip(d, newTip);
   });
 }
 
@@ -608,8 +616,7 @@ export async function syncOnce(): Promise<IndexResult> {
       h = ancestor; // resume scanning from ancestor+1
       continue;
     }
-    const repeats = await writeBlock(blk);
-    await setMeta(TIP_KEY, String(h));
+    const repeats = await writeBlock(blk, true);
     blocks++;
     emitBlockEvents(blk, tip, repeats);
   }

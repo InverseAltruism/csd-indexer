@@ -18,6 +18,11 @@
   the honest failover cases of `test/rpc-route-plausibility.test.ts` and `test/route-guard-visibility.test.ts` serve
   that chain, and `test/rpc-failover.test.ts` and `test/rpc-pow-route.test.ts`, whose mocks serve one header at
   every height, test the selection with the PoW check alone (the switch off).
+- The tip pointer moves with its block: `syncOnce`'s forward write stores the block and `meta` `indexed_height` in one
+  transaction (`writeBlock(b, true)`). They were two statements, and a failure between them left the block stored one
+  above the pointer; the chainwork guard and the tip window read the pointer's height, so a node that then served a
+  lighter block at the top height had it written over the heavier stored one with no hold. `test/tip-pointer-atomic.test.ts`
+  fails the pointer write once: before, the stored top was 5 and the pointer 4.
 - A `/tip` height that is not a non-negative integer is unusable. A backend answering `"abc"` gave the selection a NaN
   best height, which voided its 3-block hysteresis, and the active backend answering it, or no height, gave the tip
   window nothing to converge at: the pass unwound to the scan floor, the whole index when the index was below the
