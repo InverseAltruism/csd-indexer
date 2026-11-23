@@ -18,6 +18,9 @@
   the honest failover cases of `test/rpc-route-plausibility.test.ts` and `test/route-guard-visibility.test.ts` serve
   that chain, and `test/rpc-failover.test.ts` and `test/rpc-pow-route.test.ts`, whose mocks serve one header at
   every height, test the selection with the PoW check alone (the switch off).
+- `/domains` orders domains with the same proposal count by their UTF-8 bytes on both backends. The tie followed the
+  database's collation (bytes on SQLite, en_US.UTF-8 on the test Postgres), so the backends answered ties in
+  different orders; SQLite's order is unchanged. `test/domains-order.test.ts`.
 - API field removed: `/analytics/miners` no longer answers `fees_collected` per miner. It summed the fee column of
   the miner's coinbase rows, which is 0 by construction (a coinbase spends no indexed output), so it was 0 for every
   miner whatever the fees (`total_fees` of the same answer is the window's fees). Nothing in the explorer, cairn,

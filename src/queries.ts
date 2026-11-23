@@ -256,9 +256,13 @@ export const REPUTATION_WINDOW = 200;
 export async function attestationsBy(addr: string, limit: number): Promise<any[]> {
   return jsonSafeAll(await store().all("SELECT * FROM attestations WHERE attester=? ORDER BY height DESC, txid ASC LIMIT ?", addr.toLowerCase(), limit));
 }
+// More proposals first, a tie in UTF-8 byte order: SQLite's ORDER BY compares bytes and Postgres follows the
+// database's collation, so the tie order is set here, the same on both (test/domains-order.test.ts).
 export async function domains(): Promise<{ domain: string; proposals: number }[]> {
-  const rows = await store().all<{ domain: string; proposals: number | bigint }>("SELECT domain, COUNT(*) proposals FROM proposals GROUP BY domain ORDER BY proposals DESC, domain ASC");
-  return rows.map((r) => ({ domain: r.domain, proposals: Number(r.proposals) }));
+  const rows = await store().all<{ domain: string; proposals: number | bigint }>("SELECT domain, COUNT(*) proposals FROM proposals GROUP BY domain");
+  return rows.map((r) => ({ domain: r.domain, proposals: Number(r.proposals), key: Buffer.from(r.domain ?? "", "utf8") }))
+    .sort((a, b) => b.proposals - a.proposals || Buffer.compare(a.key, b.key))
+    .map(({ domain, proposals }) => ({ domain, proposals }));
 }
 export async function counts(): Promise<{ blocks: number; txs: number; proposals: number; attestations: number }> {
   const c = async (t: string, w = "") => Number((await store().get<{ n: number }>(`SELECT COUNT(*) n FROM ${t} ${w}`))?.n ?? 0);
