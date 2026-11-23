@@ -369,3 +369,27 @@ test("the primary's tip moving inside a kept proof near its top: the walk meets 
   assert.equal(two.active, "sec2");
   readOnce(two.reads[2]!, 13, 60);                                      // linked at the primary's tip, not at 12
 });
+
+test("a secondary's block is stored with its own figure when it is under the bound", async () => {
+  await start(100);
+  const low = CHAIN.slice(0, 101);
+  low.push({ ...CHAIN[101]!, chainwork: String(BigInt(CHAIN[100]!.chainwork) + 1n) });
+  P.state = down; S2.state = down; S1.state = up(101, { chain: low });
+  await pass();
+  assert.equal(await indexedHeight(), 101);
+  assert.equal(await storedWork(101), low[101]!.chainwork);
+});
+
+test("a secondary's first block, with nothing stored under it, is stored with the node's figure", async () => {
+  const from = CFG.scanFrom;
+  CFG.scanFrom = 1;                                                     // height 1 is the first real header
+  try {
+    await resetStoreForTests();
+    rpc.resetProofsForTests();
+    P.state = down; S2.state = down; S1.state = up(5);
+    await pass();
+    assert.equal(await indexedHeight(), 5);
+    assert.equal(await storedWork(1), CHAIN[1]!.chainwork);
+    assert.equal(await storedWork(5), CHAIN[5]!.chainwork);
+  } finally { CFG.scanFrom = from; }
+});
