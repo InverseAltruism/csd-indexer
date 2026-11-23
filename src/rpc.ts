@@ -151,11 +151,12 @@ function parseWork(v: unknown): bigint | null {
 // A header's work by its bits; bits that are no integer count none.
 const headerWork = (h: ProofHeader): bigint => (Number.isSafeInteger(h.bits) ? workForBits(h.bits as number) : 0n);
 
-// A link proof that did not finish in one pass's deadline: the tip it was proved from, the lowest header proved
-// (its height and prev) and the work of the proved headers under the tip. One per backend, so the memory is bounded
-// by the backends list whatever a backend serves; the next pass starts from its tip, joins this at the top's height
-// when the hash there is the same, and reads on below the bottom, so a pass costs at most its deadline and a proof of
-// n headers ends in about n times the read time divided by the deadline passes (test/rpc-route-honest.test.ts).
+// A backend's link proof so far: the tip it was proved from, the lowest header proved (its height and prev) and the
+// work of the proved headers under the tip, kept when the proof linked or its deadline ended it. One per backend, so
+// the memory is bounded by the backends list whatever a backend serves. The next walk starts from its tip, joins this
+// at the top's height when the hash there is the same, and goes on below the bottom: a pass costs at most its
+// deadline, a proof of n headers ends after about n times the read time divided by the deadline, and a proved
+// contender the selection does not choose yet is not walked again (test/rpc-route-honest.test.ts).
 type ProofSoFar = { topHash: string; topHeight: number; bottomHeight: number; bottomPrev: string; below: bigint };
 const proofs = new Map<string, ProofSoFar>();
 
@@ -171,37 +172,35 @@ async function contenderLinks(base: string, claimedHeight: number, tipHash: stri
   try {
     const held = await known(tipHash, anchor);
     if (held) return held.height === claimedHeight && held.work === claimedWork ? claimedWork : null;
-    let saved = proofs.get(base);
-    if (saved && saved.topHeight > claimedHeight) { proofs.delete(base); saved = undefined; }
+    // A refused walk leaves no record; a proved one, or one the deadline ends, leaves what it proved.
+    const saved = proofs.get(base);
+    proofs.delete(base);
     // The headers from the tip down to height h are proved; `hash` is the one at h and `work` their sum.
     let header = tipHeader, h = claimedHeight, hash = tipHash, work = headerWork(tipHeader);
+    const keep = (prev: string) => proofs.set(base, { topHash: tipHash, topHeight: claimedHeight, bottomHeight: h, bottomPrev: prev, below: work - headerWork(tipHeader) });
     for (;;) {
-      if (saved && h === saved.topHeight) {
-        if (hash === saved.topHash) { work += saved.below; h = saved.bottomHeight; header = { prev: saved.bottomPrev }; }
-        else proofs.delete(base);                                     // the tip moved to another branch
-        saved = undefined;
-      }
-      if (h <= CFG.scanFrom) break;
+      // A tip on another branch has another hash at the top's height and does not join.
+      if (saved && h === saved.topHeight && hash === saved.topHash) { work += saved.below; h = saved.bottomHeight; header = { prev: saved.bottomPrev }; }
+      if (h <= CFG.scanFrom) return null;
       const prev = typeof header.prev === "string" ? header.prev.toLowerCase() : "";
       const at = await known(prev, anchor);
       if (at) {
-        proofs.delete(base);
-        if (at.height !== h - 1 || at.work == null) return null;
+        if (at.height !== h - 1) return null;
+        keep(prev);
+        if (at.work == null) return claimedWork;                       // no figure to bound the claim by
         const proved = at.work + work;
         return claimedWork < proved ? claimedWork : proved;
       }
       let below: ProofHeader | null;
       try { below = await headerAt(base, h - 1, signal); } catch {
         // The deadline (or a failed read) ends this pass's proof; what is proved stays for the next pass.
-        proofs.set(base, { topHash: tipHash, topHeight: claimedHeight, bottomHeight: h, bottomPrev: prev, below: work - headerWork(tipHeader) });
+        keep(prev);
         await logShortProof(base, claimedHeight, h, anchor);
         return null;
       }
-      if (!below || !tipHeaderPowOk(below, prev)) break;
+      if (!below || !tipHeaderPowOk(below, prev)) return null;
       header = below; hash = prev; h--; work += headerWork(below);
     }
-    proofs.delete(base);
-    return null;
   } catch { return null; }
 }
 
@@ -313,8 +312,6 @@ export async function selectBackend(): Promise<{ active: string; switched: boole
       return w == null ? [] : [{ b: r.b, t: { ...r.t, chainwork: w } }];
     });
   }
-  // A backend that answers and claims no more than the anchor has no proof in progress.
-  for (const r of reachable) if (!contenders.includes(r)) proofs.delete(r.b);
   let maxWork = eligible[0]!.t.chainwork;
   for (const r of eligible) if (r.t.chainwork > maxWork) maxWork = r.t.chainwork;
   const best = eligible.filter((r) => r.t.chainwork === maxWork);

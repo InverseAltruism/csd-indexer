@@ -174,26 +174,28 @@ test("a proof longer than its deadline continues across passes and the secondary
   } finally { CFG.powVerifyTimeoutMs = deadline; }
 });
 
-// Heights 101 to 160 carry real headers from 40 heights lower: a tip at 160 with valid PoW whose chain does not link.
-const SHIFTED: Blk[] = CHAIN.map((b, h) => (h <= 100 ? b : { ...CHAIN[h - 40]!, height: h }));
+// Heights 101 to 150 carry real headers from 40 heights lower: a tip at 150 with valid PoW whose chain does not link.
+// The proofs a backend made in the cases above stay with it (one record a backend), so this case and the next use tips
+// those did not prove.
+const SHIFTED: Blk[] = CHAIN.slice(0, 151).map((b, h) => (h <= 100 ? b : { ...CHAIN[h - 40]!, height: h }));
 
 test("a contender that changes its chain between passes gains nothing from the headers it proved before", async () => {
   const deadline = CFG.powVerifyTimeoutMs;
   CFG.powVerifyTimeoutMs = 400;
   try {
     await start(10);
-    P.state = up(12); S1.state = up(160, { lag: 5 });
+    P.state = up(12); S1.state = up(150, { lag: 5 });
     const one = await pass();
     assert.equal(one.active, "primary");
     const reached = Math.min(...one.reads[1]!);
     assert.ok(reached > 13, `the first pass proved down to ${reached} only`);
-    S1.state = up(160, { lag: 5, chain: SHIFTED });
+    S1.state = up(150, { lag: 5, chain: SHIFTED });
     const two = await pass();
     assert.equal(two.active, "primary", "a tip on another chain does not join the headers proved for the first");
     assert.equal(await indexedHeight(), 12);
-    S1.state = up(160, { lag: 5 });
+    S1.state = up(150, { lag: 5 });
     const three = await pass();
-    assert.ok(three.reads[1]!.includes(159), "back on the first chain, the proof starts again from its tip");
+    assert.ok(three.reads[1]!.includes(149), "back on the first chain, the proof starts again from its tip");
   } finally { CFG.powVerifyTimeoutMs = deadline; }
 });
 
@@ -219,5 +221,44 @@ test("an invented chainwork counts no more than the headers carry, and the index
     assert.equal(after.hold, false);
     assert.equal(await indexedHeight(), 110, "the honest nodes' heavier chain is followed");
     assert.equal(await storedWork(110), CHAIN[110]!.chainwork);
+  } finally { CFG.workEscapeCycles = escape; }
+});
+
+// A primary that answers /tip on a branch of its own and serves no block above the index, with `work` at `h`.
+const alienTip = (h: number, work: string): State => {
+  const c = CHAIN.slice();
+  c[h] = { ...CHAIN[h]!, hash: id(`alien-${h}`), chainwork: work };
+  for (let i = 13; i < h; i++) delete c[i];
+  return up(h, { chain: c });
+};
+
+test("a proof that took several passes ranks the contender with the work of every header it proved", async () => {
+  const deadline = CFG.powVerifyTimeoutMs, escape = CFG.workEscapeCycles;
+  CFG.powVerifyTimeoutMs = 400; CFG.workEscapeCycles = 2;
+  try {
+    await start(12);
+    // The primary claims height 159 with the real work there, one block less than the secondary's 160.
+    P.state = alienTip(159, CHAIN[159]!.chainwork); S2.state = up(160, { lag: 5 });
+    const actives: string[] = [];
+    for (let i = 0; i < 10 && actives.at(-1) !== "sec2"; i++) actives.push((await pass()).active);
+    assert.equal(actives.at(-1), "sec2", `the heavier secondary wins once proved: ${actives.join(" ")}`);
+    assert.ok(actives.length > 2, "its proof took more than one pass");
+  } finally { CFG.powVerifyTimeoutMs = deadline; CFG.workEscapeCycles = escape; }
+});
+
+test("a contender is ranked with its proved work when it claims more and with its claim when it claims less", async () => {
+  const escape = CFG.workEscapeCycles;
+  CFG.workEscapeCycles = 2;
+  try {
+    for (const claim of ["9".repeat(30), "1"]) {
+      await start(100);
+      // The primary at 101 on its own branch with the real work there; the secondary serves the real 101.
+      const c = CHAIN.slice(0, 101);
+      c.push({ ...CHAIN[101]!, chainwork: claim });
+      P.state = alienTip(101, CHAIN[101]!.chainwork); S1.state = up(101, { chain: c });
+      const actives: string[] = [];
+      for (let i = 0; i < 5; i++) actives.push((await pass()).active);
+      assert.deepEqual(actives, Array(5).fill("primary"), `claim ${claim.slice(0, 6)}: no more work than the primary's, no switch`);
+    }
   } finally { CFG.workEscapeCycles = escape; }
 });
