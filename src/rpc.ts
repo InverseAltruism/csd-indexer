@@ -151,13 +151,15 @@ function parseWork(v: unknown): bigint | null {
 // A header's work by its bits; bits that are no integer count none.
 const headerWork = (h: ProofHeader): bigint => (Number.isSafeInteger(h.bits) ? workForBits(h.bits as number) : 0n);
 
-// A backend's link proof so far: the tip it was proved from, the lowest header proved (its height and prev) and the
-// work of the proved headers under the tip, kept when the proof linked or its deadline ended it. One per backend, so
-// the memory is bounded by the backends list whatever a backend serves. The next walk starts from its tip, joins this
-// at the top's height when the hash there is the same, and goes on below the bottom: a pass costs at most its
-// deadline, a proof of n headers ends after about n times the read time divided by the deadline, and a proved
-// contender the selection does not choose yet is not walked again (test/rpc-route-honest.test.ts).
-type ProofSoFar = { topHash: string; topHeight: number; bottomHeight: number; bottomPrev: string; below: bigint };
+// A backend's link proof so far: the tip it was proved from, the lowest header proved (its height and prev), the work
+// of the proved headers under the tip and the anchor's tip the walk compared them with, kept when the proof linked or
+// its deadline ended it. One per backend, so the memory is bounded by the backends list whatever a backend serves. The
+// next walk starts from its tip, joins this at the top's height when the hash there is the same, and goes on below the
+// bottom: a pass costs at most its deadline, a proof of n headers ends after about n times the read time divided by
+// the deadline, and a proved contender the selection does not choose yet is not walked again
+// (test/rpc-route-honest.test.ts). A block the index stores inside the skipped heights is found below them, as the
+// stored chain is linked; an anchor tip that moved inside them is not, so such a walk does not join.
+type ProofSoFar = { topHash: string; topHeight: number; bottomHeight: number; bottomPrev: string; below: bigint; anchorTip: string | null };
 const proofs = new Map<string, ProofSoFar>();
 
 // A contender's claim (its tip at claimedHeight) is backed only by headers above a block the trusted view already
@@ -177,10 +179,12 @@ async function contenderLinks(base: string, claimedHeight: number, tipHash: stri
     proofs.delete(base);
     // The headers from the tip down to height h are proved; `hash` is the one at h and `work` their sum.
     let header = tipHeader, h = claimedHeight, hash = tipHash, work = headerWork(tipHeader);
-    const keep = (prev: string) => proofs.set(base, { topHash: tipHash, topHeight: claimedHeight, bottomHeight: h, bottomPrev: prev, below: work - headerWork(tipHeader) });
+    const anchorTip = anchor.tipHash?.toLowerCase() ?? null;
+    const keep = (prev: string) => proofs.set(base, { topHash: tipHash, topHeight: claimedHeight, bottomHeight: h, bottomPrev: prev, below: work - headerWork(tipHeader), anchorTip });
+    const joins = (r: ProofSoFar) => r.anchorTip === anchorTip || anchor.height < r.bottomHeight || anchor.height >= r.topHeight;
     for (;;) {
       // A tip on another branch has another hash at the top's height and does not join.
-      if (saved && h === saved.topHeight && hash === saved.topHash) { work += saved.below; h = saved.bottomHeight; header = { prev: saved.bottomPrev }; }
+      if (saved && h === saved.topHeight && hash === saved.topHash && joins(saved)) { work += saved.below; h = saved.bottomHeight; header = { prev: saved.bottomPrev }; }
       if (h <= CFG.scanFrom) return null;
       const prev = typeof header.prev === "string" ? header.prev.toLowerCase() : "";
       const at = await known(prev, anchor);
