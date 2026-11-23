@@ -139,13 +139,23 @@ async function getJson(path: string): Promise<any> {
   return res.json();
 }
 
+// A /tip answer's height, or null when it is not a non-negative safe integer. Selection and the sync pass read nothing
+// from such an answer: a NaN height compares false everywhere, so it voided the selection's hysteresis and gave the
+// tip window no height to converge at (test/rpc-tip-height.test.ts).
+function tipHeight(j: any): number | null {
+  const h = j?.height;
+  return typeof h === "number" && Number.isSafeInteger(h) && h >= 0 ? h : null;
+}
+
 async function tipOf(base: string): Promise<{ height: number; chainwork: bigint; tipHash: string | null } | null> {
   try {
     const res = await fetch(base + "/tip", { signal: AbortSignal.timeout(5000) });
     if (!res.ok) return null;
     const j: any = await res.json();
+    const height = tipHeight(j);
+    if (height == null) return null;
     const tipHash = typeof j.tip === "string" && j.tip ? String(j.tip) : null;
-    return { height: Number(j.height ?? 0), chainwork: BigInt(String(j.chainwork ?? "0")), tipHash };
+    return { height, chainwork: BigInt(String(j.chainwork ?? "0")), tipHash };
   } catch { return null; }
 }
 
@@ -217,7 +227,9 @@ export async function selectBackend(): Promise<{ active: string; switched: boole
 
 export async function tip(): Promise<{ height: number; tip: string; chainwork: string }> {
   const j = await getJson("/tip");
-  return { height: Number(j.height ?? 0), tip: String(j.tip ?? ""), chainwork: String(j.chainwork ?? "0") };
+  const height = tipHeight(j);
+  if (height == null) throw new Error(`rpc /tip -> height ${JSON.stringify(j?.height)} is not a non-negative integer`);
+  return { height, tip: String(j.tip ?? ""), chainwork: String(j.chainwork ?? "0") };
 }
 
 export async function reachable(): Promise<boolean> {
