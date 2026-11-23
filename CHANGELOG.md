@@ -18,6 +18,11 @@
   the honest failover cases of `test/rpc-route-plausibility.test.ts` and `test/route-guard-visibility.test.ts` serve
   that chain, and `test/rpc-failover.test.ts` and `test/rpc-pow-route.test.ts`, whose mocks serve one header at
   every height, test the selection with the PoW check alone (the switch off).
+- The forward scan's checkpoint-floor refusal holds at the default scan floor. With `CSD_INDEX_FROM=0`,
+  `findReorgAncestor`'s "diverged down to the scan floor" (`scanFrom - 1`) and its "no reorg" were both -1, so
+  against a heavier, taller chain that shares no block with the index the pass logged that it refused to unwind and
+  then wrote the foreign blocks on top. "No reorg" is now its own value (`NO_REORG`). `test/checkpoint-floor.test.ts`
+  (the case at scan floor 0; before, the pass wrote 2 blocks on top of the index).
 - The tip pointer moves with its block: `syncOnce`'s forward write stores the block and `meta` `indexed_height` in one
   transaction (`writeBlock(b, true)`). They were two statements, and a failure between them left the block stored one
   above the pointer; the chainwork guard and the tip window read the pointer's height, so a node that then served a

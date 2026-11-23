@@ -401,8 +401,8 @@ async function storedHash(height: number): Promise<string | null> {
 /**
  * Detect a reorg by checking the new block's prev against our stored hash at h-1.
  * If it links, no reorg. If not, walk back to the last height where node hash == stored hash;
- * that's the common ancestor. Returns it, or -1 if no reorg, or scanFrom-1 if the divergence
- * runs below our scan floor (→ re-scan from the floor).
+ * that's the common ancestor. Returns it, NO_REORG if no reorg, or scanFrom-1 if the divergence
+ * runs below our scan floor (→ re-scan from the floor; -1 at the default scan floor 0).
  *
  * We follow the reorg as DEEP as the scan floor; not just finalDepth. A reorg deeper than
  * finalDepth is rare but REAL (consensus moved; our "final" rows are genuinely orphaned), so
@@ -413,12 +413,15 @@ async function storedHash(height: number): Promise<string | null> {
 // evidence of how deep the divergence runs. Distinct from -1 (no reorg). syncOnce must ABORT+retry, never
 // unwind, on this; wiping on absence of evidence is CAIRN-IDXREORG-1/2.
 const REORG_ABORT = -2;
+// findReorgAncestor's "no reorg": below any ancestor it returns, scanFrom - 1 (-1 at the default scan floor) included
+// (test/checkpoint-floor.test.ts).
+const NO_REORG = Number.NEGATIVE_INFINITY;
 
 async function findReorgAncestor(newBlock: rpc.RpcBlock): Promise<number> {
   const prevH = newBlock.height - 1;
   const storedPrev = await storedHash(prevH);
-  if (storedPrev == null) return -1;                       // nothing to link against (fresh / gap)
-  if (storedPrev === (newBlock.header.prev ?? "")) return -1; // links cleanly; no reorg
+  if (storedPrev == null) return NO_REORG;                 // nothing to link against (fresh / gap)
+  if (storedPrev === (newBlock.header.prev ?? "")) return NO_REORG; // links cleanly; no reorg
   // diverged: walk back until node's hash matches what we stored (bounded by the scan floor)
   // I2 (O-2 / P74-35): this walk SKIPS heights the node did not answer, so a transient absence below a
   // confirmed mismatch would otherwise let the ancestor fall past heights the node never contradicted, and
@@ -600,7 +603,7 @@ export async function syncOnce(): Promise<IndexResult> {
     // reorg check (only matters once we have a stored predecessor)
     const ancestor = await findReorgAncestor(blk);
     if (ancestor === REORG_ABORT) break; // node withheld deeper blocks; retry next poll; never act on absence
-    if (ancestor >= 0) {
+    if (ancestor !== NO_REORG) {
       const prevIndexed = await indexedHeight();
       // Checkpoint-floor backstop (mirrors reconcileTipWindow): never hard-unwind below a buried SPV
       // checkpoint via the forward scan either. Stop this pass and retry; a real reorg does not cross it.
