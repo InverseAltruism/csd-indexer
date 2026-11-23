@@ -99,6 +99,7 @@ test.after(async () => { await closeDb(); });
 // rows. The source scan above guards both backends; the runtime halves run on sqlite only
 // (CI's test-postgres job runs this same glob with CSD_INDEX_PG set).
 const SQLITE = store().backend === "sqlite";
+const SQLITE_ONLY = !SQLITE && "SQLite only: a Postgres transaction's store calls are socket round trips, so the sentinel fires by design; CI's sqlite job runs it";
 
 const violations: string[] = [];
 {
@@ -129,7 +130,7 @@ const coinbase = (tag: string, to: string, value = 5_000_000_000) => ({
   txid: txid(tag), version: 1, locktime: 0, inputs: [{}], outputs: [{ script_pubkey: to.replace(/^0x/, ""), value }],
 });
 
-test("sentinel: real writeBlock + unwind transactions never yield to the event loop", { skip: !SQLITE }, async () => {
+test("sentinel: real writeBlock + unwind transactions never yield to the event loop", { skip: SQLITE_ONLY }, async () => {
   const b0 = mkBlock(0, "0x" + "00".repeat(32), [coinbase("cb0", ADDR_A)]);
   await writeBlock(b0); await setMeta("indexed_height", "0");
   const cb1 = coinbase("cb1", ADDR_A);
@@ -144,7 +145,7 @@ test("sentinel: real writeBlock + unwind transactions never yield to the event l
   assert.deepEqual(violations, [], "a dbTx callback yielded to the event loop (readers could see uncommitted rows)");
 });
 
-test("negative control: a yielding callback DOES trip the sentinel (silence above is meaningful)", { skip: !SQLITE }, async () => {
+test("negative control: a yielding callback DOES trip the sentinel (silence above is meaningful)", { skip: SQLITE_ONLY }, async () => {
   const before = violations.length;
   // setImmediate (not setTimeout): queued FIFO behind the sentinel's own immediate, so the
   // sentinel deterministically fires first when the loop reaches the check phase.

@@ -23,17 +23,31 @@ or later).
   - ROUTE-1: a non-primary backend may win on work or height only if its tip header is PoW-valid and hash-bound
     (`tipHeaderPowOk`) and plausible (`contenderPlausible`); both checks are csd-light's. `contenderPlausible` in
     `src/rpc.ts` is the adapter that reads the local anchor and passes `CFG`: a delta cap (`CSD_RPC_MAX_AHEAD`, 128)
-    plus an LWMA ease factor (`CSD_RPC_MAX_EASE`, 16), anchored on the indexer's own local finality-gated headers
-    (never the live primary), so a real min-difficulty header claiming huge chainwork cannot capture the feed while a
-    genuinely-ahead honest secondary still wins. Kill switch `CSD_RPC_ROUTE_PLAUSIBILITY=0`, read once at start.
+    plus an LWMA ease factor (`CSD_RPC_MAX_EASE`, 16), anchored on the indexer's own stored headers (the newest
+    stored block, at depth 0; never the live primary), so a real min-difficulty header claiming huge chainwork cannot
+    capture the feed while a genuinely-ahead honest secondary still wins. Kill switch `CSD_RPC_ROUTE_PLAUSIBILITY=0`,
+    read once at start.
+  - ROUTE-1 decides which backend is read and checks only the contender's tip header. Two cases stay open to a
+    configured backend that answers falsely, and are accepted because every configured backend is one of the
+    operator's own nodes (README "Honest limits"): a backend that serves a real header at a higher height than it
+    holds, with an invented `/tip` chainwork, can win the selection; and once active, its bodies are not checked
+    against their headers and its `/tip` chainwork is what the regression guard compares, so an invented figure is
+    stored with its blocks and the guard holds every later pass while the honest nodes present less work than that
+    figure; the repair is a re-index from empty.
+  - A `/tip` whose height is not a non-negative integer leaves that backend out of the selection, and from the active
+    backend it fails the pass (`test/rpc-tip-height.test.ts`).
   - The route delta cap grows with the local tip's age at `CSD_RPC_BLOCK_SECS` (120) per block; the tip-header fetch
     for a contender times out after `CSD_RPC_POW_TIMEOUT` (5000 ms).
   - Every serial-poll read is bounded by an AbortSignal timeout (`CSD_RPC_TIMEOUT`, 10 s), so a backend that stalls
     `/block` cannot wedge the loop.
 - `src/db.ts`: one async `Store` interface with two backends, selected only by `CFG.pg` (`store()`).
   - `SqliteStore` is node:sqlite's `DatabaseSync` in WAL mode. `PgStore` is a pg Pool with `?` to `$n` translation and
-    exact int8 and NUMERIC parsers. A store call fails fast with "indexer db pool saturated" once
+    exact int8 and NUMERIC parsers. A reader's store call fails fast with "indexer db pool saturated" once
     max(64, pool size x 8) calls already wait for a connection (`test/pg-acquire-guard.test.ts`).
+  - The block writer has its own pool of one connection, outside the readers' pool and their wait cap: `syncOnce`
+    runs every store call of a pass in `asWriter`, an AsyncLocalStorage scope that `store()` reads, so a read flood
+    can neither refuse nor queue a block write (`test/pg-writer-connection.test.ts`). The process holds at most
+    `CSD_INDEX_PG_POOL` + 1 connections. On SQLite the writer and the readers share the one connection.
   - Tables: `blocks`, `txs`, `outputs`, `address_history`, `proposals`, `attestations`, `tx_repeats`, `meta`. Every row
     carries `height` (the reorg invariant). `tx_repeats(height, pos, txid)` lists the block positions whose txid has
     its rows at an earlier place (section 5, First occurrence).
@@ -45,14 +59,27 @@ or later).
     backends like every other index: `blocks(hash)` for the header-batch lookups, and `outputs(height)`,
     `outputs(spent_height)` and `address_history(height)` for the write and unwind paths
     (`test/schema-indexes.test.ts`).
+  - `idx_out_addr_unspent` on `outputs(addr, COALESCE(spent_txid, ''), height, txid, vout)`, which `/address/:a/utxo`
+    seeks with `COALESCE(spent_txid, '') = ''`, an equality both planners use for the page order, so a page reads the
+    page (`test/address-utxo.test.ts` pins the plan on both backends). On Postgres the statistics object
+    `st_out_addr_unspent` on the same pair keeps the planner from estimating a miner's few unspent outputs as
+    thousands and walking `outputs(height)` instead. Its statistics target is 250 (75,000 sampled rows, 250 pairs): at
+    the default a miner's pair fell out of the list in 2 of 60 ANALYZE runs on the plan test's table, at 250 in none
+    of 200. A start on a database without them builds the index and the object in the DDL transaction, and when the
+    object holds no data yet (`pg_stats_ext`, which the table owner can read) runs `ANALYZE outputs` in a transaction
+    of its own; autovacuum keeps it current. On a scratch Postgres 16 with 300,000 outputs, as a non-superuser owner:
+    the DDL with the index 1.8 s, the ANALYZE 2.8 s, the whole first start 8.38 s (0.3.13: 3.83 s); SQLite's first
+    start 1.02 s (0.3.13: 0.69 s). Every store call waits for the start. 0.3.13 opens such a database and leaves both in
+    place.
   - Three feed indexes, `FEED_INDEX_DDL` in the same DDL: `proposals(domain, height)`, `proposals(height)` and
     `attestations(height)`, which the chain-order feeds walk from the cursor (section 4). A start on a database that
     lacks them builds them (`test/feed-page-plan.test.ts`). The boot DDL is one multi-statement string, which
     Postgres runs in one transaction, where `CREATE INDEX CONCURRENTLY` is refused: each build holds a SHARE lock on
     its table, so reads go on and writes wait until the DDL commits. The writer is the indexer process itself, and it
     writes only after the DDL.
-  - A start on Postgres runs two transactions, the DDL and the totals rebuild (`bootTx`), each with
-    `SET LOCAL statement_timeout = 0`, since an index build and the rebuild grow with the rows, and
+  - A start on Postgres runs the DDL, `ANALYZE outputs` when the statistics object holds no data yet, and the totals
+    rebuild, each in its own transaction (`bootTx`) with `SET LOCAL statement_timeout = 0`, since an index build,
+    the ANALYZE and the rebuild grow with the rows, and
     `SET LOCAL lock_timeout` of `BOOT_LOCK_TIMEOUT_MS` (5 s), so a lock another session holds (an open write
     transaction, a `VACUUM FULL`, a hand-run `LOCK`) fails the start with "the start waited 5000 ms for a lock
     another session holds" after at most 5 s per lock, and the next store call starts again; ordinary statements keep
@@ -67,7 +94,8 @@ or later).
   re-exported), tx classification (Coinbase, Propose, Attest, Transfer), and `storableText`, the stored form of a
   Propose's domain and uri.
 - `src/merkle.ts`: Electrum-format merkle proofs built with csd-codec's `merkleBranch` (the same function the L0 light
-  client folds). It returns the PoW-committed header root, never a self-recomputed one.
+  client folds). It returns the PoW-committed header root, never a self-recomputed one: a block stored without a
+  header root gives no proof (`test/indexer.test.ts`).
 - `src/queries.ts`: the read-side SQL; `amt()` and `jsonSafe()`, the bigint to JSON-safe serialization; the `heightOk`
   guard.
 - `src/analytics.ts`: `/analytics/{miners,richlist,supply,series}`. The emission schedule is single-sourced from
@@ -76,9 +104,17 @@ or later).
   (`test/analytics-memo.test.ts`).
 - `src/server.ts`: the Express app and every route. The error wrapper `h()` never leaks a pg DSN, SQL or a path.
   `/address/:a` reads one `address_totals` row, whatever the address holds, since anyone can add outputs to any
-  address. The list endpoints (`/address/:a/txs`, `/address/:a/txs/chain/:last`, `/block/:hash/txs`) read a page in a
-  constant number of queries (`q.txsWithOutputs`, `q.blockTxs`), one at a time, so a request holds at most one pool
-  connection (`test/address-fanout.test.ts`; `docs/incidents/README.md` 10).
+  address. The list endpoints (`/address/:a/txs`, `/address/:a/txs/chain/:last`, `/block/:hash/txids`, `/block/:hash/txs`)
+  and `/tx/:id` read their answer in one statement (`q.addressTxPage`, `q.txsWithOutputs`, `q.blockTxidsByHash`,
+  `q.blockTxsByHash`), so a request holds one pool connection (`test/address-fanout.test.ts`;
+  `docs/incidents/README.md` 10) and reads one view: a block a reorg removes answers 404, never an empty list or
+  another block's list under its hash. `/tx/:id/merkle-proof`, `/tx/:id/status` and `/blocks/tip/hash` are one
+  statement each; `/health`, `/proposal/:id` and the analytics computations read several statements inside
+  `snapshot()` (`src/db.ts`), one REPEATABLE READ transaction on Postgres and one deferred transaction on SQLite,
+  whose WAL snapshot also holds against a separate `index` process (`test/snapshot-reads.test.ts` commits a reorg's
+  unwind on another connection after each statement of each route; `test/pg-reorg-read-race.test.ts` races readers
+  against reorg swaps on Postgres). A snapshot costs two round trips on Postgres (about 0.1 ms on a local socket),
+  which is why the hot routes are single statements instead.
 - `src/stream.ts` and `src/events.ts`: the event bus, the SSE firehoses and WS `/ws`.
   - Caps: 500 SSE connections (`CSD_INDEX_MAX_SSE`), 500 WS clients (`CSD_INDEX_MAX_WS`), 1000 subscription keys
     (`CSD_INDEX_MAX_SUB`), a 4 MiB outbound buffer per SSE or WS connection (`CSD_INDEX_MAX_SSE_BUFFER`; past it the
@@ -228,8 +264,9 @@ M4).
   writing heights in ascending order without a gap, writing no height below the stored tip while the `meta` tip
   pointer (`indexed_height`) is at most one below the highest stored block, and starting at `CSD_INDEX_FROM` (default
   0; above 0 a txid's place is its first occurrence at or above it).
-- Nothing in `src/` sets the pointer lower (`unwindAbove` and `syncOnce` write it, the second one height at a time
-  after each block; `resetStoreForTests` drops it with every table). A pointer deleted or set back by hand over stored
+- Nothing in `src/` sets the pointer lower (`unwindAbove` writes it, and `writeBlock` when `syncOnce`
+  writes a block forward, each inside its own transaction, so the pointer and the stored top cannot part
+  (`test/tip-pointer-atomic.test.ts`); `resetStoreForTests` drops it with every table). A pointer deleted or set back by hand over stored
   blocks makes `syncOnce` rewrite stored heights in place, which does not end in a fresh index's tables: re-index
   from empty instead.
 - An output a later occurrence creates again stays one row in its first state, so balances, the UTXO list and

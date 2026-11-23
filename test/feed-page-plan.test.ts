@@ -62,7 +62,8 @@ async function loadFeed(): Promise<void> {
       `${hex(1_000_000, "CASE WHEN i % 6 < 5 THEN (i / 6) * 12 + i % 6 WHEN i < 180 THEN ((i / 6) % 20) * 12 + 11 ELSE 10 END")}, ` +
       "i / 6, 1000 + i / 6 FROM n");
   });
-  if (!SQLITE) await store().run("ANALYZE");
+  // Its own tables only: a bare ANALYZE re-samples every schema, other files' plan tests included.
+  if (!SQLITE) await store().run("ANALYZE proposals, attestations, txs");
 }
 
 type Shape = Omit<FeedQuery, "after" | "limit"> & { kind: FeedKind };

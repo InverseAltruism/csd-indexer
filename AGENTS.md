@@ -101,7 +101,9 @@ is a narrative in `docs/incidents/README.md`.
   else the built-in fallback 38142 (`checkpointDefault`); an empty env string does not disable it.
   `test/checkpoint-floor.test.ts`, `test/config-knob-positive.test.ts`.
 - Never unwind on absence of evidence (incident 3): only a confirmed contiguous hash mismatch justifies an unwind,
-  and a null block from the node aborts the pass. `test/reorg-absence-clamp.test.ts`, `test/reorg-e2e.test.ts`.
+  and a null block from the node aborts the pass: below the tip window, the first height the node does not answer ends
+  the walk, so the pass costs a bounded number of reads. `test/reorg-absence-clamp.test.ts`, `test/reorg-e2e.test.ts`,
+  `test/absence-walk-bound.test.ts`.
 - sqlite dbTx isolation: BEGIN..COMMIT atomicity against HTTP readers holds only because every await inside a dbTx
   callback is a store call (a microtask). Never add a fetch, fs or timer await inside a dbTx callback.
   `test/dbtx-isolation.test.ts`.
@@ -134,8 +136,13 @@ is a narrative in `docs/incidents/README.md`.
   move `version`, so one version string never denotes two determinism-dep sets. `test/ci-workflow.test.ts`,
   `test/analytics-lockstep.test.ts`.
 - ROUTE-1: a non-primary backend may win on work or height only if its tip header is PoW-valid and hash-bound
-  (`tipHeaderPowOk`) and plausible (`contenderPlausible`) against the indexer's own finality-gated headers, never the
-  live primary. `test/rpc-pow-*.test.ts`, `test/rpc-route-plausibility.test.ts`, `test/rpc-failover.test.ts`.
+  (`tipHeaderPowOk`) and plausible (`contenderPlausible`) against the indexer's own stored headers, never the live
+  primary. A backend whose `/tip` height is not a non-negative integer is left out, and such a tip from the active
+  backend fails the pass. ROUTE-1 checks the contender's tip header only: where that header sits in its chain, the
+  chainwork it claims and the bodies the active backend serves are trusted, an accepted limit because every
+  configured backend is one of the operator's own nodes (README "Honest limits"). `test/rpc-pow-*.test.ts`,
+  `test/rpc-route-plausibility.test.ts`, `test/rpc-failover.test.ts`, `test/rpc-route-honest.test.ts`,
+  `test/rpc-tip-height.test.ts`.
 - Never point anything at :8790 as the default RPC: that is the miner's RPC; :8789 is primary, :8790 fallback only.
 - Every serial-poll read of the node is bounded by a timeout, so a backend that stalls `/block` cannot wedge the
   loop. `test/rpc-timeout.test.ts`.
@@ -144,6 +151,10 @@ is a narrative in `docs/incidents/README.md`.
   percent-decode: 400) in the same shape. `test/error-body.test.ts`.
 - A list read never holds one pool connection per row (incident 10): the list endpoints read a page in a constant
   number of queries, one at a time, so a request holds at most one connection. `test/address-fanout.test.ts`.
+- One answer, one view: a route reads its rows in one statement or inside `snapshot()` (`src/db.ts`: REPEATABLE READ
+  on Postgres, a deferred transaction on SQLite), so a reorg's commit cannot land between two of its reads; a
+  snapshot callback awaits only store reads, as a dbTx callback does. The hot routes (`/tx/:id`, the address and
+  block lists) are single statements. `test/snapshot-reads.test.ts`, `test/pg-reorg-read-race.test.ts`.
 - Address txs page on the full (height, txid) keyset; a height-only cursor drops same-height txids (incident 4).
   `test/pagination.test.ts`.
 - A chain-order feed page reads its own rows: the cursor, the snapshot bound and the limit apply inside the row

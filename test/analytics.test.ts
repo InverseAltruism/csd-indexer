@@ -8,6 +8,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
 import { tmpDb } from "./_tmpdb.js";
+import { spyStore } from "./_store-spy.js";
 
 const DB = tmpDb("analytics");
 process.env.CSD_INDEX_DB = DB;
@@ -91,6 +92,9 @@ test("miners: shares, concentration, chainwork hashrate, Poisson error", async (
   assert.ok(Math.abs(a.est_hashrate - 0.6 * (9000 / 1080)) < 1e-6);
   assert.equal(r.total_fees, 25_000_000);
   assert.ok(Math.abs(r.avg_interval_secs - 120) < 1e-9);
+  // A miner's entry carries no fee figure: the coinbase rows it would sum hold a fee of 0 by construction, so a
+  // fees_collected field was 0 for every miner whatever the fees (25,000,000 here).
+  assert.deepEqual(Object.keys(a), ["addr", "blocks", "share", "last_height", "last_time", "est_hashrate", "est_rel_err"]);
 });
 
 test("miners: window slicing (last N blocks only)", async () => {
@@ -195,9 +199,7 @@ test("blockReward halves per era and hits zero after 64", () => {
 // read must not be kept for the tip (the next read answers the figure). Last in the file: it adds a block.
 test("supply routes: a store error on the supply query answers 500 without a number; the next read answers", async () => {
   await store().run(SQL_BLOCK, 11, id(1011), id(1010), id(2011), 1_700_000_000 + 11 * 120, 0x1e00ffff, 11, 1, 1, "11000");
-  const st = store() as unknown as { get: (...a: unknown[]) => Promise<unknown> };
-  const get = st.get.bind(store());
-  st.get = (...a: unknown[]) => (/SUM\(o\.value\)/.test(String(a[0])) ? Promise.reject(new Error("db down")) : get(...a));
+  const undo = spyStore(store(), (m, a, real) => (m === "get" && /SUM\(o\.value\)/.test(String(a[0])) ? Promise.reject(new Error("db down")) : real(...a)));
   try {
     for (const path of ["/analytics/supply/total", "/analytics/supply/circulating"]) {
       const r = await getText(path);
@@ -205,7 +207,7 @@ test("supply routes: a store error on the supply query answers 500 without a num
       assert.doesNotMatch(r.body, /\d/, path);
     }
   } finally {
-    delete (st as { get?: unknown }).get;
+    undo();
   }
   for (const path of ["/analytics/supply/total", "/analytics/supply/circulating"]) {
     const r = await getText(path);

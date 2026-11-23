@@ -42,7 +42,7 @@ export { tipHeaderPowOk };
 // while the backend claims arbitrary chainwork/height in /tip; that would let a co-located miner/standby (or
 // a compromised CSD_RPC_BACKENDS entry) capture the whole projection feed. csd-light's `contenderPlausible`
 // decides (delta cap grown by the local tip's wall-clock age, then the LWMA ease test); this adapter supplies
-// the indexer's own anchor: its local finality-gated tip from the blocks table, never the live primary, so a
+// the indexer's own anchor: its newest stored block (depth 0) from the blocks table, never the live primary, so a
 // genuinely-ahead honest secondary still wins when the primary is stale. A store READ throw fails closed
 // (false); no local tip yet (cold start / mid-backfill) passes, so failover works before the index exists.
 // The kill switch CSD_RPC_ROUTE_PLAUSIBILITY=0 (CFG.routePlausibility) returns before the store read.
@@ -84,7 +84,7 @@ async function contenderPlausible(claimedHeight: number, header: unknown): Promi
 // would be a journal flood, and the flag must never gate behavior.
 let warnedLocalTargetThrow = false;
 
-// Honest expected bits AT the local tip, from the local LWMA window (finality-gated blocks table only).
+// Honest expected bits AT the local tip, from the local LWMA window (the blocks table only).
 // Returns null when it cannot be derived (fewer than 2 local headers, or a compute anomaly); csd-light then
 // skips the LWMA test and the delta cap still applies. Never touches the network or the live primary.
 async function expectedLocalBits(localHeight: number): Promise<number | null> {
@@ -139,22 +139,32 @@ async function getJson(path: string): Promise<any> {
   return res.json();
 }
 
+// A /tip answer's height, or null when it is not a non-negative safe integer. Selection and the sync pass read nothing
+// from such an answer: a NaN height compares false everywhere, so it voided the selection's hysteresis and gave the
+// tip window no height to converge at (test/rpc-tip-height.test.ts).
+function tipHeight(j: any): number | null {
+  const h = j?.height;
+  return typeof h === "number" && Number.isSafeInteger(h) && h >= 0 ? h : null;
+}
+
 async function tipOf(base: string): Promise<{ height: number; chainwork: bigint; tipHash: string | null } | null> {
   try {
     const res = await fetch(base + "/tip", { signal: AbortSignal.timeout(5000) });
     if (!res.ok) return null;
     const j: any = await res.json();
+    const height = tipHeight(j);
+    if (height == null) return null;
     const tipHash = typeof j.tip === "string" && j.tip ? String(j.tip) : null;
-    return { height: Number(j.height ?? 0), chainwork: BigInt(String(j.chainwork ?? "0")), tipHash };
+    return { height, chainwork: BigInt(String(j.chainwork ?? "0")), tipHash };
   } catch { return null; }
 }
 
 /**
  * Choose which backend to read THIS cycle: the reachable one with the most cumulative chainwork, with
- * HYSTERESIS so it does not flap and does NOT auto-fail-back. Keep ACTIVE while it is reachable and within
- * HYSTERESIS_BLOCKS of the best height (so same-chain backends racing block propagation do not flap, and
- * once we move off the primary we stay until a human restarts). Only when ACTIVE falls meaningfully behind
- * (or is gone) do we switch to the highest-chainwork backend, preferring the primary among ties. A node
+ * HYSTERESIS so it does not flap. Keep ACTIVE while it is reachable, eligible and within HYSTERESIS_BLOCKS of the best
+ * height and not out-worked for CFG.workEscapeCycles cycles, so same-chain backends racing block propagation do not
+ * flap and a primary that returns does not take the feed back until ACTIVE falls behind it. Only when ACTIVE falls
+ * meaningfully behind (or is gone) do we switch to the highest-chainwork backend, preferring the primary among ties. A node
  * that falls behind (resync / lag) has less work, so selection moves to the miner/standby and the
  * projection keeps advancing on fresh data. If NOTHING is reachable, keep ACTIVE (reads then fail and the
  * caller retries next poll).
@@ -174,7 +184,7 @@ async function tipOf(base: string): Promise<{ height: number; chainwork: bigint;
  * F6 (route-capture): the ROUTE-1 PoW check alone is insufficient because a REAL min-difficulty header
  * (bits at/near POW_LIMIT, trivial to grind) passes powOk against its OWN bits, so a contender can pair a
  * cheap valid header with a huge forged /tip chainwork/height and win. `contenderEligible` therefore also
- * runs `contenderPlausible`, which anchors on the indexer's OWN local finality-gated headers (delta cap +
+ * runs `contenderPlausible`, which anchors on the indexer's OWN stored headers (delta cap +
  * LWMA ease factor), never the live primary; so a min-diff forgery is excluded while a genuinely-ahead
  * honest secondary at the correct local difficulty is still selected when the primary is stale.
  */
@@ -217,7 +227,9 @@ export async function selectBackend(): Promise<{ active: string; switched: boole
 
 export async function tip(): Promise<{ height: number; tip: string; chainwork: string }> {
   const j = await getJson("/tip");
-  return { height: Number(j.height ?? 0), tip: String(j.tip ?? ""), chainwork: String(j.chainwork ?? "0") };
+  const height = tipHeight(j);
+  if (height == null) throw new Error(`rpc /tip -> height ${JSON.stringify(j?.height)} is not a non-negative integer`);
+  return { height, tip: String(j.tip ?? ""), chainwork: String(j.chainwork ?? "0") };
 }
 
 export async function reachable(): Promise<boolean> {

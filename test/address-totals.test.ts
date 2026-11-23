@@ -255,7 +255,8 @@ test("/address/:a does not scan: an address of 50,000 outputs costs what an addr
     await d.run("INSERT INTO address_history(addr,txid,height,pos,direction,delta) VALUES(?,?,?,?,?,?)", SMALL, hex32(3), 1, 0, "in", 7);
   });
   await closeDb();
-  if (!SQLITE) await store().run("ANALYZE");
+  // Its own tables only: a bare ANALYZE re-samples every schema, other files' plan tests included.
+  if (!SQLITE) await store().run("ANALYZE outputs, address_history");
 
   // the statements the route runs, as it runs them
   const seen: { sql: string; params: unknown[] }[] = [];

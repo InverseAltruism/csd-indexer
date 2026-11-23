@@ -12,9 +12,10 @@ export const CFG = {
   // RPC failover backends: read the healthiest (reachable, highest cumulative chainwork) of these each
   // sync cycle, so a node that falls behind (db-loss resync / lag) does not stall the projection; it
   // reads the on-host miner (:8790) or standby (:8795) instead. Primary is rpcBackends[0]. Override with
-  // a comma list in CSD_RPC_BACKENDS. max-chainwork selection with stickiness (no auto-failback) is in
-  // rpc.ts, and it composes with the reorg chainwork guard: this picks the most-caught-up source, the
-  // guard HOLDS only when EVERY source is behind our indexed tip.
+  // a comma list in CSD_RPC_BACKENDS. max-chainwork selection with stickiness (a returning primary takes the
+  // feed back only once the active backend falls behind it) is in rpc.ts, and it composes with the reorg
+  // chainwork guard: this picks the most-caught-up source, the guard HOLDS only when EVERY source is behind
+  // our indexed tip.
   rpcBackends: backendList(),
   // sqlite file. node:sqlite (built into Node 22); no native dep, no build step.
   db: env("CSD_INDEX_DB", "./csd-index.db"),
@@ -25,13 +26,14 @@ export const CFG = {
   pg: env("CSD_INDEX_PG", ""),
   // Postgres schema (namespace) for all tables; lets several indexers share one database.
   pgSchema: env("CSD_INDEX_PG_SCHEMA", "public"),
-  // Postgres pool size (readers + the single writer).
+  // Postgres pool size for the readers; the block writer has one more connection of its own (db.ts writer()).
   pgPoolSize: num("CSD_INDEX_PG_POOL", 10),
   // HTTP bind for the REST + streaming API (8789 node, 8790 miner, 7777 cairn).
   listen: env("CSD_INDEX_LISTEN", "127.0.0.1:8793"),
   // First height to index. Genesis is 0; raise it to skip pre-CSD history if desired.
   scanFrom: num("CSD_INDEX_FROM", 0),
-  // Blocks deeper than this are treated as final and never unwound (reorg bound).
+  // The depth at which an event is "confirmed" and the tip window the reorg check reads first; a reorg deeper than
+  // this is still followed, down to the checkpoint floor.
   finalDepth: num("CSD_CONFIRMATIONS_FINAL", 6),
   // Blocks at/under this depth are "confirmed" for display; the tip stays tentative.
   // NOTE (audit dead-key): currently UNCONSULTED; the API derives finality from `finalDepth`
@@ -68,12 +70,12 @@ export const CFG = {
   rpcTimeoutMs: num("CSD_RPC_TIMEOUT", 10_000),
   // ROUTE-1 F6 plausibility gate (rpc.ts selectBackend). A backend claiming to out-work/out-height the
   // trust anchor must not only serve a self-referential PoW-valid tip header (ROUTE-1) but also be
-  // PLAUSIBLE against the indexer's OWN local finality-gated headers, so a co-located backend presenting a
+  // PLAUSIBLE against the indexer's OWN stored headers, so a co-located backend presenting a
   // real MIN-DIFFICULTY header (target = POW_LIMIT) while claiming huge chainwork/height cannot capture the
   // feed. Two anchored bounds, both derived ONLY from the local blocks table (never the live primary, so a
   // genuinely-ahead honest secondary still wins when the primary is stale):
   //   * DELTA CAP: reject a contender claiming height > localTip + maxAheadBlocks. A contender cannot
-  //     plausibly be arbitrarily far beyond the local finality-gated tip, and this bounds the LWMA drift
+  //     plausibly be arbitrarily far beyond the local stored tip, and this bounds the LWMA drift
   //     window below. 128 is generous for steady-state (the indexer polls every ~15s and stays at the tip).
   maxAheadBlocks: num("CSD_RPC_MAX_AHEAD", 128),
   //   * LWMA EASE FACTOR: reject a contender whose declared tip target (from its bits) is EASIER than the
@@ -81,8 +83,10 @@ export const CFG = {
   //     factor. Conservatively generous, erring toward ALLOWING honest contenders: honest LWMA difficulty
   //     drifts only a small factor over <= maxAheadBlocks in normal operation, while a POW_LIMIT forgery is
   //     ~1.25e7x easier than mainnet difficulty (measured), so 16x catches the forgery with ~6 orders of
-  //     magnitude of margin yet never touches honest drift. Degrades gracefully at min difficulty: when the
-  //     honest expected target is already at/near POW_LIMIT, the threshold saturates at POW_LIMIT so a
+  //     magnitude of margin. Honest drift reaches 16x only after a long run of blocks at LWMA's solve-time
+  //     clamp, and a contender's tip that much easier is then refused as a forgery would be (the selection
+  //     compares the tip with the stored window, across every block between them). Degrades gracefully at min
+  //     difficulty: when the honest expected target is already at/near POW_LIMIT, the threshold saturates at POW_LIMIT so a
   //     min-diff contender passes the LWMA test (min-diff IS honest there) and only the delta cap applies.
   maxEaseFactor: num("CSD_RPC_MAX_EASE", 16),
   // ROUTE-1 F6 kill switch: CSD_RPC_ROUTE_PLAUSIBILITY=0 turns the plausibility gate off. Default on.

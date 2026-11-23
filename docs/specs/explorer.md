@@ -85,8 +85,9 @@ The layout follows the approved design preview's explorer.
 
 ## 6. Indexer state, misses and failures
 
-- The indexer's state is read from `/health` every 15 s. Live, the latest-blocks heading says "Live". Behind the node,
-  at an old tip, or not answering, one badge beside the search says which and the "Live" goes. A 429 from cairn's
+- The indexer's state is read from `/health` every 15 s. Live, the latest-blocks heading says "Live". Behind the node
+  (2 or more blocks between `node_tip_height` and `indexed_height`; no badge when the process serving the page runs no
+  sync loop and so has no node tip), at an old tip, or not answering, one badge beside the search says which and the "Live" goes. A 429 from cairn's
   `explorerLimiter`, which /explorer/api and /trade/api share, reads "Too many requests" and an answer that is not
   JSON "Could not check", never "Indexer offline".
 - Only a read the indexer answers with a 400 or a 404 is a miss (`isMiss`: "Nothing found", naming the value; a

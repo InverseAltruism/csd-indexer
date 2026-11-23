@@ -37,10 +37,10 @@ docker run -p 8793:8793 -v csd-index:/data -e CSD_RPC=http://host.docker.interna
 | `CSD_INDEX_DB` | `./csd-index.db` | the database file (SQLite; no native build needed) |
 | `CSD_INDEX_PG` | *(unset)* | a Postgres URL, set it to use Postgres instead of SQLite (see below) |
 | `CSD_INDEX_PG_SCHEMA` | `public` | Postgres schema (namespace) for the tables |
-| `CSD_INDEX_PG_POOL` | `10` | Postgres connection-pool size |
+| `CSD_INDEX_PG_POOL` | `10` | Postgres connection-pool size for the API's reads (the block writer has one more connection of its own) |
 | `CSD_INDEX_LISTEN` | `127.0.0.1:8793` | where the explorer + API listen |
 | `CSD_INDEX_FROM` | `0` | first block to index |
-| `CSD_CONFIRMATIONS_FINAL` | `6` | depth after which blocks are treated as final |
+| `CSD_CONFIRMATIONS_FINAL` | `6` | confirmations at which `/tx/:id/status` says `final` and an event says `confirmed` (a deeper reorg is still followed) |
 
 It tracks the chain continuously and handles reorgs safely: if the network reorganizes, the
 indexer rewinds the affected blocks and replays the correct ones, so the data always matches the
@@ -63,15 +63,23 @@ CSD_INDEX_PG=postgres://user:pass@127.0.0.1:5432/csd_index npx tsx src/cli.ts in
 CSD_INDEX_PG=postgres://user:pass@127.0.0.1:5432/csd_index npm run run-all            # serve
 ```
 
+Postgres 14 or later (a statistics object on an expression needs it). The role in the URL need not be a superuser:
+a role that owns the database is enough (the CI job runs the suite as one), because a start creates the schema, its
+tables, indexes and statistics object and analyzes `outputs`, which takes the owner's rights.
+
 Both backends produce identical API responses, the test suite runs against each, and a
 from-genesis reindex of mainnet matches row-for-row across backends.
 
 ## The API
 
+A path or query parameter that does not percent-decode, or that holds U+0000 (`%00`), answers 400
+`{"error":"bad request"}` on every route.
+
 Standard explorer endpoints (the widely used Esplora shape, so existing tools work):
 - `GET /blocks/tip/height` (503 while the index is empty), `/blocks/tip/hash`, `/blocks/recent`
 - `GET /block/:hash[/txids|/txs]`, `/block-height/:h`
-- `GET /tx/:id[/status]`
+- `GET /tx/:id[/status]`: `final` is true at `CSD_CONFIRMATIONS_FINAL` (6) confirmations or more; the indexer still
+  follows a deeper reorg, so it is a depth, not a guarantee
 - `GET /address/:a` (its `chain_stats` also carry `utxo_count`, the number of unspent outputs; read from one row the
   block writer keeps per address, so its cost does not grow with the address's outputs), `/address/:a/txs`,
   `/address/:a/txs/chain/:last_seen_txid` (the next page), `/address/:a/utxo`: at most 1,000 unspent outputs in
@@ -131,7 +139,9 @@ The extras:
   as `text/plain` (for example `6553149.49800771`, or `6553150` when whole), exact to the base unit,
   for listing sites such as CoinMarketCap. An empty index answers 503 and an error 500, never a
   number.
-- `GET /health`: version, backend, indexed height, the node-reported tip and chainwork, and `stale`; `build`
+- `GET /health`: version, backend, indexed height, the indexed tip (`tip_height`, `tip_hash`, `chainwork`, from the
+  node's blocks), `node_tip_height` (the node's tip at this process's last sync pass; null in a process that runs no
+  sync loop, such as `npm run serve`), and `stale`; `build`
   (`commit`, the first 7 characters of the checkout's HEAD this process loaded, or `unknown`, and `startedAt` in
   milliseconds), read once at start, so a pull without a restart shows as a mismatch with the tree; and
   `checkpoint_floor`, the height below which this process does not unwind.
@@ -141,7 +151,9 @@ The extras:
 Live updates:
 - Server-sent events: `GET /stream/all` (every event), `/stream/blocks`, `/stream/domain/:d`.
 - WebSocket `/ws`: send `{"track-all": true}`, or `{"track-domain": [...]}`, `{"track-address": [...]}`,
-  `{"track-proposal": id}`. Over the WebSocket, block events go only to track-all clients. Each subscribe is
+  `{"track-proposal": id}`. Over the WebSocket, block events go only to track-all clients; `track-domain` delivers that
+  domain's proposals, `track-proposal` the attestations on that proposal and `track-address` the attestations that
+  address made (not its payments); every client gets reorg events. Each subscribe is
   acknowledged with what the socket now tracks; a frame that is not a JSON object is ignored, a field that is not
   the documented array adds nothing, a key longer than any the chain carries (a domain over 128 UTF-8 bytes, an
   address over 42 characters, a proposal id over 66) adds nothing, and a frame over 64 KiB or one that is not valid
@@ -149,6 +161,10 @@ Live updates:
   once more than 4 MiB (the default) is queued for it. A WebSocket ping is answered with a pong carrying its payload
   when nothing is queued for that socket; a client still receiving a large ack can miss one, so a keepalive should
   tolerate a missed pong.
+- The streams are a hint, not a record: events carry no id, a reconnect replays nothing, a block written while no
+  one listened (or before a restart) sends nothing later, and a block written more than `CSD_CONFIRMATIONS_FINAL` + 5
+  below the node's tip (a catch-up) sends none. The complete read is the chain-order feeds (`/proposals`,
+  `/attestations`) from a cursor.
 
 ## The explorer
 
@@ -183,9 +199,28 @@ The indexer is a convenient view of the chain, not an authority. Inclusion proof
 when a light client checks them against proof-of-work headers it verified itself; the explorer only
 checks them against the indexer's own headers. The derived data (per-attester
 breakdowns, rankings, address history) is reproducible rather than signed: the way you audit it
-is to run your own indexer and confirm you get the same numbers. A proposal's `domain` and `uri` are the
-node's text with one change, on both backends: each U+0000 is stored and served as U+0001. JSON refuses both
-characters unescaped, so a uri is JSON here exactly when it is JSON on the chain; a consumer that compares a row with
+is to run your own indexer and confirm you get the same numbers.
+
+The indexer reads blocks from one node at a time, and trusts the nodes it is configured with (`CSD_RPC`,
+`CSD_RPC_BACKENDS`). It checks the tip header of a backend that claims more work or height than the primary (its
+proof of work, and that its difficulty is plausible against the stored chain), and nothing more; with the primary
+down, the reachable backend with the least chainwork takes the primary's place and is not checked. Two things a
+configured node could do by answering falsely are therefore open, and accepted, because each backend is meant to be
+one of the operator's own nodes on the same host, where whoever controls one node's process can also stop or rewrite
+the primary:
+
+- A backend can win the switch by serving a real header at a higher height than it holds and claiming a large
+  chainwork for it. It then becomes the node the index reads from.
+- The blocks the active backend serves are not checked against their headers, and the chainwork it reports is
+  stored. An invented figure makes the honest nodes look lighter than the index, so the regression guard holds each
+  later pass while they present less work than that figure; the repair is a re-index from empty, which also
+  replaces the bodies that backend served.
+
+Run only nodes you control as backends.
+
+A proposal's `domain` and `uri` are the node's text with one change, on both backends: each U+0000 is stored and
+served as U+0001. JSON refuses both characters unescaped, so a uri is JSON here exactly when it is JSON on the chain;
+a consumer that compares a row with
 the node's bytes applies the same replacement first, and a `domain` or `uri` that holds U+0001 here may hold U+0000
 on the chain, so a hash over the text is checked against the node's bytes. A transaction id that two blocks hold is
 one transaction here, placed at its first occurrence (the lower height and its position in that block) in every
@@ -195,4 +230,6 @@ first block's height and position), so the merkle proof of any transaction folds
 outputs keep their first state: an output a later occurrence creates again is counted once in balances, the unspent
 list and the coinbase totals, and keeps its first spender. With `CSD_INDEX_FROM` above 0 the indexer holds nothing
 below that height, so first means first at or above it. SQLite serves tens of readers, not
-hundreds (see SQLite or Postgres above). MIT licensed.
+hundreds (see SQLite or Postgres above). `/analytics/miners` credits a block to the address its coinbase names (the
+signer of its first input, else its first output), which the miner chooses: the shares are a display figure, not
+proof of who mined. MIT licensed.

@@ -125,3 +125,23 @@ test("an error after the head was sent ends that response; no second head is wri
     s.close();
   }
 });
+
+// Postgres refuses U+0000 in a text parameter (500 and a logged stack) where SQLite answered 404 or 200, so both now
+// refuse it in h(), before a route reads the store. No stored text holds U+0000 (`storableText` stores U+0001).
+test("a NUL byte in a path or query parameter answers 400 JSON on every route shape", async () => {
+  for (const path of ["/tx/%00/status", "/block/%00", "/domain/a%00b/proposals", "/proposal/%00", "/address/%00/reputation",
+    "/proposals?domain=%00&limit=1", "/attestations?domain=a%00", "/proposal/0x00/attestations?after_txid=%00", "/proposals?domain[x]=%00"]) {
+    const r = await get(path);
+    assert.equal(r.status, 400, path);
+    assert.match(r.type, /^application\/json/, path);
+    assert.deepEqual(JSON.parse(r.body), { error: "bad request" }, path);
+  }
+});
+
+test("HAPPY PATH: printable escapes in path and query parameters answer as before", async () => {
+  for (const [path, status] of [["/domain/a%20b/proposals", 200], ["/proposals?domain=a%2Fb%20c&limit=1", 503], ["/domains", 200],
+    ["/proposal/%01/attestations", 200], ["/tx/0x%30/status", 404]] as const) {
+    assert.equal((await get(path)).status, status, path);
+  }
+});
+

@@ -9,11 +9,11 @@ import { dirname, join } from "node:path";
 import { readFileSync, realpathSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { CFG, host, port } from "./config.js";
-import { store, PG_INTEGER_MAX } from "./db.js";
+import { store, snapshot, PG_INTEGER_MAX } from "./db.js";
 import * as q from "./queries.js";
 import * as analytics from "./analytics.js";
 import { merkleProof } from "./merkle.js";
-import { indexedHeight } from "./indexer.js";
+import { indexedHeight, lastNodeTipHeight } from "./indexer.js";
 import { sseHandler, attachWs } from "./stream.js";
 
 const TXID = /^0x[0-9a-f]{64}$/;
@@ -69,6 +69,13 @@ export function finalErrorHandler(err: unknown, _req: Request, res: Response, ne
   fail(res, err);
 }
 
+// A string holding U+0000 anywhere in a parsed parameter value: a string, or qs's arrays and objects of them.
+function hasNul(v: unknown): boolean {
+  if (typeof v === "string") return v.includes("\u0000");
+  if (v != null && typeof v === "object") return Object.values(v).some(hasNul);
+  return false;
+}
+
 export function buildApp() {
   const app = express();
   app.set("etag", false);
@@ -86,8 +93,13 @@ export function buildApp() {
   // async handlers: express 4 doesn't catch a rejected promise, so wrap every handler.
   // Params are typed as plain strings (the routes below only read params they declare).
   type Req = Request<Record<string, string>, unknown, unknown, Record<string, string | undefined>>;
+  // A parameter holding U+0000 names nothing the store holds (storableText stores U+0001 for it) and Postgres refuses
+  // it in a text bind, so every route answers it 400 before it reads (test/error-body.test.ts).
   const h = (fn: (req: Req, res: Response) => Promise<unknown>) =>
-    (req: Req, res: Response) => { fn(req, res).catch((e) => fail(res, e)); };
+    (req: Req, res: Response) => {
+      if (hasNul(req.params) || hasNul(req.query)) { bad(res, "bad request"); return; }
+      fn(req, res).catch((e) => fail(res, e));
+    };
 
   // ── health / status ──
   // Freshness surface (added for multi-host failover): a load balancer or failover client
@@ -114,9 +126,11 @@ export function buildApp() {
   // canonical tip like counts so the scan runs once per block, not once per request (event-loop DoS guard).
   const domainsByTip = analytics.memoByTip(q.domains);
   app.get("/health", h(async (_req, res) => {
-    const indexed_height = await indexedHeight();
-    const tipH = await q.tipHeight();
-    const tip = await q.blockByHeight(tipH);
+    const { indexed_height, tipH, tip, counts } = await snapshot(async () => {
+      const indexed_height = await indexedHeight();
+      const tipH = await q.tipHeight();
+      return { indexed_height, tipH, tip: await q.blockByHeight(tipH), counts: await countsByTip() as Awaited<ReturnType<typeof q.counts>> };
+    });
     const now = Math.floor(Date.now() / 1000);
     const seconds_since_tip = tip ? now - Number(tip.time) : null;
     res.json({
@@ -127,12 +141,13 @@ export function buildApp() {
       backend: store().backend,                     // "sqlite" | "postgres"; makes a storage cutover observable
       indexed_height,
       tip_height: tipH,
+      node_tip_height: lastNodeTipHeight(),        // the node's tip at this process's last sync pass; null without one
       tip_hash: tip?.hash ?? null,
       chainwork: tip?.chainwork ?? null,           // decimal string; compare with BigInt across hosts
       seconds_since_tip,                            // wall-clock age of the tip block
       stale: seconds_since_tip == null ? true : seconds_since_tip > CFG.staleSecs,
       final_depth: CFG.finalDepth,
-      ...(await countsByTip() as Awaited<ReturnType<typeof q.counts>>),
+      ...counts,
     });
   }));
 
@@ -149,7 +164,7 @@ export function buildApp() {
     const tip = await q.tipHeight();
     return tip < 0 ? res.status(503).json({ error: "index not ready" }) : res.json(tip);
   }));
-  app.get("/blocks/tip/hash", h(async (_req, res) => { const b = await q.blockByHeight(await q.tipHeight()); return b ? res.json(b.hash) : nf(res); }));
+  app.get("/blocks/tip/hash", h(async (_req, res) => { const b = await q.tipRow(); return b ? res.json(b.hash) : nf(res); }));
   // Recent blocks in ONE call (newest-first); replaces a client tip→N×(height→hash→block) waterfall.
   // Backed by the existing q.recentBlocks(); rows carry height/hash/tx_count/time for the explorer feed.
   app.get("/blocks/recent", h(async (req, res) => {
@@ -166,19 +181,18 @@ export function buildApp() {
     return b ? res.json(b) : nf(res, "unknown block");
   }));
   app.get("/block/:hash/txids", h(async (req, res) => {
-    const b = await q.blockByHash(req.params.hash!);
-    return b ? res.json(await q.blockTxids(b.height)) : nf(res, "unknown block");
+    const ids = await q.blockTxidsByHash(req.params.hash!);
+    return ids ? res.json(ids) : nf(res, "unknown block");
   }));
   app.get("/block/:hash/txs", h(async (req, res) => {
-    const b = await q.blockByHash(req.params.hash!);
-    if (!b) return nf(res, "unknown block");
-    res.json(await q.blockTxs(b.height));
+    const txs = await q.blockTxsByHash(req.params.hash!);
+    return txs ? res.json(txs) : nf(res, "unknown block");
   }));
 
   // ── tx ──
   // Full tx shape (row + outputs), shared by /tx/:id AND the address tx lists below (the explorer's
-  // address page reads the outputs for its delta column). q.txsWithOutputs reads a whole page in two
-  // queries, so one request holds at most one pool connection at a time.
+  // address page reads the outputs for its delta column). Each reads its answer in one statement (q.txsWithOutputs,
+  // q.addressTxPage), so one request holds one pool connection and reads one view.
   app.get("/tx/:id", h(async (req, res) => {
     if (!TXID.test(req.params.id!)) return bad(res, "want /tx/0x<64-hex>");
     const [t] = await q.txsWithOutputs([req.params.id!]);
@@ -186,9 +200,9 @@ export function buildApp() {
     res.json(t);
   }));
   app.get("/tx/:id/status", h(async (req, res) => {
-    const t = await q.tx(req.params.id!);
+    const t = await q.txStatus(req.params.id!);
     if (!t) return nf(res, "unknown tx");
-    const tip = await q.tipHeight();
+    const tip = t.tip_height;
     // CAIRN-IDX-ERR-3: only report confirmations when the tip is at/above the tx's height.
     // tipHeight() is -1 on an empty index, and an in-flight reorg can briefly leave tip<height:
     // either way `tip - height + 1` would be a misleading large-negative count, so clamp to null.
@@ -216,8 +230,7 @@ export function buildApp() {
   }));
   app.get("/address/:a/txs", h(async (req, res) => {
     if (!ADDR.test(req.params.a!.toLowerCase())) return bad(res, "want /address/0x<40-hex>");
-    const ids = await q.addressTxids(req.params.a!, null);
-    res.json(await q.txsWithOutputs(ids.map((r) => r.txid)));
+    res.json(await q.addressTxPage(req.params.a!, null));
   }));
   app.get("/address/:a/txs/chain/:last", h(async (req, res) => {
     // Esplora `/address/:addr/txs/chain/:last_seen_txid`; page by the last-seen TXID (not a raw height).
@@ -228,10 +241,7 @@ export function buildApp() {
     if (!ADDR.test(req.params.a!.toLowerCase())) return bad(res, "want /address/0x<40-hex>");
     const last = String(req.params.last!).toLowerCase();
     if (!TXID.test(last)) return bad(res, "want /address/0x<40-hex>/txs/chain/<last-seen txid 0x-64hex>");
-    const h0 = await q.addressTxidHeight(req.params.a!, last);
-    if (h0 == null) return res.json([]); // cursor txid not in this address's history → no further pages
-    const ids = await q.addressTxids(req.params.a!, { height: h0, txid: last });
-    res.json(await q.txsWithOutputs(ids.map((r) => r.txid)));
+    res.json(await q.addressTxPage(req.params.a!, last)); // a cursor txid not in this address's history → no further pages
   }));
   // One page of q.UTXO_PAGE; the next page is ?after=<block_height>:<txid>:<vout> of the last row. A vout above
   // outputs.vout's range on Postgres (PG_INTEGER_MAX) is refused here rather than failing the query.
@@ -253,13 +263,15 @@ export function buildApp() {
     req.params.d!, Number(req.query.limit) || 100,
     req.query.from !== undefined ? Number(req.query.from) : undefined))));
   app.get("/proposal/:id", h(async (req, res) => {
-    const p = await q.proposal(req.params.id!);
-    if (!p) return nf(res, "unknown proposal");
-    const atts = await q.attestationsFor(req.params.id!);
-    // atts is capped; report the AUTHORITATIVE count + a truncation flag so a consumer of this inline list
-    // is not misled (the COMPLETE list is the keyset-paginated /proposal/:id/attestations endpoint).
-    const attestation_count = await q.attestationCountFor(req.params.id!);
-    res.json({ ...p, attestation_count, attestation_count_truncated: attestation_count > atts.length, attestations: atts });
+    const r = await snapshot(async () => {
+      const p = await q.proposal(req.params.id!);
+      if (!p) return null;
+      // atts is capped; report the AUTHORITATIVE count + a truncation flag so a consumer of this inline list
+      // is not misled (the COMPLETE list is the keyset-paginated /proposal/:id/attestations endpoint).
+      return { p, atts: await q.attestationsFor(req.params.id!), attestation_count: await q.attestationCountFor(req.params.id!) };
+    });
+    if (!r) return nf(res, "unknown proposal");
+    res.json({ ...r.p, attestation_count: r.attestation_count, attestation_count_truncated: r.attestation_count > r.atts.length, attestations: r.atts });
   }));
   // Keyset-paginated so a consumer (the CairnX resolver) can fetch the COMPLETE attestation list in
   // bounded pages: pass ?after_height=&after_txid= from the last row of the previous page until a page
@@ -323,7 +335,7 @@ export function buildApp() {
     const n = atts.length;
     const avgScore = n ? atts.reduce((s, a) => s + Number(a.score || 0), 0) / n : 0;
     const avgConf = n ? atts.reduce((s, a) => s + Number(a.confidence || 0), 0) / n : 0;
-    const feesPaid = atts.reduce((s, a) => s + Number(a.fee || 0), 0);
+    const feesPaid = q.amt(atts.reduce((s, a) => s + BigInt(a.fee ?? 0), 0n));   // exact past 2^53 (fees are base units)
     res.json({
       address: req.params.a!.toLowerCase(), attestations: n, avg_score: avgScore, avg_confidence: avgConf, fees_paid: feesPaid,
       truncated, ...(truncated ? { note: `newest ${q.REPUTATION_WINDOW} attestations only` } : {}),

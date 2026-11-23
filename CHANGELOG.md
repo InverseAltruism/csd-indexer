@@ -1,5 +1,141 @@
 # Changelog
 
+## 0.3.14
+
+Operator: the deploy is a pull, then a restart of `csd-indexer`; no dependency changes (the lockfile's root version
+moves to 0.3.14 with `package.json`, so no `npm ci` is needed), and no setting changes. Postgres 14 or later. The role
+in `CSD_INDEX_PG` need not be a superuser: one that owns the database is enough, as a start creates the schema, the
+tables, indexes and statistics object and analyzes `outputs`. The first start builds `idx_out_addr_unspent` in its
+DDL transaction and, on Postgres, creates `st_out_addr_unspent` with a statistics target of 250 and then analyzes
+`outputs` once in a transaction of its own; every store call, `/health` included, waits for the start. On a scratch
+Postgres 16 with 300,000 outputs and 300,000 history rows, as a non-superuser owner, the DDL with the index build
+took 1.8 s and the ANALYZE 2.8 s: the first start took 8.38 s, where 0.3.13 took 3.83 s on the same database and the
+next start 3.75 s. On SQLite the first start took 1.02 s (0.3.13: 0.69 s; the next start: 0.63 s). Autovacuum's
+later ANALYZE of `outputs` takes as long as the start's (the default target took 1.1 s on that table). The time grows with the outputs table. The block
+writer opens one more Postgres connection (`CSD_INDEX_PG_POOL` + 1 in all). Rollback: check out 0.3.13 and restart;
+it opens a database 0.3.14 started, writes and reads it, and leaves the index and the statistics object in place
+(checked on both backends, on Postgres as a non-superuser owner).
+API changes for readers: `/analytics/miners` entries lose `fees_collected` (always 0); `/health` adds
+`node_tip_height`; `%00` in a parameter is 400; a merkle proof for a block without a header root is 404.
+
+- README "Honest limits" names what the backend selection does not check: a contender's tip header is checked for
+  proof of work and a plausible difficulty, not for where it sits in the contender's chain, nor for the chainwork
+  claimed for it, and the bodies and chainwork the active backend serves are trusted. A configured node that answers
+  falsely can win the selection that way, and an invented chainwork it reports then holds the index against honest
+  nodes. Both are accepted: every configured backend is meant to be one of the operator's own nodes. Which backend
+  is selected, and when, is as on 0.3.13 apart from the `/tip` height check below; `test/rpc-route-honest.test.ts`
+  runs the honest failovers through `syncOnce` on 160 consecutive mainnet headers from 32796
+  (`test/fixtures/header-chain.ts`).
+- Postgres: a start as a role that is not a superuser read `pg_statistic_ext_data`, which only a superuser may read,
+  and failed with "permission denied", so no route answered; it reads the `pg_stats_ext` view, which shows the owner
+  its own rows. The CI Postgres job runs the suite as a non-superuser owner of its database
+  (`test/pg-nonsuperuser.test.ts`).
+- Postgres: a session that ended while its client was checked out of the pool (a database restart,
+  `pg_terminate_backend`) in the writer's transaction, a reader's snapshot or the start emitted an `error` event
+  with no listener and ended the process; the call fails and the next ones get new connections. A client whose
+  ROLLBACK failed, or that saw such an error, goes back to the pool broken, so pg-pool closes it instead of handing
+  the next caller a session inside an aborted transaction (`test/pg-client-loss.test.ts`). The tip pointer is written in the block's transaction, so a restart in the
+  middle of a block write leaves the block and the pointer both written or both not.
+- Statements the code contradicted, now true: the comments that said blocks deeper than `finalDepth` are never
+  touched (a reorg is followed down to the checkpoint floor); ROUTE-1's "finality-gated" anchor (it is the newest
+  stored block, at depth 0); the statement cache's "never hit" bound (IN lists and `/analytics/series` vary the SQL);
+  the max supply in comments (about 1.05e16 base units, csd-codec's `maxSupplyBase`, not 1e17); "fractional
+  degrades to 0" (a fractional number is floored; a non-integer string is 0); "consensus data is not clamped"
+  (values and header fields go through `safeValue`); the ease factor's "never touches honest drift" (a long run of
+  blocks at LWMA's solve-time clamp reaches it); the Postgres start's "two transactions" (three while the statistics
+  object holds no data). README: what `track-address` delivers (the attestations the
+  address made), that the streams carry no id or replay and the feeds are the complete read, what `final` in
+  `/tx/:id/status` means (a depth; deeper reorgs are followed), and that the miners analytics credit the address a
+  coinbase names, which its miner chooses. The hosted resolver's internal name is gone from comments and test names.
+  Each skipped test without a reason has one.
+- `/health` adds `node_tip_height`, the node's tip at this process's last sync pass (null in a process that runs no
+  sync loop). The explorer's "N blocks behind" badge compared `tip_height` with `indexed_height`, both read from the
+  index, so it never showed; it now reads `node_tip_height` (`test/explorer-browser.test.ts`, whose stub put the node
+  tip in `tip_height`).
+- The explorer's two "Circulating" figures showed `emitted_supply`; they show `circulating_supply` (emitted less the
+  burned genesis output), as the supply route defines it.
+- Exact amounts on two display paths: `/address/:a/reputation` sums `fees_paid` as BigInt and answers it as `amt()`
+  does (through `Number` a sum past 2^53 rounded: 2^53 - 1 + 2 answered 2^53; `test/reputation-window.test.ts`), and
+  the explorer sums output values as BigInt (`sumValues`; a value past 2^53 arrives as a string and `+`
+  concatenated it) and formats a negative amount past 2^53 exactly.
+- Explorer: a block row's `data-h`, `data-hash` and `data-ts` attributes are escaped like every other node-sourced
+  string, and the label lookups (`LABELS`, `DOMAIN_LABEL`, `DEC`, `SERIES_SRC`) read own keys only, so a
+  chain-written key such as `constructor` is no label (`test/explorer-browser.test.ts`, "page helpers").
+- Not changed: the `search_path` stays an unawaited `SET` on connect. Moving it into the pool's `options` dropped it
+  whenever the DSN carries its own `options` (pg lets the DSN's replace the pool's: `test/boot-rebuild-timeout.test.ts`
+  read the `public` schema), and an awaited form needs every statement to take its client explicitly; pg prints a
+  deprecation warning for it, and the manifest's caret keeps pg 9 out.
+- `/domains` orders domains with the same proposal count by their UTF-8 bytes on both backends. The tie followed the
+  database's collation (bytes on SQLite, en_US.UTF-8 on the test Postgres), so the backends answered ties in
+  different orders; SQLite's order is unchanged. `test/domains-order.test.ts`.
+- API field removed: `/analytics/miners` no longer answers `fees_collected` per miner. It summed the fee column of
+  the miner's coinbase rows, which is 0 by construction (a coinbase spends no indexed output), so it was 0 for every
+  miner whatever the fees (`total_fees` of the same answer is the window's fees). Nothing in the explorer, cairn,
+  cairnx, cairn-sdk or the wallet reads it (`git grep` at each `origin/master`). `test/analytics.test.ts` pins a
+  miner entry's fields.
+- A NUL byte (`%00`) in a path or query parameter answers 400 `{"error":"bad request"}` on both backends, in `h()`,
+  which every REST route passes. Postgres refused U+0000 in a text bind, so such a request answered 500 and logged
+  a stack there, and 404 or 200 on SQLite. No stored text holds U+0000 (`storableText` stores U+0001 for it).
+  Printable escapes such as `%20` answer as before. `test/error-body.test.ts`.
+- An `/address/:a/utxo` page costs the page. Neither planner had an index that answers "this address's unspent
+  outputs in height order": SQLite read the unspent outputs of every address through `outputs(spent_txid)` and
+  sorted them, and Postgres walked `outputs(height)` and filtered, reading the address's lifetime outputs. A new index
+  on `outputs(addr, COALESCE(spent_txid, ''), height, txid, vout)`, with the page's unspent test written as that
+  equality, and on Postgres the statistics object `st_out_addr_unspent` on the pair, make the page a seek that stops
+  at the page. The object's target is 250: at the default its most-common list held 100 pairs of a 30,000-row
+  sample, and a miner's few unspent outputs fell out of it in 2 of 60 ANALYZE runs on the plan test's table, which
+  then planned the height walk; at 250, 0 of 200 runs did. A partial index on the unspent rows, without the object,
+  planned the height walk after all 200 runs, so it was not taken. With no statistics yet, both seek the index on both
+  columns and sort what they find. On 300,000 outputs (a miner's address with 90,000 outputs, 286 unspent; 1,000 small addresses; one with
+  60,000 unspent), median of 30 pages, before and after: SQLite 35.76 to 1.19 ms, 36.42 to 0.43 ms and 45.36 to 3.82
+  ms; Postgres 97.78 to 1.22 ms, 0.93 to 0.67 ms and 2.77 to 2.16 ms. `test/address-utxo.test.ts` pins the plan on both
+  backends with a miner's shape.
+- One answer, one view. `/tx/:id`, `/address/:a/txs`, `/address/:a/txs/chain/:last`, `/block/:hash/txids` and
+  `/block/:hash/txs` read in two or three statements, so on Postgres a reorg's commit between them answered 200 with
+  `outputs: []` for a tx with outputs, or `[]` for a block holding transactions (175 of 20,148 answers in
+  `test/pg-reorg-read-race.test.ts` before; the resolver's scanner reads `/tx/:id` outputs for payment checks). Each
+  is now one statement; so are `/tx/:id/merkle-proof`, `/tx/:id/status` and `/blocks/tip/hash`. `/health` (a tip
+  height without its hash), `/proposal/:id` (an attestation count that is not the list's length) and the analytics
+  figures (emitted supply from one tip's coinbase sum and the next tip's fees) read inside `snapshot()` in
+  `src/db.ts`: REPEATABLE READ on Postgres, a deferred transaction on SQLite, which also holds against a separate
+  `index` process. `test/snapshot-reads.test.ts` commits the unwind of the top block on another connection after each
+  statement of each route, on both backends: red on 0.3.13's routes (6 of 6), green now. On a scratch Postgres with
+  20,000 blocks (`/tx/:id`, the 25-row page of an address with 20,000 transactions, a header read as cairn's
+  `/api/headers` makes it, `/block/:hash/txs`; median of 1,500 GETs, three rounds, twice before and once after):
+  0.580 to 0.799 ms before and 0.569 to 0.662 ms after; 2.331 to 3.049 and 2.297 to 2.372; 0.712 to 0.857 and 0.763
+  to 0.858 (the same code); 0.745 to 0.865 and 0.790 to 0.819. A merkle proof for a block stored without a header
+  root is now no proof (404): it carried a root the indexer computed from its own list.
+- The block writer never waits behind readers on Postgres. It shared the readers' pool and its wait cap, so a read
+  flood refused its store calls with "indexer db pool saturated" (in a measured flood of slow `/address/:a/utxo`
+  reads, 69 of 79 block writes) and the tip froze while it lasted. `syncOnce` now runs on a pool of one connection of
+  its own (`asWriter` in `src/db.ts`), outside the readers' cap, which stays: past it a read is refused as before.
+  The process holds at most `CSD_INDEX_PG_POOL` + 1 connections. `test/pg-writer-connection.test.ts` (Postgres
+  only): ten passes during a flood that keeps the readers' queue full; before, passes failed with the saturation
+  error.
+- A backend that answers `/tip` and no block below some height costs a bounded number of reads per pass. Both reorg
+  walks skipped a height the node did not answer and went on to the scan floor, one node read per indexed height
+  (300 and 600 reads on a 300-block index in `test/absence-walk-bound.test.ts`; about 148,000 at the live height),
+  and the pass did not fail over while it lasted; a node rebuilding its state after a restart answers that way. The
+  deep part of `reconcileTipWindow` and `findReorgAncestor` now stop at the first such height and the pass changes
+  nothing (8 and 10 reads). The red line holds and narrows: an absence no longer lets the forward scan unwind even the
+  one height a new block's prev contradicts; that reorg completes on the pass where the node answers
+  (`test/reorg-absence-clamp.test.ts` I2b now asserts no unwind on the absent pass, then the completed reorg).
+- The forward scan's checkpoint-floor refusal holds at the default scan floor. With `CSD_INDEX_FROM=0`,
+  `findReorgAncestor`'s "diverged down to the scan floor" (`scanFrom - 1`) and its "no reorg" were both -1, so
+  against a heavier, taller chain that shares no block with the index the pass logged that it refused to unwind and
+  then wrote the foreign blocks on top. "No reorg" is now its own value (`NO_REORG`). `test/checkpoint-floor.test.ts`
+  (the case at scan floor 0; before, the pass wrote 2 blocks on top of the index).
+- The tip pointer moves with its block: `syncOnce`'s forward write stores the block and `meta` `indexed_height` in one
+  transaction (`writeBlock(b, true)`). They were two statements, and a failure between them left the block stored one
+  above the pointer; the chainwork guard and the tip window read the pointer's height, so a node that then served a
+  lighter block at the top height had it written over the heavier stored one with no hold. `test/tip-pointer-atomic.test.ts`
+  fails the pointer write once: before, the stored top was 5 and the pointer 4.
+- A `/tip` height that is not a non-negative integer is unusable. A backend answering `"abc"` gave the selection a NaN
+  best height, which voided its 3-block hysteresis, and the active backend answering it, or no height, gave the tip
+  window nothing to converge at: the pass unwound to the scan floor, the whole index when the index was below the
+  checkpoint floor. Such a backend is now left out of the selection, and from the active backend the pass fails
+  before it reads the chain. `test/rpc-tip-height.test.ts`.
+
 ## 0.3.13
 
 - WebSocket `/ws` bounds three things one connection could grow without limit: the subscription keys it holds, the

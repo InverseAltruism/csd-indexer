@@ -12,7 +12,8 @@ process.env.CSD_INDEX_PG_SCHEMA = "t_utxo";
 
 const { buildApp } = await import("../src/server.js");
 const { store, resetStoreForTests, closeDb } = await import("../src/db.js");
-const { UTXO_PAGE, amt } = await import("../src/queries.js");
+const q = await import("../src/queries.js");
+const { UTXO_PAGE, UTXO_PAGE_SQL, amt } = q;
 await resetStoreForTests();
 
 const HEAVY = "0x" + "ab".repeat(20);
@@ -116,4 +117,36 @@ test("/address/:a/utxo: a malformed after= is 400; the honest cursor is accepted
   assert.equal((await get(`/address/${HEAVY}/utxo?after=${encodeURIComponent(`100:${txid(1).toUpperCase().replace("0X", "0x")}:0`)}`)).status, 200,
     "a txid in upper case is the same cursor");
   assert.equal((await get(`/address/${HEAVY}/utxo?after=0:${txid(0)}:2147483647`)).status, 200, "the largest vout the column holds");
+});
+
+// The page is a seek on the address that stops at the page. With `spent_txid IS NULL` SQLite read the unspent outputs
+// of every address and sorted them, and Postgres walked outputs by height and filtered: a page cost the unspent set
+// (SQLite) or the address's lifetime outputs (Postgres).
+// The live shape: a miner's address with 20,000 outputs of which 50 are unspent, among 30,000 unspent outputs of
+// 1,000 other addresses (rows written last, after the tests above).
+test("/address/:a/utxo: the page statement seeks idx_out_addr_unspent in page order on both backends", async () => {
+  const MINER = "0x" + "4e".repeat(20);
+  await store().tx(async (d) => {
+    const ins = "INSERT INTO outputs(txid,vout,addr,value,height,spent_txid,spent_height) VALUES(?,?,?,?,?,?,?)";
+    for (let i = 0; i < 20_000; i++) await d.run(ins, txid(20_000_000 + i), 0, MINER, 50, 1000 + i, i < 19_950 ? txid(30_000_000 + i) : null, i < 19_950 ? 1001 + i : null);
+    for (let i = 0; i < 30_000; i++) await d.run(ins, txid(40_000_000 + i), 0, "0x" + (i % 1000).toString(16).padStart(40, "0"), 1, 1000 + i, null, null);
+  });
+  assert.equal((await q.addressUtxos(MINER, null)).length, 50, "HAPPY PATH: the page holds the address's unspent outputs");
+  if (store().backend === "sqlite") {
+    await store().exec("ANALYZE");
+    const plan = (await store().all<{ detail: string }>(`EXPLAIN QUERY PLAN ${UTXO_PAGE_SQL}`, MINER, UTXO_PAGE)).map((r) => r.detail).join(" | ");
+    assert.match(plan, /USING INDEX idx_out_addr_unspent \(addr=\? AND <expr>=\?\)/, plan);
+    assert.doesNotMatch(plan, /TEMP B-TREE/, plan);
+  } else {
+    const explain = async () => (await store().all<Record<string, string>>(`EXPLAIN ${UTXO_PAGE_SQL}`, MINER, UTXO_PAGE)).map((r) => r["QUERY PLAN"]).join(" | ");
+    // ANALYZE samples: the object's target makes its sample cover this table, so its most-common list holds the
+    // miner's pair after every run (at the default target it fell out in about 1 run of 30, and the plan walked
+    // outputs by height).
+    const target = await store().get<{ t: number }>("SELECT stxstattarget AS t FROM pg_statistic_ext WHERE stxname = 'st_out_addr_unspent' AND stxnamespace = current_schema()::regnamespace");
+    assert.equal(Number(target?.t), 250);
+    await store().exec("ANALYZE outputs");
+    const plan = await explain();
+    assert.match(plan, /Index Scan using idx_out_addr_unspent/, plan);
+    assert.doesNotMatch(plan, /Sort/, plan);
+  }
 });

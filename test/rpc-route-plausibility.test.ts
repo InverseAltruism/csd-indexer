@@ -1,7 +1,7 @@
 // F6 (ROUTE-1 route-capture); the local-anchored plausibility gate on selectBackend. `tipHeaderPowOk`
 // alone only checks a tip header against its OWN declared bits (powOk is floored at POW_LIMIT), so a REAL
 // min-difficulty header hashes valid + hash-binds while the backend lies about chainwork/height in /tip.
-// contenderPlausible() rejects such a contender by anchoring on the indexer's OWN local finality-gated
+// contenderPlausible() rejects such a contender by anchoring on the indexer's OWN stored
 // headers (the blocks table); NEVER the live primary; with two bounds:
 //   (1) DELTA CAP: claimed height must be <= localTip + CFG.maxAheadBlocks.
 //   (2) LWMA EASE: the contender's declared tip target (from its bits) must not be EASIER than the honest
@@ -61,7 +61,7 @@ const { CFG } = await import("../src/config.js");
 const { store, resetStoreForTests, closeDb } = await import("../src/db.js");
 
 const LOCAL_TIP = 50;
-// Populate a local finality-gated window (heights 0..LOCAL_TIP) at a chosen difficulty, 120s spacing.
+// Populate a local stored window (heights 0..LOCAL_TIP) at a chosen difficulty, 120s spacing.
 // The tip's block TIME is now-staleSecs: staleSecs=0 = a FRESH/steady-state anchor (the M1 wall-clock delta
 // cap then reduces to the plain maxAhead); a large staleSecs simulates a FROZEN primary wedge (the local
 // scanner cannot advance) so the wall-clock-aware cap must grow to let a genuinely-ahead honest secondary win.

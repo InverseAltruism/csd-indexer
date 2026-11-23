@@ -15,7 +15,7 @@
 //
 // Reorg invariant: EVERY row carries `height`, so unwinding orphaned blocks is
 // `DELETE ... WHERE height > ancestor` + un-spending outputs whose spender was
-// orphaned. Nothing deeper than CONFIRMATIONS_FINAL is ever touched.
+// orphaned. A reorg is followed as deep as the checkpoint floor allows (indexer.ts).
 //
 // Number policy (both backends): 64-bit integer columns are read EXACTLY; values
 // within Number.MAX_SAFE_INTEGER come back as `number`, anything past 2^53 comes back
@@ -23,6 +23,7 @@
 // use amt()-style helpers to keep JSON clean.
 import { DatabaseSync } from "node:sqlite";
 import { createRequire } from "node:module";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { CFG } from "./config.js";
 
 // CJS require shim for the lazy `pg` import (we run as ESM via tsx); keeps pg
@@ -45,6 +46,8 @@ export interface Store {
   all<T = Record<string, unknown>>(sql: string, ...params: unknown[]): Promise<T[]>;
   /** Serialized read-modify-write transaction. fn runs against the SAME connection. */
   tx<T>(fn: (s: Store) => Promise<T>): Promise<T>;
+  /** Reads in one snapshot of the database (see snapshot() below). */
+  snapshot<T>(fn: (s: Store) => Promise<T>): Promise<T>;
   /** Backend-specific maintenance (WAL checkpoint on sqlite; no-op on pg). */
   checkpoint(): Promise<void>;
   close(): Promise<void>;
@@ -60,6 +63,26 @@ export const FEED_INDEX_DDL = [
   "CREATE INDEX IF NOT EXISTS idx_prop_height ON proposals(height)",
   "CREATE INDEX IF NOT EXISTS idx_att_height ON attestations(height)",
 ] as const;
+// Exported for the UTXO bench, which times its build.
+export const UTXO_INDEX_DDL = "CREATE INDEX IF NOT EXISTS idx_out_addr_unspent ON outputs(addr, (COALESCE(spent_txid, '')), height, txid, vout)";
+// Postgres estimates `addr = ? AND COALESCE(spent_txid, '') = ''` as if the two were independent: for a miner's
+// address with thousands of spent outputs and a few unspent ones it expects thousands of rows and walks outputs by
+// height instead of the index above. The statistics object gives it the pair's frequencies (Postgres 14 or later);
+// ANALYZE fills it, at the first start that creates it and then as autovacuum analyzes the table. At the default
+// target its list holds the 100 commonest pairs of a 30,000-row sample, and a miner's few unspent outputs fell out of
+// it in 2 of 60 ANALYZE runs on the plan test's table; at 250 the sample is 75,000 rows and the list 250 pairs, and
+// none of 200 runs left the index (1000 held as well, with ANALYZE four times as long: 12 s on 300,000 outputs
+// against 2.9 s). With no statistics yet the planner seeks this index on both columns and sorts what it finds.
+const UTXO_STATS = "st_out_addr_unspent";
+const UTXO_STATS_DDL = `CREATE STATISTICS IF NOT EXISTS ${UTXO_STATS} (mcv, dependencies) ON addr, (COALESCE(spent_txid, '')) FROM outputs`;
+const UTXO_STATS_TARGET = `ALTER STATISTICS ${UTXO_STATS} SET STATISTICS 250`;
+/** The schema statements a start applies on `backend`. */
+const schemaSql = (backend: Store["backend"]): string[] => (backend === "postgres" ? [DDL, UTXO_STATS_DDL, UTXO_STATS_TARGET] : [DDL]);
+// The statistics object exists and holds no data yet. pg_statistic_ext_data is readable by a superuser only; the
+// pg_stats_ext view shows the table owner its own rows (test/pg-nonsuperuser.test.ts).
+const UTXO_STATS_EMPTY = `SELECT 1 FROM pg_statistic_ext s WHERE s.stxname = '${UTXO_STATS}' ` +
+  "AND s.stxnamespace = current_schema()::regnamespace AND NOT EXISTS (SELECT 1 FROM pg_stats_ext v " +
+  "WHERE v.statistics_schemaname = current_schema() AND v.statistics_name = s.stxname)";
 // An INTEGER column (txs.pos, outputs.vout) is 4 bytes on Postgres, where a larger bind fails the statement; SQLite's
 // INTEGER is 8 bytes. A route refuses a cursor value above this instead of answering 500 on one backend only.
 export const PG_INTEGER_MAX = 2 ** 31 - 1;
@@ -132,6 +155,11 @@ const DDL = `
   CREATE INDEX IF NOT EXISTS idx_out_height       ON outputs(height);
   CREATE INDEX IF NOT EXISTS idx_out_spent_height ON outputs(spent_height);
   CREATE INDEX IF NOT EXISTS idx_addrhist_height  ON address_history(height);
+  -- /address/:a/utxo (queries.ts addressUtxos) seeks an address's unspent outputs in (height, txid, vout) order and
+  -- stops at the page. The unspent test is an equality on this expression, which both planners use for the order;
+  -- \`spent_txid IS NULL\` is no equality to either, and the page read every output of the address (Postgres) or of
+  -- the unspent set (SQLite). test/address-utxo.test.ts pins the plan.
+  ${UTXO_INDEX_DDL};
 ${FEED_INDEX_DDL.map((s) => `  ${s};`).join("\n")}
 `;
 
@@ -205,7 +233,7 @@ class SqliteStore implements Store {
   private stmt(sql: string) {
     let st = this.stmts.get(sql);
     if (!st) {
-      if (this.stmts.size > 256) this.stmts.clear(); // safety valve, never hit by current code
+      if (this.stmts.size > 256) this.stmts.clear(); // a bound: IN lists and /analytics/series vary the SQL text
       st = this.d.prepare(sql);
       st.setReadBigInts(true);
       this.stmts.set(sql, st);
@@ -244,19 +272,29 @@ class SqliteStore implements Store {
     try { const r = await fn(this); this.d.exec("COMMIT"); return r; }
     catch (e) { try { this.d.exec("ROLLBACK"); } catch { /* already rolled back */ } throw e; }
   }
+  // A deferred transaction reads one WAL snapshot from its first read, so another process's commit (a separate `index`
+  // run) cannot land between two reads. The callback awaits only store reads, as a dbTx callback does, so this
+  // process's writer cannot begin inside it; inside an open transaction the reads already share one view.
+  async snapshot<T>(fn: (s: Store) => Promise<T>): Promise<T> {
+    if (this.d.isTransaction) return await fn(this);
+    this.d.exec("BEGIN");
+    try { return await fn(this); }
+    finally { if (this.d.isTransaction) this.d.exec("COMMIT"); }
+  }
   async checkpoint(): Promise<void> { try { this.d.exec("PRAGMA wal_checkpoint(TRUNCATE);"); } catch { /* busy */ } }
   async close(): Promise<void> { this.d.close(); }
 }
 
 // ── postgres backend ──
-// A start's two transactions, the schema DDL and the totals rebuild, grow with the rows: an index the DDL adds is built
-// over every row of its table, and the rebuild reads every outputs and address_history row, which anyone can add. The
+// A start's transactions, the schema DDL, `ANALYZE outputs` (only while the statistics object holds no data) and the
+// totals rebuild, grow with the rows: an index the DDL adds is built over every row of its table, ANALYZE samples
+// outputs, and the rebuild reads every outputs and address_history row, which anyone can add. The
 // pool's 30 s statement timeout would fail every start past that, so each runs without it, and every other statement
 // on the connection keeps it (SET LOCAL). A lock another session holds is waited for at most BOOT_LOCK_TIMEOUT_MS per
 // lock; past that the transaction fails (SQLSTATE 55P03) and rolls back, and the next store call starts again
 // (test/boot-rebuild-timeout.test.ts).
 export const BOOT_LOCK_TIMEOUT_MS = 5000;
-async function bootTx(c: import("pg").PoolClient, statements: readonly string[]): Promise<void> {
+async function bootTx(c: import("pg").PoolClient, statements: readonly string[], broken: (e: Error) => void): Promise<void> {
   await c.query("BEGIN");
   try {
     await c.query("SET LOCAL statement_timeout = 0");
@@ -264,7 +302,7 @@ async function bootTx(c: import("pg").PoolClient, statements: readonly string[])
     for (const q of statements) await c.query(q);
     await c.query("COMMIT");
   } catch (e) {
-    try { await c.query("ROLLBACK"); } catch { /* connection gone */ }
+    try { await c.query("ROLLBACK"); } catch (re) { broken(re as Error); }
     if ((e as { code?: string }).code === "55P03") {
       throw new Error(`the start waited ${BOOT_LOCK_TIMEOUT_MS} ms for a lock another session holds; the next store call starts again (${(e as Error).message})`, { cause: e });
     }
@@ -272,10 +310,39 @@ async function bootTx(c: import("pg").PoolClient, statements: readonly string[])
   }
 }
 
+// A client checked out of the pool has no 'error' listener (pg-pool removes its own at checkout and adds it back at
+// release), and a session that ends while the client is out (a server restart, pg_terminate_backend) emits 'error' on
+// it: with no listener that ended the process. withClient listens while the client is out, and a client that saw such
+// an error or whose ROLLBACK failed (fn reports it through `broken`) goes back with the error, so the pool closes it:
+// a session still answering inside its aborted transaction, or about to end, is not handed to the next caller
+// (test/pg-client-loss.test.ts).
+async function withClient<T>(pool: import("pg").Pool, fn: (c: import("pg").PoolClient, broken: (e: Error) => void) => Promise<T>): Promise<T> {
+  const c = await pool.connect();
+  let failed: Error | undefined;
+  const broken = (e: Error) => { failed ??= e; };
+  c.on("error", broken);
+  try { return await fn(c, broken); } finally { c.removeListener("error", broken); c.release(failed); }
+}
+
 // `?` placeholders are translated to $1..$n so call sites stay dialect-free.
 function toPg(sql: string): string {
   let n = 0;
   return sql.replace(/\?/g, () => `$${++n}`);
+}
+
+// A Store over one pg client: a transaction's or a snapshot's statements all run on it.
+function clientStore(c: import("pg").PoolClient): Store {
+  return {
+    backend: "postgres",
+    exec: async (sql) => { await c.query(sql); },
+    run: async (sql, ...p) => { await c.query(toPg(sql), p as unknown[]); },
+    get: async (sql, ...p) => (await c.query(toPg(sql), p as unknown[])).rows[0],
+    all: async (sql, ...p) => (await c.query(toPg(sql), p as unknown[])).rows,
+    tx: () => { throw new Error("nested tx"); },
+    snapshot: (fn) => fn(clientStore(c)),
+    checkpoint: async () => { /* autovacuum's job, as on the pool */ },
+    close: async () => { /* the client goes back to the pool where it was taken */ },
+  };
 }
 
 class PgStore implements Store {
@@ -285,9 +352,11 @@ class PgStore implements Store {
   private _ready: Promise<void> | null = null;
   // CAIRN-IDX-POOL-1 / PG-7: hard cap on the pending-acquire queue (pg-pool has no native one).
   // Sized as the pool max + a modest burst buffer; beyond it we fast-fail rather than let a flood
-  // park thousands of waiters and balloon memory/latency.
-  private readonly maxWaiting = Math.max(64, CFG.pgPoolSize * 8);
-  constructor(url: string, schema: string) {
+  // park thousands of waiters and balloon memory/latency. The writer's store has no cap (writer() below).
+  private readonly maxWaiting: number;
+  private _writer: PgStore | null = null;
+  constructor(private readonly url: string, schema: string, private readonly opts: { max: number; guarded: boolean; boot?: PgStore }) {
+    this.maxWaiting = Math.max(64, opts.max * 8);
     const { Pool, types } = require("pg") as typeof import("pg");
     // Exact integer reads, same policy as the sqlite backend: int8 (OID 20) and the
     // NUMERIC (OID 1700) that SUM(bigint) yields come back as number within 2^53,
@@ -297,15 +366,16 @@ class PgStore implements Store {
       getTypeParser: (oid: number, format?: string) =>
         oid === 20 || oid === 1700 ? exactParser : (types.getTypeParser as (o: number, f?: string) => unknown)(oid, format),
     } as unknown as import("pg").CustomTypesConfig;
+    this.schemaSafe = schema.replace(/[^a-zA-Z0-9_]/g, "");
     this.pool = new Pool({
-      connectionString: url, max: CFG.pgPoolSize, types: perPool,
+      connectionString: url, max: opts.max, types: perPool,
       // CAIRN-IDX-POOL-1 / PG-7: per-acquire timeout; any single acquire fails after 10s rather
       // than hanging. NOTE: this bounds how long ONE waiter waits, not how MANY can wait; pg-pool
       // 3.x has no built-in maxWaitingClients, so the queue length is bounded explicitly below in
       // acquireGuard() (the prior comment claimed "never queue forever" but the queue was unbounded).
       connectionTimeoutMillis: 10_000,
       // server-side guards: statement_timeout (30s) caps any single query (a start's DDL and rebuild aside, bootTx) so no runaway read
-      // starves the block writer; idle_in_transaction_session_timeout (60s) keeps an abandoned
+      // holds a connection; idle_in_transaction_session_timeout (60s) keeps an abandoned
       // BEGIN from holding locks. Both exceed connectionTimeoutMillis by design; the acquire
       // timeout fails fast; these bound work that is already running on a connection.
       options: "-c statement_timeout=30000 -c idle_in_transaction_session_timeout=60000",
@@ -314,26 +384,31 @@ class PgStore implements Store {
     // restart, idle kill, network blip). With no listener that's an uncaught exception
     // that takes the whole process down; log and let the pool replace the client.
     this.pool.on("error", (e) => console.error(`[pg pool] idle client error: ${e.message}`));
-    this.schemaSafe = schema.replace(/[^a-zA-Z0-9_]/g, "");
     // every pooled connection joins the schema
     this.pool.on("connect", (client) => {
       client.query(`SET search_path TO ${this.schemaSafe}`).catch(() => { /* a broken connection fails the user query queued behind it */ });
     });
   }
+  /** The block writer's store: its own pool of one connection, without the readers' wait cap, so no read flood can
+   *  refuse or queue a block write (test/pg-writer-connection.test.ts). The readers keep their pool and their cap. */
+  writer(): Store {
+    if (this.opts.boot) return this;
+    this._writer ??= new PgStore(this.url, this.schemaSafe, { max: 1, guarded: false, boot: this });
+    return this._writer;
+  }
   // Lazily (re)established: if the first connect/DDL fails (pg still starting, network
   // blip), the failure must NOT be cached forever; the next call retries from scratch,
-  // so the indexer loop recovers as soon as Postgres does.
+  // so the indexer loop recovers as soon as Postgres does. A writer's store boots through its owner.
   private ready(): Promise<void> {
+    if (this.opts.boot) return this.opts.boot.ready();
     if (this._ready) return this._ready;
-    const p = (async () => {
-      const c = await this.pool.connect();
-      try {
-        await c.query(`CREATE SCHEMA IF NOT EXISTS ${this.schemaSafe}`);
-        await c.query(`SET search_path TO ${this.schemaSafe}`);
-        await bootTx(c, [DDL]);
-        await bootTx(c, totalsRebuildSql(this.backend));
-      } finally { c.release(); }
-    })();
+    const p = withClient(this.pool, async (c, broken) => {
+      await c.query(`CREATE SCHEMA IF NOT EXISTS ${this.schemaSafe}`);
+      await c.query(`SET search_path TO ${this.schemaSafe}`);
+      await bootTx(c, schemaSql(this.backend), broken);
+      if ((await c.query(UTXO_STATS_EMPTY)).rowCount) await bootTx(c, ["ANALYZE outputs"], broken);
+      await bootTx(c, totalsRebuildSql(this.backend), broken);
+    });
     this._ready = p;
     p.catch(() => { if (this._ready === p) this._ready = null; });
     return p;
@@ -343,7 +418,7 @@ class PgStore implements Store {
   // can't get an idle client enters the same _pendingQueue, so checking waitingCount covers
   // query() and connect() alike.)
   private acquireGuard(): void {
-    if (this.pool.waitingCount >= this.maxWaiting)
+    if (this.opts.guarded && this.pool.waitingCount >= this.maxWaiting)
       throw new Error("indexer db pool saturated (too many concurrent requests)");
   }
   async exec(sql: string): Promise<void> { await this.ready(); this.acquireGuard(); await this.pool.query(sql); }
@@ -360,39 +435,58 @@ class PgStore implements Store {
     const r = await this.pool.query(toPg(sql), params as unknown[]);
     return r.rows as T[];
   }
-  async tx<T>(fn: (s: Store) => Promise<T>): Promise<T> {
+  private async onClient<T>(begin: string, fn: (s: Store) => Promise<T>): Promise<T> {
     await this.ready(); this.acquireGuard();
-    const c = await this.pool.connect();
-    const cs: Store = {
-      backend: "postgres",
-      exec: async (sql) => { await c.query(sql); },
-      run: async (sql, ...p) => { await c.query(toPg(sql), p as unknown[]); },
-      get: async (sql, ...p) => (await c.query(toPg(sql), p as unknown[])).rows[0],
-      all: async (sql, ...p) => (await c.query(toPg(sql), p as unknown[])).rows,
-      tx: () => { throw new Error("nested tx"); },
-      checkpoint: async () => { /* autovacuum's job, as on the pool */ },
-      close: async () => { /* the client goes back to the pool in this method's finally */ },
-    };
-    try {
-      await c.query("BEGIN");
-      const r = await fn(cs);
-      await c.query("COMMIT");
-      return r;
-    } catch (e) {
-      try { await c.query("ROLLBACK"); } catch { /* connection gone */ }
-      throw e;
-    } finally { c.release(); }
+    return await withClient(this.pool, async (c, broken) => {
+      try {
+        await c.query(begin);
+        const r = await fn(clientStore(c));
+        await c.query("COMMIT");
+        return r;
+      } catch (e) {
+        try { await c.query("ROLLBACK"); } catch (re) { broken(re as Error); }
+        throw e;
+      }
+    });
+  }
+  async tx<T>(fn: (s: Store) => Promise<T>): Promise<T> { return await this.onClient("BEGIN", fn); }
+  // REPEATABLE READ takes one snapshot at the first statement and keeps it for the transaction.
+  async snapshot<T>(fn: (s: Store) => Promise<T>): Promise<T> {
+    return await this.onClient("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY", fn);
   }
   async checkpoint(): Promise<void> { /* autovacuum's job */ }
-  async close(): Promise<void> { await this.pool.end(); }
+  async close(): Promise<void> {
+    if (this._writer) { await this._writer.close(); this._writer = null; }
+    await this.pool.end();
+  }
 }
 
 let _store: Store | null = null;
+// The store a call runs against when it is not the process's default: a route's snapshot or the sync loop's writer.
+const scope = new AsyncLocalStorage<Store>();
 
-export function store(): Store {
+function base(): Store {
   if (_store) return _store;
-  _store = CFG.pg ? new PgStore(CFG.pg, CFG.pgSchema) : new SqliteStore(CFG.db);
+  _store = CFG.pg ? new PgStore(CFG.pg, CFG.pgSchema, { max: CFG.pgPoolSize, guarded: true }) : new SqliteStore(CFG.db);
   return _store;
+}
+
+export function store(): Store { return scope.getStore() ?? base(); }
+
+/** Runs fn with every store() call on the block writer's connection: on Postgres its own pool of one, outside the
+ *  readers' pool and wait cap; on SQLite the one connection. */
+export function asWriter<T>(fn: () => Promise<T>): Promise<T> {
+  const b = base();
+  return scope.run(b instanceof PgStore ? b.writer() : b, fn);
+}
+
+/** Runs fn with every store() call reading one snapshot (REPEATABLE READ on Postgres, a deferred transaction on
+ *  SQLite), so an answer built from several statements is one view of the chain (test/snapshot-reads.test.ts). Inside
+ *  a snapshot or a transaction it runs fn in the one already open. The callback awaits only store reads. */
+export function snapshot<T>(fn: () => Promise<T>): Promise<T> {
+  const cur = scope.getStore();
+  if (cur) return cur.snapshot((s) => scope.run(s, fn));
+  return base().snapshot((s) => scope.run(s, fn));
 }
 
 /** Serialized read-modify-write transaction (see Store.tx). */
@@ -407,7 +501,7 @@ export async function resetStoreForTests(): Promise<void> {
   for (const t of ["address_history", "attestations", "proposals", "outputs", "txs", "tx_repeats", "blocks", "meta", "coinbase_totals", "address_totals"]) {
     await s.exec(`DROP TABLE IF EXISTS ${t}`);
   }
-  await s.exec(DDL);
+  for (const q of schemaSql(s.backend)) await s.exec(q);
   await s.tx(async (d) => { for (const q of totalsRebuildSql(d.backend)) await d.run(q); });
 }
 

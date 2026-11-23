@@ -15,15 +15,17 @@ const { store, resetStoreForTests, closeDb } = await import("../src/db.js");
 const txid = (i: number) => "0x" + i.toString(16).padStart(64, "0");
 const AT_WINDOW = "0x" + "a1".repeat(20);   // exactly 200 attestations
 const PAST_WINDOW = "0x" + "b2".repeat(20); // 201: the oldest one falls outside the window
+const BIG_FEES = "0x" + "d4".repeat(20);    // two fees whose sum passes 2^53
 
 await resetStoreForTests();
 await store().tx(async (d) => {
-  const put = async (attester: string, i: number, h: number, score: number, fee: number) =>
+  const put = async (attester: string, i: number, h: number, score: number, fee: number | bigint) =>
     d.run("INSERT INTO attestations(txid,proposal_id,attester,score,confidence,fee,height,time) VALUES(?,?,?,?,?,?,?,?)",
       txid(i), txid(999_999), attester, score, 50, fee, h, 1700000000 + h);
   for (let i = 0; i < 200; i++) await put(AT_WINDOW, i, 100 + i, 80, 10);
   await put(PAST_WINDOW, 1000, 1, 0, 1_000_000);                      // the oldest: outside the window
   for (let i = 0; i < 200; i++) await put(PAST_WINDOW, 1001 + i, 100 + i, 90, 10);
+  await put(BIG_FEES, 2000, 5, 50, BigInt(Number.MAX_SAFE_INTEGER)); await put(BIG_FEES, 2001, 6, 50, 2);
 });
 
 const srv = buildApp().listen(0, "127.0.0.1");
@@ -48,6 +50,11 @@ test("HAPPY PATH: exactly 200 attestations is complete: not truncated, no note",
 test("HAPPY PATH: an address with no attestations", async () => {
   assert.deepEqual(await rep("0x" + "c3".repeat(20)),
     { address: "0x" + "c3".repeat(20), attestations: 0, avg_score: 0, avg_confidence: 0, fees_paid: 0, truncated: false });
+});
+
+// The fee sum is exact base units: through Number it rounded 2^53 - 1 + 2 to 2^53.
+test("fees_paid past 2^53 is exact, as a decimal string", async () => {
+  assert.equal((await rep(BIG_FEES)).fees_paid, "9007199254740993");
 });
 
 test.after(async () => { srv.close(); await closeDb(); });

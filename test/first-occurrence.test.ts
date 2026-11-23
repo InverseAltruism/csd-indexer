@@ -9,9 +9,9 @@ import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
 import { verifyMerkleProof } from "@inversealtruism/csd-codec";
 import { tmpDb } from "./_tmpdb.js";
+import { spyStore } from "./_store-spy.js";
 import { type Blk, type Tx, DOMAIN, MINER, PAYEE, attest, block, coinbase, dump, mockNode, propose, repeatChain, spend } from "./_repeat-chain.js";
 import type { IndexEvent } from "../src/events.js";
-import type { Store } from "../src/db.js";
 
 let CHAIN: Blk[] = [];
 const node = await mockNode(() => CHAIN);
@@ -123,24 +123,15 @@ test("/block/:hash/txs lists a block in its own order when a repeat's first posi
 // no height below the stored tip. `watchBlockWrites` records each block row written and the highest height stored
 // just before it.
 function watchBlockWrites(): { writes: { height: number; tipBefore: number | null }[]; stop: () => void } {
-  const s = store();
-  const original = s.tx;
   const writes: { height: number; tipBefore: number | null }[] = [];
-  const watched = (d: Store): Store => new Proxy(d, {
-    get: (target, prop) => {
-      const v: unknown = Reflect.get(target, prop, target);
-      if (prop !== "run") return typeof v === "function" ? v.bind(target) : v;
-      return async (sql: string, ...p: unknown[]) => {
-        if (/^\s*INSERT INTO blocks\b/.test(sql)) {
-          const r = await target.get<{ h: number | null }>("SELECT MAX(height) AS h FROM blocks");
-          writes.push({ height: Number(p[0]), tipBefore: r?.h == null ? null : Number(r.h) });
-        }
-        return target.run(sql, ...p);
-      };
-    },
+  const stop = spyStore(store(), async (m, a, real, on) => {
+    if (m === "run" && /^\s*INSERT INTO blocks\b/.test(String(a[0]))) {
+      const r = await on.get<{ h: number | null }>("SELECT MAX(height) AS h FROM blocks");
+      writes.push({ height: Number(a[1]), tipBefore: r?.h == null ? null : Number(r.h) });
+    }
+    return real(...a);
   });
-  s.tx = <T>(fn: (d: Store) => Promise<T>) => original.call(s, (d: Store) => fn(watched(d))) as Promise<T>;
-  return { writes, stop: () => { s.tx = original; } };
+  return { writes, stop };
 }
 
 test("syncOnce: through reorgs each block is written one above the stored tip, and the tables equal a fresh sync", async () => {

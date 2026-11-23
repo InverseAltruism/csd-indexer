@@ -80,6 +80,24 @@ test("floor: the forward scan REFUSES a heavier, taller branch whose ancestor is
   assert.equal(await storedHash(5), h32("blk-Pe"), "tip still present");
 });
 
+// At the default scan floor (CSD_INDEX_FROM=0) "diverged down to the scan floor" is -1, the value findReorgAncestor
+// also returned for "no reorg": the forward scan then wrote the foreign chain's blocks on top of the index.
+test("floor: a heavier, taller chain sharing no block with the index is refused at scan floor 0", async () => {
+  await resetStoreForTests();
+  CHAIN = buildChain(["g", "Pa", "Pb", "Pc", "Pd", "Pe"]); // 0..5
+  await syncOnce();
+  const foreign = buildChain(["fg", "Fa", "Fb", "Fc", "Fd", "Fe", "Ff", "Fg"]); // 0..7, genesis differs too
+  CHAIN = foreign;
+  for (let pass = 0; pass < 2; pass++) {
+    const r = await syncOnce();
+    assert.equal(r.blocks, 0, "no foreign block is written");
+    assert.equal(r.reorgs, 0, "no unwind");
+  }
+  assert.equal(await indexedHeight(), 5, "index held at its tip");
+  assert.equal(await storedHash(5), h32("blk-Pe"));
+  assert.equal(await storedHash(6), null, "nothing written above the tip");
+});
+
 test("floor: ALLOWS an unwind whose ancestor is AT the floor", async () => {
   // fresh index 0..5 (WORK_EPOCH keeps this heavier than the prior test's chains)
   CHAIN = buildChain(["g", "Pa", "Pb", "Pc", "Pd", "Pe"]); // 0..5

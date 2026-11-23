@@ -475,7 +475,7 @@ const LABELS = {
   "0x44d92872a5b65d37d60ed532f41efe7c5aed59ec": "operator",
   "0xc25117a104e2cba2a69ad3981a3c67299f550504": "miner",
 };
-const labelOf = (a)=> LABELS[(a||'').toLowerCase()] || null;
+const labelOf = (a)=>{ const k=(a||'').toLowerCase(); return Object.hasOwn(LABELS,k)?LABELS[k]:null; };
 const $ = (s,r=document)=>r.querySelector(s);
 const el = (h)=>{const t=document.createElement('template');t.innerHTML=h.trim();return t.content.firstChild;};
 // HTML-escape ALL chain-derived text before it touches innerHTML. domain/uri (and any free-form
@@ -491,7 +491,9 @@ const MINUS='\u2212';
 const group = (d)=>{ const s=String(d), neg=s.startsWith('-'), t=neg?s.slice(1):s; return /^\d+$/.test(t)?(neg?MINUS:'')+t.replace(/\B(?=(\d{3})+(?!\d))/g,','):s; };
 const fmtInt = (n)=> n!=null&&n!==''&&Number.isFinite(Number(n)) ? group(Math.trunc(Number(n))) : esc(n);
 // BigInt-safe: max_supply (~1.05e16 sats) exceeds 2^53, so divide in BigInt before going to Number
-const fmtCSD = (v)=>{ const s=String(v); const sats=/^\d+$/.test(s)?BigInt(s):BigInt(Math.round(Number(v)||0)); const neg=sats<0n, a=neg?-sats:sats; const whole=a/100000000n, frac=a%100000000n; const fracStr=frac===0n?'':'.'+frac.toString().padStart(8,'0').replace(/0+$/,''); return (neg?MINUS:'')+group(whole)+fracStr+' CSD'; };
+// Base-unit sums are BigInt (sumValues): an output value past 2^53 arrives as a decimal string, and `+` on it concatenates.
+const sumValues = (outs)=>outs.reduce((s,o)=>s+BigInt(o.value??0),0n);
+const fmtCSD = (v)=>{ const s=String(v); const sats=/^-?\d+$/.test(s)?BigInt(s):BigInt(Math.round(Number(v)||0)); const neg=sats<0n, a=neg?-sats:sats; const whole=a/100000000n, frac=a%100000000n; const fracStr=frac===0n?'':'.'+frac.toString().padStart(8,'0').replace(/0+$/,''); return (neg?MINUS:'')+group(whole)+fracStr+' CSD'; };
 const MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 /** The page's one date format, in UTC: "24 Oct 2026, 15:40:14 UTC". */
 const fmtDate = (secs)=>{ const d=new Date(Number(secs)*1000); if(Number.isNaN(d.getTime())) return '-'; const p=(x)=>String(x).padStart(2,'0');
@@ -751,7 +753,7 @@ function compactNum(n){n=Number(n)||0;const u=['','K','M','G','T','P','E','Z','Y
 // adaptive H/s units (a fixed /1e9 once rendered "4903.5 GH/s" where the dashboard said "4.9 TH/s")
 function fmtHashrate(hps){hps=Number(hps)||0;const u=['H/s','KH/s','MH/s','GH/s','TH/s','PH/s'];let i=0;while(hps>=1000&&i<u.length-1){hps/=1000;i++;}return{val:hps>=100?Math.round(hps):hps>=10?hps.toFixed(1):hps.toFixed(2),unit:u[i]};}
 const DOMAIN_LABEL={'cairnx:v1':'CairnX · tokens · names · DEX','csd:anchor:base':'Base anchors','csd:bridge:deploy':'Bridge registry'};
-const domainLabel=(d)=>DOMAIN_LABEL[d]||d;
+const domainLabel=(d)=>(Object.hasOwn(DOMAIN_LABEL,d)?DOMAIN_LABEL[d]:d);
 // ── charts: cairn's one chart module (/charts/chart.js, Plan 88), loaded on demand through the front door;
 // standalone there is none and the chart hosts stay hidden. This page does not load cairn's /shared.js, so
 // every mount passes `format` and no point carries a volume: the only two places chart.js reads window.C.
@@ -826,7 +828,7 @@ function warmCx(){
     return DEC;
   })();
 }
-const amt=(v,ticker)=> DEC&&DEC[ticker]!=null ? fmtAmt(v,DEC[ticker]) : `${esc(group(v))} <span class="dim">base units</span>`;
+const amt=(v,ticker)=> DEC&&Object.hasOwn(DEC,ticker)&&DEC[ticker]!=null ? fmtAmt(v,DEC[ticker]) : `${esc(group(v))} <span class="dim">base units</span>`;
 // A view's CairnX record verdicts (txid → {applied, note}), read for the records it shows from /cairnx/records, 100
 // txids a read; each read that answers gives its verdicts, and the txids of one that does not (a 404 included) stay unread.
 // They let a view show that a record the resolver REFUSED (mint past supply, mint by a non-issuer, deploy with an unpaid
@@ -940,7 +942,7 @@ function describeOfferAttest(tx,app,pidHex,rec,verdict){
   if(score!==0&&!(app.confidence===1000000&&rec)&&!(offer&&(score===50||score===100)))
     return `${kind('Record')}<span class="what">Attested</span> score ${esc(score)} on ${off}`;
   const me=(tx.signer||'').toLowerCase();
-  const paid=(tx.outputs||[]).filter(o=>(o.addr||'').toLowerCase()!==me).reduce((s,o)=>s+o.value,0);
+  const paid=sumValues((tx.outputs||[]).filter(o=>(o.addr||'').toLowerCase()!==me));
   const what=offer?(rec.give&&rec.give.name?`name <b>${esc(rec.give.name)}.csd</b>`:`<b>${esc(rec.give&&rec.give.ticker)}</b>`):'';
   let body;
   if(score===0){ const of=rec&&rec.t==='bid'?'a bid':'an offer';
@@ -957,13 +959,10 @@ function describeOfferAttest(tx,app,pidHex,rec,verdict){
 // payment flow of a tx, from the signer's perspective (single-signer chain: signer pays all inputs)
 function flowHtml(tx){
   const me=(tx.signer||'').toLowerCase();
-  let toOthers=0, change=0; const outs=[];
-  for(const o of (tx.outputs||[])){
-    if((o.addr||'').toLowerCase()===me) change+=o.value;
-    else { toOthers+=o.value; outs.push(o); }
-  }
+  const outs=(tx.outputs||[]).filter(o=>(o.addr||'').toLowerCase()!==me);
+  const toOthers=sumValues(outs), change=sumValues((tx.outputs||[]).filter(o=>(o.addr||'').toLowerCase()===me));
   const parts=[];
-  if(tx.coinbase) parts.push(`<span class="f in">Mined <b>+${fmtCSD((tx.outputs||[]).reduce((s,o)=>s+o.value,0))}</b> (block reward)</span>`);
+  if(tx.coinbase) parts.push(`<span class="f in">Mined <b>+${fmtCSD(sumValues(tx.outputs||[]))}</b> (block reward)</span>`);
   else{
     if(outs.length) parts.push(`<span class="f out">Sent <b>${MINUS}${fmtCSD(toOthers)}</b> ${outs.length===1?`to ${addrLink(outs[0].addr)}`:`to ${outs.length} recipients`}</span>`);
     parts.push(`<span class="f out">Fee <b>${MINUS}${fmtCSD(tx.fee)}</b></span>`);
@@ -1028,7 +1027,7 @@ async function marketPanel(box){
     fig('market cap',usd(c.marketCap&&c.marketCap.usd),c.supply?`emitted ${n(c.supply.emitted)} CSD at block ${n(c.supply.height)}`:'',R(`${at(c.marketCap&&c.marketCap.basis)} · thin market`),c.marketCap&&c.marketCap.usd),
     fig('fully diluted',usd(c.fdv&&c.fdv.usd),c.supply?`max supply ${n(c.supply.max,2)} CSD`:'',R(at(c.fdv&&c.fdv.basis)),c.fdv&&c.fdv.usd),
     fig('24h volume',usd(c.volume24h&&c.volume24h.usd),c.volume24h&&c.volume24h.csd!=null?`${n(c.volume24h.csd)} CSD`:'',R("the venue's 24h volume"),c.volume24h&&c.volume24h.usd));
-  const s=MKT.s, src=s?String(s.source||'').split(',').map(k=>SERIES_SRC[k]).filter(Boolean).join(', then '):'';
+  const s=MKT.s, src=s?String(s.source||'').split(',').map(k=>(Object.hasOwn(SERIES_SRC,k)?SERIES_SRC[k]:null)).filter(Boolean).join(', then '):'';
   const head=tag('div','muted',`CSD/USD · last 30 days · daily closes${src?' · '+src:''}`);
   let host=box.querySelector('#csdusd-chart');
   if(!host){ host=tag('div','xchart'); host.id='csdusd-chart'; }
@@ -1129,7 +1128,7 @@ async function home(v){
     <div class="pu hot"><div class="l">Height</div><div class="n">${fmtInt(health.indexed_height)}</div></div>
     <div class="pu"><div class="l">Avg block time, 24h</div><div class="n">${miners?`${Math.round(miners.avg_interval_secs)} <span class="u">s</span>`:'-'}</div></div>
     <div class="pu" id="pu-hr" title="${esc(hrSpan)}"><div class="l">Hashrate<span data-hrwin="tile"></span></div><div class="n">${hr?`${hr.val} <span class="u">${hr.unit}</span>`:'-'}</div></div>
-    <div class="pu"><div class="l">Circulating</div><div class="n">${supply?`${fmtCSD(supply.emitted_supply).replace(' CSD','')} <span class="u">CSD</span>`:'-'}</div></div>
+    <div class="pu"><div class="l">Circulating</div><div class="n">${supply?`${fmtCSD(supply.circulating_supply).replace(' CSD','')} <span class="u">CSD</span>`:'-'}</div></div>
   </div>`));
   if(!paintHrWin(v,miners,series)) charts().then(()=>{ if(v.isConnected) paintHrWin(v,miners,series); });
 
@@ -1149,7 +1148,7 @@ async function home(v){
   // ── Section: CSD, the native coin (+ emission-schedule chart) ──
   const csdPanel=el(`<div class="panel"><h2>CSD <span class="h-side">The native coin</span></h2>
     <dl class="facts">
-      <div><dt>Circulating</dt><dd>${supply?fmtCSD(supply.emitted_supply):'-'}</dd></div>
+      <div><dt>Circulating</dt><dd>${supply?fmtCSD(supply.circulating_supply):'-'}</dd></div>
       <div><dt>Max supply</dt><dd>${supply?fmtCSD(supply.max_supply):'-'}</dd></div>
       <div><dt>Block reward</dt><dd>${supply?fmtCSD(supply.block_reward):'-'}</dd></div>
       <div><dt>Emitted</dt><dd>${supply?supply.pct_emitted.toFixed(2)+'%':'-'}</dd></div>
@@ -1315,8 +1314,8 @@ async function tokenPage(v,ticker){
 }
 function blockRow(b,live){
   if(b.time) TIP_TIME=Math.max(TIP_TIME,b.time);   // keep the age reference current with the chain tip
-  return el(`<tr class="${live?'feed-row':''}" data-h="${b.height}" data-hash="${b.hash}"><td class="mono">${link('/block/'+b.height,fmtInt(b.height))}</td>
-    <td class="dim age" data-ts="${b.time||''}" title="${b.time?fmtDate(b.time):''}">${age(b.time)}</td><td class="mono">${blockLead(b.hash)}</td><td class="num opt-xs">${fmtInt(b.tx_count)}</td></tr>`);
+  return el(`<tr class="${live?'feed-row':''}" data-h="${esc(b.height)}" data-hash="${esc(b.hash)}"><td class="mono">${link('/block/'+b.height,fmtInt(b.height))}</td>
+    <td class="dim age" data-ts="${esc(b.time||'')}" title="${b.time?fmtDate(b.time):''}">${age(b.time)}</td><td class="mono">${blockLead(b.hash)}</td><td class="num opt-xs">${fmtInt(b.tx_count)}</td></tr>`);
 }
 async function recentBlocks(){
   // one round-trip (newest-first); 31 blocks feed the block list (12 shown), the emission chart's
@@ -1340,7 +1339,7 @@ function subscribeBlocks(tb,onBlock){
     if(!Array.isArray(rows)) return;
     // NEW or CHANGED-hash (reorg) blocks, keyed on height+hash; oldest-first so prepends keep order
     const fresh=rows.filter(b=>b&&seen.get(b.height)!==b.hash).sort((a,c)=>a.height-c.height);
-    for(const b of fresh){ const existing=tb.querySelector(`tr[data-h="${b.height}"]`); const nr=blockRow(b,true);
+    for(const b of fresh){ const existing=tb.querySelector(`tr[data-h="${CSS.escape(String(b.height))}"]`); const nr=blockRow(b,true);
       if(existing){ existing.replaceWith(nr); }                                       // reorg: replace the orphaned row in place
       else { tb.prepend(nr); const hn=$('.pu.hot .n'); if(hn) hn.textContent=fmtInt(b.height); }   // new: prepend + keep the hero height live
       seen.set(b.height, b.hash); }
@@ -1387,7 +1386,7 @@ async function blockPage(v,id){
     if(!cb||!cb.coinbase){ m.innerHTML=rw.innerHTML='<span class="dim">-</span>'; return; }
     const addr=cb.outputs&&cb.outputs[0]&&cb.outputs[0].addr;
     m.innerHTML=addrLinkG(addr)+(addr?copyBtn(addr,'address'):'');
-    rw.textContent=fmtCSD((cb.outputs||[]).reduce((s,o)=>s+o.value,0));
+    rw.textContent=fmtCSD(sumValues(cb.outputs||[]));
     paintNames(m); })();
   v.appendChild(el(`<div class="panel"><h2>Transactions (${fmtInt(txids.length)})</h2><div class="scroll-x"><table><thead><tr><th class="num">#</th><th>Txid</th></tr></thead>
     <tbody>${txids.map((t,i)=>`<tr><td class="num dim">${i}</td><td>${txidLink(t)}</td></tr>`).join('')||'<tr><td colspan="2" class="empty">No transactions</td></tr>'}</tbody></table></div></div>`));
@@ -1552,11 +1551,11 @@ async function addrPage(v,a){
       // rows carry outputs inline (indexer >= 0.2.5): no per-row /tx refetch; older responses fall back to one fetch
       const full=(t&&Array.isArray(t.outputs))?t:await j('/tx/'+t.txid);
       // direction: outputs to me − (if I signed: everything I paid)
-      const recv=(full.outputs||[]).filter(o=>(o.addr||'').toLowerCase()===me).reduce((x,o)=>x+o.value,0);
+      const recv=sumValues((full.outputs||[]).filter(o=>(o.addr||'').toLowerCase()===me));
       let delta;
       if((full.signer||'').toLowerCase()===me){
-        const out=(full.outputs||[]).filter(o=>(o.addr||'').toLowerCase()!==me).reduce((x,o)=>x+o.value,0);
-        delta=-(out+full.fee);
+        const out=sumValues((full.outputs||[]).filter(o=>(o.addr||'').toLowerCase()!==me));
+        delta=-(out+BigInt(full.fee??0));
       } else delta=recv;
       const d=$('#dir-'+i);
       if(d) d.outerHTML=`<td class="num ${delta>=0?'green':'red'}">${delta>=0?'+':''}${fmtCSD(delta)}</td>`;
@@ -1743,7 +1742,7 @@ async function refreshStats(){
     else if(e&&(e.status>=500||e.status==null&&e instanceof TypeError)) showStatus(false,'bad','Indexer offline','the indexer did not answer its /health read');
     else showStatus(false,'caution','Could not check',`the indexer's /health read gave no answer this page can read (${e&&e.message||'no answer'}); asked again in 15 s`);
     return; }
-  const ss=h.seconds_since_tip, lag=Math.max(0,(h.tip_height||0)-(h.indexed_height||0));
+  const ss=h.seconds_since_tip, lag=h.node_tip_height==null?0:Math.max(0,h.node_tip_height-(h.indexed_height||0));
   const fresh=!h.stale&&lag<2&&(ss==null||ss<180);
   // A real indexer LAG (indexed_height < node tip, catching up) is distinct from a merely OLD tip (the indexer is AT
   // the tip but blocks are slow, e.g. low hashrate): the latter is labelled as the newest block's age, not as the
