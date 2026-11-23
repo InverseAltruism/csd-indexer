@@ -2,13 +2,18 @@
 
 ## 0.3.14
 
-Operator: the deploy is a pull, then a restart of `csd-indexer`; the lockfile is unchanged (no `npm ci`), and no
-setting changes. The first start builds `idx_out_addr_unspent` and, on Postgres, creates `st_out_addr_unspent` and
-analyzes `outputs` once, inside the start's DDL transaction while every store call waits: on a scratch Postgres 16
-with 300,000 outputs the index took 2.2 s and the analyze 1.6 s (SQLite: 0.6 s for the index); the time grows with
-the outputs table. The block writer opens one more Postgres connection (`CSD_INDEX_PG_POOL` + 1 in all). Rollback:
-check out 0.3.13 and restart; it opens a database 0.3.14 started, writes and reads it, and leaves the index and the
-statistics object in place (checked on both backends).
+Operator: the deploy is a pull, then a restart of `csd-indexer`; no dependency changes (the lockfile's root version
+moves to 0.3.14 with `package.json`, so no `npm ci` is needed), and no setting changes. Postgres 14 or later. The role
+in `CSD_INDEX_PG` need not be a superuser: one that owns the database is enough, as a start creates the schema, the
+tables, indexes and statistics object and analyzes `outputs`. The first start builds `idx_out_addr_unspent` in its
+DDL transaction and, on Postgres, creates `st_out_addr_unspent` and then analyzes `outputs` once in a transaction of
+its own; every store call, `/health` included, waits for the start. On a scratch Postgres 16 with 300,000 outputs
+and 300,000 history rows, as a non-superuser owner, the DDL with the index build took 1.9 s and the ANALYZE 1.1 s:
+the first start took 6.85 s, where 0.3.13 took 3.86 s on the same database and the next start 3.89 s. On SQLite the
+first start took 1.05 s (0.3.13: 0.71 s; the next start: 0.63 s). The time grows with the outputs table. The block
+writer opens one more Postgres connection (`CSD_INDEX_PG_POOL` + 1 in all). Rollback: check out 0.3.13 and restart;
+it opens a database 0.3.14 started, writes and reads it, and leaves the index and the statistics object in place
+(checked on both backends, on Postgres as a non-superuser owner).
 API changes for readers: `/analytics/miners` entries lose `fees_collected` (always 0); `/health` adds
 `node_tip_height`; `%00` in a parameter is 400; a merkle proof for a block without a header root is 404.
 
@@ -19,11 +24,35 @@ API changes for readers: `/analytics/miners` entries lose `fees_collected` (alwa
   where the header sits: a backend that answered `/tip` with a height 4 above the primary's, the primary's own tip
   hash and a huge chainwork, and served that header at the claimed height, became the active backend and rewrote the
   index above the fork with its own blocks (an attacker address ended with 11 outputs on a 10-block index in the
-  driver). The honest cases select as before: a secondary five real headers ahead, a secondary on a branch from a
-  stored block, a secondary 150 headers ahead of a frozen primary. A secondary one block ahead costs the one header
-  fetch it cost before; a longer proof shares the `CSD_RPC_POW_TIMEOUT` deadline. `CSD_RPC_ROUTE_PLAUSIBILITY=0`
+  driver). A tip the index stores at the claimed height, with the chainwork stored for it, claims nothing new and
+  stays eligible, so the index stays on a secondary it has caught up with while the primary rebuilds far below,
+  comes back a block under, or a second secondary is stuck, as on 0.3.13. A secondary one block ahead costs the one
+  header fetch it cost before. A longer proof goes on across passes: per backend one record of what it proved,
+  which the next walk joins when the hash at its top is the same, so a pass costs at most `CSD_RPC_POW_TIMEOUT` and a
+  pass that ends short logs how many headers it proved and how many at least remain. The limit, where 0.3.13 selected
+  at once: n headers at r ms a read take about n times r divided by the 5,000 ms deadline passes; measured at 5 ms a
+  read, 150 headers took 1 pass, 1,500 took 2 and 50,000 took 55 (at one pass per 15 s poll). A proof that long needs
+  both the index and the primary that far under the secondary: a re-index from empty, or an index far behind, while
+  the primary rebuilds. In the randomized comparison of honest backends (five seeds; passes behind the best node,
+  blocks behind, the longest run, backend switches) every figure equals 0.3.13's. `CSD_RPC_ROUTE_PLAUSIBILITY=0`
   turns the proof off with the plausibility gate. The bodies of the blocks the active backend serves are still not
   checked against their headers (README "Honest limits", AGENTS.md ROUTE-1).
+- The chainwork a contender reports counts no more than its headers carry: it is ranked with at most the linked
+  block's chainwork plus `workForBits` of each proved header (a lower claim stays as claimed), and a block a
+  non-primary backend serves is stored with at most its stored parent's chainwork plus its header's work. On 160
+  consecutive mainnet headers the node's chainwork at the top is exactly the figure below them plus their work, so
+  honest figures are stored as served. Before, a secondary that presented a real header with an invented chainwork
+  became active after the work-escape and stored that figure, and every honest node then had less work than the
+  index: each pass held. 0.3.13 did the same. `test/rpc-route-honest.test.ts`.
+- Postgres: a start as a role that is not a superuser read `pg_statistic_ext_data`, which only a superuser may read,
+  and failed with "permission denied", so no route answered; it reads the `pg_stats_ext` view, which shows the owner
+  its own rows. The CI Postgres job runs the suite as a non-superuser owner of its database
+  (`test/pg-nonsuperuser.test.ts`).
+- Postgres: a session that ended while its client was checked out of the pool (a database restart,
+  `pg_terminate_backend`) in the writer's transaction, a reader's snapshot or the start emitted an `error` event
+  with no listener and ended the process; the call fails and the next ones get new connections
+  (`test/pg-client-loss.test.ts`). The tip pointer is written in the block's transaction, so a restart in the
+  middle of a block write leaves the block and the pointer both written or both not.
   `test/rpc-route-link.test.ts` (with `test/fixtures/header-chain.ts`, 160 consecutive mainnet headers from 32796);
   the honest failover cases of `test/rpc-route-plausibility.test.ts` and `test/route-guard-visibility.test.ts` serve
   that chain, and `test/rpc-failover.test.ts` and `test/rpc-pow-route.test.ts`, whose mocks serve one header at
