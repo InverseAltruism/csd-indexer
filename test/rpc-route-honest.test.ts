@@ -262,3 +262,33 @@ test("a contender is ranked with its proved work when it claims more and with it
     }
   } finally { CFG.workEscapeCycles = escape; }
 });
+
+// The stored tip row holds a chainwork the index cannot read as work (a backend once served it so; the guard holds
+// on it and rewrites it from the active backend's block), the primary answers from a rebuild far below, and the
+// secondaries are five blocks above. The link proof linked to that row and ranked the secondary at the row's figure
+// plus five headers' work, under the primary, so the primary stayed active and the index held for good.
+for (const raw of ["0", "", "-1"]) {
+  test(`a stored chainwork ${JSON.stringify(raw)} under a secondary's proof: it is selected and the row is rewritten`, async () => {
+    await start(100);
+    await store().run("UPDATE blocks SET chainwork=? WHERE height=100", raw);
+    P.state = up(20); S1.state = up(105); S2.state = up(105);
+    const passes: Pass[] = [];
+    for (let i = 0; i < 4; i++) passes.push(await pass());
+    assert.equal(passes[0]!.active, "sec1", "the secondary is ranked with its claim");
+    assert.equal(await indexedHeight(), 105);
+    assert.equal(await storedWork(100), CHAIN[100]!.chainwork, "the row is rewritten from the secondary's block");
+  });
+}
+
+test("with the guard off, blocks over a stored chainwork \"0\" are stored with the node's figures", async () => {
+  CFG.workGuard = false;
+  try {
+    await start(100);
+    await store().run("UPDATE blocks SET chainwork='0' WHERE height=100");
+    P.state = down; S1.state = up(105); S2.state = up(100);
+    await pass();
+    assert.equal(rpc.activeBackend(), S1.url);
+    assert.equal(await indexedHeight(), 105);
+    for (const h of [101, 105]) assert.equal(await storedWork(h), CHAIN[h]!.chainwork, `height ${h}`);
+  } finally { CFG.workGuard = true; }
+});

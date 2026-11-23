@@ -138,15 +138,17 @@ async function headerAt(base: string, height: number, signal: AbortSignal): Prom
 }
 
 // The height and chainwork a hash holds on the trusted view: the anchor's tip with the anchor's chainwork, else the
-// indexer's own blocks table; undefined when neither holds it. A stored chainwork that does not parse is null.
+// indexer's own blocks table; undefined when neither holds it. A chainwork that is no positive integer is null.
 async function known(hash: string, anchor: Probe): Promise<{ height: number; work: bigint | null } | undefined> {
   if (anchor.tipHash != null && hash === anchor.tipHash.toLowerCase()) return { height: anchor.height, work: anchor.chainwork };
   const r = await store().get<{ height: number | bigint; chainwork: string | null }>("SELECT height, chainwork FROM blocks WHERE hash=?", hash);
   return r ? { height: Number(r.height), work: parseWork(r.chainwork) } : undefined;
 }
+// A chainwork figure, or null when it is none: absent, empty, not an integer, zero or negative, as the regression
+// guard reads its own tip (indexer.ts indexedChainwork). No figure bounds nothing, so the claim counts as on 0.3.13.
 function parseWork(v: unknown): bigint | null {
   if (v == null) return null;
-  try { return BigInt(String(v).trim()); } catch { return null; }
+  try { const w = BigInt(String(v).trim()); return w > 0n ? w : null; } catch { return null; }
 }
 // A header's work by its bits; bits that are no integer count none.
 const headerWork = (h: ProofHeader): bigint => (Number.isSafeInteger(h.bits) ? workForBits(h.bits as number) : 0n);
