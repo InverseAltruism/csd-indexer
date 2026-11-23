@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
 import { createHash } from "node:crypto";
 import { tmpDb } from "./_tmpdb.js";
+import { spyStore } from "./_store-spy.js";
 
 const id = (tag: string) => "0x" + createHash("sha256").update(tag).digest("hex");
 type B = { hash: string; height: number; chainwork: string; header: object; txs: object[] };
@@ -52,17 +53,17 @@ test("a failure at the pointer write leaves the block and the pointer together; 
   CHAIN = base;
   await syncOnce();
   assert.equal(await indexedHeight(), 4);
-  // Every statement that writes the pointer to 5 fails once, wherever it runs.
-  const s = store() as unknown as { run: (sql: string, ...p: unknown[]) => Promise<void> };
-  const realRun = s.run.bind(s);
+  // The first statement that writes the pointer to 5 fails, wherever it runs: the writer's store, inside a
+  // transaction or not (on Postgres syncOnce writes on the writer's own pool, not on store()).
   let fired = false;
-  s.run = async (sql: string, ...p: unknown[]) => {
-    if (!fired && /INTO meta/.test(sql) && p.includes("5")) { fired = true; throw new Error("injected failure at the tip pointer"); }
-    return realRun(sql, ...p);
-  };
+  const undo = spyStore(store(), async (method, args, real) => {
+    const [sql, ...p] = args as [string, ...unknown[]];
+    if (!fired && method === "run" && /INTO meta/.test(sql) && p.includes("5")) { fired = true; throw new Error("injected failure at the tip pointer"); }
+    return await real(...args);
+  });
   CHAIN = [...base, heavy5];
-  try { await syncOnce(); } catch { /* the injected failure ends the pass, as a crash would */ }
-  s.run = realRun;
+  try { await syncOnce(); } catch { /* the injected failure ends the pass, as a crash would */ } finally { undo(); }
+  assert.equal(fired, true, "the failure was injected at the pointer's write");
   assert.equal(await storedTop(), await indexedHeight(), "the stored top and the pointer agree after the failure");
   // The pass that follows: if heavy5 is stored, a node serving the lighter block at 5 is behind on work and holds.
   CHAIN = [...base, light5];
