@@ -432,3 +432,16 @@ test("the primary's tip moving above a kept proof's top: the walk joins the proo
   const two = await pass();
   assert.ok(!two.reads[2]!.some((h) => h >= 61 && h <= 157), "the kept headers are not read again");
 });
+
+test("a backend left for a bad block is not chosen again while another one answers", async () => {
+  await start(100);
+  const bad = CHAIN.slice(0, 101);
+  bad.push({ ...CHAIN[101]!, header: { ...CHAIN[101]!.header, bits: 0x03000001 } });   // the real figure, a bad header
+  P.state = down; S1.state = up(101, { chain: bad }); S2.state = up(101);
+  const one = await pass();
+  assert.equal(one.active, "sec1", "equal claims: the first secondary is chosen");
+  assert.equal(one.indexed, 100, "its block is not written");
+  const two = await pass();
+  assert.equal(two.active, "sec2");
+  assert.equal(two.indexed, 101, "the other secondary's block is");
+});
