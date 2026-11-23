@@ -202,16 +202,19 @@ breakdowns, rankings, address history) is reproducible rather than signed: the w
 is to run your own indexer and confirm you get the same numbers.
 
 The indexer reads blocks from one node at a time, and trusts the nodes it is configured with (`CSD_RPC`,
-`CSD_RPC_BACKENDS`). Before it switches to another backend it checks that backend's tip header (its proof of work,
-and that its difficulty is plausible against the stored chain), and nothing more. Two things a configured node could
-do by answering falsely are therefore open, and accepted, because each backend is meant to be one of the operator's
-own nodes on the same host, where whoever controls one node's process can also stop or rewrite the primary:
+`CSD_RPC_BACKENDS`). It checks the tip header of a backend that claims more work or height than the primary (its
+proof of work, and that its difficulty is plausible against the stored chain), and nothing more; with the primary
+down, the reachable backend with the least chainwork takes the primary's place and is not checked. Two things a
+configured node could do by answering falsely are therefore open, and accepted, because each backend is meant to be
+one of the operator's own nodes on the same host, where whoever controls one node's process can also stop or rewrite
+the primary:
 
 - A backend can win the switch by serving a real header at a higher height than it holds and claiming a large
   chainwork for it. It then becomes the node the index reads from.
 - The blocks the active backend serves are not checked against their headers, and the chainwork it reports is
-  stored. An invented figure makes every honest node look lighter than the index, so the regression guard holds
-  each later pass until the operator re-indexes from empty, which also replaces the bodies that backend served.
+  stored. An invented figure makes the honest nodes look lighter than the index, so the regression guard holds each
+  later pass while they present less work than that figure; the repair is a re-index from empty, which also
+  replaces the bodies that backend served.
 
 Run only nodes you control as backends.
 
