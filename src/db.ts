@@ -68,11 +68,15 @@ export const UTXO_INDEX_DDL = "CREATE INDEX IF NOT EXISTS idx_out_addr_unspent O
 // Postgres estimates `addr = ? AND COALESCE(spent_txid, '') = ''` as if the two were independent: for a miner's
 // address with thousands of spent outputs and a few unspent ones it expects thousands of rows and walks outputs by
 // height instead of the index above. The statistics object gives it the pair's frequencies (Postgres 14 or later);
-// ANALYZE fills it, at the first start that creates it and then as autovacuum analyzes the table.
+// ANALYZE fills it, at the first start that creates it and then as autovacuum analyzes the table. At the default
+// target its list holds the 100 commonest pairs of a 30,000-row sample, and a miner's few unspent outputs fell out of
+// it in 2 of 60 ANALYZE runs on the plan test's table; at 1000 the sample is 300,000 rows and the list 1,000 pairs
+// (0 of 200). With no statistics yet the planner seeks this index on both columns and sorts what it finds.
 const UTXO_STATS = "st_out_addr_unspent";
 const UTXO_STATS_DDL = `CREATE STATISTICS IF NOT EXISTS ${UTXO_STATS} (mcv, dependencies) ON addr, (COALESCE(spent_txid, '')) FROM outputs`;
+const UTXO_STATS_TARGET = `ALTER STATISTICS ${UTXO_STATS} SET STATISTICS 1000`;
 /** The schema statements a start applies on `backend`. */
-const schemaSql = (backend: Store["backend"]): string[] => (backend === "postgres" ? [DDL, UTXO_STATS_DDL] : [DDL]);
+const schemaSql = (backend: Store["backend"]): string[] => (backend === "postgres" ? [DDL, UTXO_STATS_DDL, UTXO_STATS_TARGET] : [DDL]);
 // The statistics object exists and holds no data yet. pg_statistic_ext_data is readable by a superuser only; the
 // pg_stats_ext view shows the table owner its own rows (test/pg-nonsuperuser.test.ts).
 const UTXO_STATS_EMPTY = `SELECT 1 FROM pg_statistic_ext s WHERE s.stxname = '${UTXO_STATS}' ` +

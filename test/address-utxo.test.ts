@@ -138,8 +138,14 @@ test("/address/:a/utxo: the page statement seeks idx_out_addr_unspent in page or
     assert.match(plan, /USING INDEX idx_out_addr_unspent \(addr=\? AND <expr>=\?\)/, plan);
     assert.doesNotMatch(plan, /TEMP B-TREE/, plan);
   } else {
+    const explain = async () => (await store().all<Record<string, string>>(`EXPLAIN ${UTXO_PAGE_SQL}`, MINER, UTXO_PAGE)).map((r) => r["QUERY PLAN"]).join(" | ");
+    // ANALYZE samples: the object's target makes its sample cover this table, so its most-common list holds the
+    // miner's pair after every run (at the default target it fell out in about 1 run of 30, and the plan walked
+    // outputs by height).
+    const target = await store().get<{ t: number }>("SELECT stxstattarget AS t FROM pg_statistic_ext WHERE stxname = 'st_out_addr_unspent' AND stxnamespace = current_schema()::regnamespace");
+    assert.equal(Number(target?.t), 1000);
     await store().exec("ANALYZE outputs");
-    const plan = (await store().all<Record<string, string>>(`EXPLAIN ${UTXO_PAGE_SQL}`, MINER, UTXO_PAGE)).map((r) => r["QUERY PLAN"]).join(" | ");
+    const plan = await explain();
     assert.match(plan, /Index Scan using idx_out_addr_unspent/, plan);
     assert.doesNotMatch(plan, /Sort/, plan);
   }
